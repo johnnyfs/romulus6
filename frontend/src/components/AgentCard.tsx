@@ -1,21 +1,13 @@
+import { useEffect, useState } from 'react'
 import type { Agent, AgentStatus } from '../api/agents'
+import { TERMINAL_STATUSES } from '../api/agents'
 
 interface Props {
   agent: Agent
   selected: boolean
+  isRunning?: boolean  // true until a terminal session event is received
   onClick: () => void
   onDelete: () => void
-}
-
-function statusLabel(status: AgentStatus): string {
-  switch (status) {
-    case 'starting': return '[INIT]'
-    case 'busy':     return '[BUSY]'
-    case 'idle':     return '[IDLE]'
-    case 'completed': return '[DONE]'
-    case 'error':    return '[ERR!]'
-    case 'interrupted': return '[INT!]'
-  }
 }
 
 function statusColor(status: AgentStatus): string {
@@ -32,10 +24,32 @@ function statusColor(status: AgentStatus): string {
   }
 }
 
-export default function AgentCard({ agent, selected, onClick, onDelete }: Props) {
+// ☺ (U+263A) white smiley, ☻ (U+263B) black smiley — classic CP437 characters 1 & 2
+function BlinkFace({ running, selected }: { running: boolean; selected: boolean }) {
+  const dimColor = selected ? '#000066' : '#555555'
+  const activeColor = selected ? '#000000' : '#55FF55'
+
+  if (!running) {
+    return (
+      <span style={{ color: dimColor, fontSize: '14px' }}>☻</span>
+    )
+  }
+
+  return (
+    <span style={{ position: 'relative', display: 'inline-block', width: '1ch', fontSize: '14px', color: activeColor }}>
+      <span className="face-a">☺</span>
+      <span className="face-b">☻</span>
+    </span>
+  )
+}
+
+export default function AgentCard({ agent, selected, isRunning, onClick, onDelete }: Props) {
   const displayName =
     agent.name ?? `${agent.agent_type}/${agent.model.split('/')[1]}`
   const modelShort = agent.model.split('/')[1]
+
+  // Fallback: if isRunning prop not provided, derive from agent.status
+  const running = isRunning ?? !TERMINAL_STATUSES.includes(agent.status)
 
   return (
     <div
@@ -55,9 +69,7 @@ export default function AgentCard({ agent, selected, onClick, onDelete }: Props)
           {modelShort}
         </div>
       </div>
-      <span style={{ ...styles.badge, color: selected ? '#000000' : statusColor(agent.status) }}>
-        {statusLabel(agent.status)}
-      </span>
+      <BlinkFace running={running} selected={selected} />
       <button
         style={{ ...styles.deleteBtn, color: selected ? '#000000' : '#AAAAAA' }}
         onClick={(e) => { e.stopPropagation(); onDelete() }}
@@ -96,12 +108,6 @@ const styles: Record<string, React.CSSProperties> = {
   },
   model: {
     fontSize: '11px',
-  },
-  badge: {
-    fontSize: '11px',
-    fontWeight: 'bold',
-    flexShrink: 0,
-    letterSpacing: '0.02em',
   },
   deleteBtn: {
     background: 'none',

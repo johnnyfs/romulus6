@@ -78,3 +78,26 @@ input, select, textarea {
 ::-webkit-scrollbar-thumb {
   background: var(--dos-gray);
 }
+
+@keyframes dos-dot {
+  0%, 55%, 100% { color: #555555; }
+  25% { color: #FFFFFF; }
+}
+
+.dos-dot-1 { animation: dos-dot 1.5s infinite 0s; }
+.dos-dot-2 { animation: dos-dot 1.5s infinite 0.5s; }
+.dos-dot-3 { animation: dos-dot 1.5s infinite 1.0s; }
+
+@keyframes dos-face-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+.face-a {
+  animation: dos-face-blink 0.7s steps(1) infinite 0s;
+}
+.face-b {
+  position: absolute;
+  left: 0;
+  animation: dos-face-blink 0.7s steps(1) infinite 0.35s;
+}

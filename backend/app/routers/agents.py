@@ -3,6 +3,7 @@ from typing import Annotated, Any, Literal, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import Session
 
@@ -129,3 +130,21 @@ async def get_agent_events(
     if agent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
     return await svc.get_agent_events(session, agent, since=since)
+
+
+@router.get("/{agent_id}/events/stream")
+async def stream_agent_events(
+    workspace_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    session: SessionDep,
+    since: int = 0,
+) -> StreamingResponse:
+    _require_workspace(workspace_id, session)
+    agent = svc.get_agent(session, workspace_id, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    return StreamingResponse(
+        svc.stream_agent_events(session, agent, since=since),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

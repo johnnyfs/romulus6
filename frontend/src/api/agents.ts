@@ -103,3 +103,45 @@ export async function getAgentEvents(
   if (!res.ok) throw new Error('Failed to fetch agent events')
   return res.json()
 }
+
+export async function streamAgentEvents(
+  workspaceId: string,
+  agentId: string,
+  since: number,
+  onEvent: (event: AgentEvent) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  const res = await fetch(
+    `/api/workspaces/${workspaceId}/agents/${agentId}/events/stream?since=${since}`,
+    { signal },
+  )
+  if (!res.ok || !res.body) return
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      // Process complete SSE messages (delimited by \n\n)
+      let boundary: number
+      while ((boundary = buffer.indexOf('\n\n')) !== -1) {
+        const message = buffer.slice(0, boundary)
+        buffer = buffer.slice(boundary + 2)
+        for (const line of message.split('\n')) {
+          if (line.startsWith('data: ')) {
+            try {
+              onEvent(JSON.parse(line.slice(6)))
+            } catch {}
+          }
+        }
+      }
+    }
+  } catch (err) {
+    if (!signal.aborted) throw err
+  }
+}

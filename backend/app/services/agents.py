@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import uuid
+from collections.abc import AsyncGenerator
 from typing import Any
 
 import httpx
@@ -148,3 +149,32 @@ async def get_agent_events(
         )
         resp.raise_for_status()
         return resp.json()
+
+
+async def stream_agent_events(
+    session: Session, agent: Agent, since: int = 0
+) -> AsyncGenerator[bytes, None]:
+    if agent.session_id is None:
+        return
+
+    sandbox = session.get(Sandbox, agent.sandbox_id)
+    if sandbox is None:
+        return
+
+    worker = session.get(Worker, sandbox.worker_id)
+    if worker is None or worker.worker_url is None:
+        return
+
+    worker_url = str(worker.worker_url)
+    session_id = str(agent.session_id)
+
+    async with httpx.AsyncClient() as client:
+        async with client.stream(
+            "GET",
+            f"{worker_url}/sessions/{session_id}/events",
+            params={"stream": "True", "since": str(since)},
+            timeout=None,
+        ) as resp:
+            resp.raise_for_status()
+            async for chunk in resp.aiter_bytes():
+                yield chunk

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   ANTHROPIC_MODELS,
@@ -12,48 +12,113 @@ import {
   getAgentEvents,
   listAgents,
   sendMessage,
+  streamAgentEvents,
 } from '../api/agents'
 import { getWorkspace, type Workspace } from '../api/workspaces'
 import AgentCard from '../components/AgentCard'
 
-interface FeedEvent {
-  event: AgentEvent
+// ─── Feed item types ────────────────────────────────────────────────────────
+
+interface ActivityBlock {
+  blockId: string
   agentId: string
+  latest: AgentEvent
+  history: AgentEvent[]
 }
 
-function renderEventContent(event: AgentEvent): React.ReactNode {
+type FeedItem =
+  | { kind: 'message'; agentId: string; event: AgentEvent; key: string }
+  | { kind: 'user'; agentId: string; prompt: string; timestamp: string; key: string }
+  | { kind: 'activity'; block: ActivityBlock }
+
+const ACTIVITY_TYPES = new Set(['tool.use', 'file.edit', 'command.output'])
+
+function isActivity(type: string): boolean {
+  return ACTIVITY_TYPES.has(type)
+}
+
+// ─── Event rendering ─────────────────────────────────────────────────────────
+
+function renderActivityEvent(event: AgentEvent): string {
   switch (event.type) {
-    case 'text.delta':
-    case 'text.complete':
-      return <span>{String(event.data.accumulated ?? event.data.delta ?? '')}</span>
     case 'file.edit':
-      return (
-        <span style={styles.pill}>
-          [✎ {String(event.data.path ?? 'file')}]
-        </span>
-      )
+      return `[✎ ${String(event.data.path ?? 'file')}]`
     case 'tool.use':
-      return (
-        <span style={styles.pill}>
-          [⚙ {String(event.data.tool ?? 'tool')}]
-        </span>
-      )
-    case 'command.output':
-      return (
-        <pre style={styles.pre}>
-          {'┌─ stdout ─┐\n'}
-          {String(event.data.stdout ?? '')}
-          {event.data.stderr ? `\n┌─ stderr ─┐\n${String(event.data.stderr)}` : ''}
-        </pre>
-      )
+      return `[⚙ ${String(event.data.tool ?? 'tool')}]`
+    case 'command.output': {
+      const out = String(event.data.stdout ?? '').trim()
+      const err = String(event.data.stderr ?? '').trim()
+      const preview = (out || err).slice(0, 80)
+      return `[$ ${preview}]`
+    }
     default:
-      return <span style={styles.systemMsg}>{event.type}</span>
+      return `[${event.type}]`
   }
 }
 
-function isSessionStatusEvent(type: string): boolean {
-  return type.startsWith('session.')
+function renderActivityHistory(event: AgentEvent): React.ReactNode {
+  switch (event.type) {
+    case 'file.edit':
+      return <span style={hist.cyan}>[✎ {String(event.data.path ?? 'file')}]</span>
+    case 'tool.use':
+      return <span style={hist.cyan}>[⚙ {String(event.data.tool ?? 'tool')}]</span>
+    case 'command.output':
+      return (
+        <pre style={hist.pre}>
+          {String(event.data.stdout ?? '')}
+          {event.data.stderr ? `\n[stderr]\n${String(event.data.stderr)}` : ''}
+        </pre>
+      )
+    default:
+      return <span style={hist.dim}>{event.type}</span>
+  }
 }
+
+const hist: Record<string, React.CSSProperties> = {
+  cyan: { color: '#55FFFF' },
+  dim: { color: '#AAAAAA', fontStyle: 'italic' },
+  pre: { margin: '2px 0 0 0', fontSize: '12px', color: '#AAAAAA', whiteSpace: 'pre-wrap', wordBreak: 'break-all' },
+}
+
+// ─── Activity block component ─────────────────────────────────────────────────
+
+function ActivityLine({
+  block,
+  expanded,
+  onToggle,
+  agentLabel,
+}: {
+  block: ActivityBlock
+  expanded: boolean
+  onToggle: () => void
+  agentLabel: string
+}) {
+  return (
+    <div style={styles.activityWrap}>
+      <div style={styles.activityRow}>
+        <button style={styles.chevron} onClick={onToggle} title="Toggle history">
+          {expanded ? '▼' : '►'}
+        </button>
+        <span style={styles.activityPrefix}>{agentLabel} ▶</span>
+        <span style={styles.activityLatest}>
+          {renderActivityEvent(block.latest)}
+        </span>
+      </div>
+      {expanded && (
+        <div style={styles.historyList}>
+          {block.history.map((ev) => (
+            <div key={ev.id} style={styles.historyItem}>
+              <span style={styles.historyBullet}>·</span>
+              {renderActivityHistory(ev)}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
 
 export default function WorkspaceDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -61,7 +126,9 @@ export default function WorkspaceDetailPage() {
   const [agents, setAgents] = useState<Agent[]>([])
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const [eventMap, setEventMap] = useState<Record<string, AgentEvent[]>>({})
-  const [sinceMap, setSinceMap] = useState<Record<string, number>>({})
+  const [agentBusy, setAgentBusy] = useState<Record<string, boolean>>({})
+  const [agentTerminal, setAgentTerminal] = useState<Record<string, boolean>>({})
+  const [expandedBlocks, setExpandedBlocks] = useState<Set<string>>(new Set())
   const [showForm, setShowForm] = useState(false)
   const [formModel, setFormModel] = useState(DEFAULT_MODEL)
   const [formPrompt, setFormPrompt] = useState('')
@@ -71,8 +138,18 @@ export default function WorkspaceDetailPage() {
   const [targetAgentId, setTargetAgentId] = useState<string>('new')
   const [userMessages, setUserMessages] = useState<
     { agentId: string; prompt: string; timestamp: string }[]
-  >([])
+  >(() => {
+    try {
+      const stored = localStorage.getItem(`user-messages-${id}`)
+      return stored ? JSON.parse(stored) : []
+    } catch {
+      return []
+    }
+  })
   const feedBottomRef = useRef<HTMLDivElement>(null)
+  const sseControllers = useRef<Map<string, AbortController>>(new Map())
+
+  // ── Data loading ─────────────────────────────────────────────────────────
 
   useEffect(() => {
     if (!id) return
@@ -82,67 +159,97 @@ export default function WorkspaceDetailPage() {
     })
   }, [id])
 
-  // Polling loop
+  // ── SSE connection management ─────────────────────────────────────────────
+
+  const startSSE = useCallback(
+    (agentId: string) => {
+      if (!id || sseControllers.current.has(agentId)) return
+      const ctrl = new AbortController()
+      sseControllers.current.set(agentId, ctrl)
+
+      streamAgentEvents(
+        id,
+        agentId,
+        0,
+        (event: AgentEvent) => {
+          // Skip session status events from the event map display
+          if (!event.type.startsWith('session.')) {
+            setEventMap((prev) => ({
+              ...prev,
+              [agentId]: [...(prev[agentId] ?? []), event],
+            }))
+          }
+          // Track busy / terminal state from session events
+          if (event.type === 'session.busy') {
+            setAgentBusy((prev) => ({ ...prev, [agentId]: true }))
+          } else if (event.type === 'session.idle') {
+            setAgentBusy((prev) => ({ ...prev, [agentId]: false }))
+          } else if (
+            event.type === 'session.completed' ||
+            event.type === 'session.error' ||
+            event.type === 'session.interrupted'
+          ) {
+            setAgentBusy((prev) => ({ ...prev, [agentId]: false }))
+            setAgentTerminal((prev) => ({ ...prev, [agentId]: true }))
+          }
+        },
+        ctrl.signal,
+      ).finally(() => {
+        // Stream ended (naturally or via abort) — clear so startSSE can reconnect
+        sseControllers.current.delete(agentId)
+      })
+    },
+    [id],
+  )
+
+  // Start SSE for terminal agents via REST (load-once), SSE for active agents
   useEffect(() => {
     if (!id || agents.length === 0) return
-    const timer = setInterval(async () => {
-      const activeAgents = agents.filter(
-        (a) => !TERMINAL_STATUSES.includes(a.status),
-      )
-      if (activeAgents.length === 0) return
-
-      const updates = await Promise.allSettled(
-        activeAgents.map((a) =>
-          getAgentEvents(id, a.id, sinceMap[a.id] ?? 0).then((evts) => ({
-            agentId: a.id,
-            evts,
-          })),
-        ),
-      )
-
-      setEventMap((prev) => {
-        const next = { ...prev }
-        for (const result of updates) {
-          if (result.status === 'fulfilled' && result.value.evts.length > 0) {
-            const { agentId, evts } = result.value
-            next[agentId] = [...(prev[agentId] ?? []), ...evts]
-          }
+    for (const agent of agents) {
+      if (TERMINAL_STATUSES.includes(agent.status)) {
+        if (!eventMap[agent.id]) {
+          getAgentEvents(id, agent.id, 0).then((evts) => {
+            setEventMap((prev) => ({
+              ...prev,
+              [agent.id]: evts.filter((e) => !e.type.startsWith('session.')),
+            }))
+            setAgentTerminal((prev) => ({ ...prev, [agent.id]: true }))
+          })
         }
-        return next
-      })
-
-      setSinceMap((prev) => {
-        const next = { ...prev }
-        for (const result of updates) {
-          if (result.status === 'fulfilled' && result.value.evts.length > 0) {
-            const { agentId, evts } = result.value
-            next[agentId] = (prev[agentId] ?? 0) + evts.length
-          }
-        }
-        return next
-      })
-    }, 2000)
-
-    return () => clearInterval(timer)
-  }, [id, agents, sinceMap])
-
-  // Auto-scroll feed to bottom
-  useEffect(() => {
-    feedBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [eventMap])
-
-  // Build unified feed: agent events + user messages, sorted by timestamp.
-  // Accumulate text.delta per message_id into a single bubble.
-  const feed: (FeedEvent & { accumulated?: boolean; isUser?: boolean })[] = (() => {
-    const all: FeedEvent[] = []
-    for (const [agentId, evts] of Object.entries(eventMap)) {
-      for (const event of evts) {
-        all.push({ event, agentId })
+      } else {
+        startSSE(agent.id)
       }
     }
-    // Inject user messages as synthetic events
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agents, id])
+
+  // Cleanup SSE connections on unmount
+  useEffect(() => {
+    return () => {
+      for (const ctrl of sseControllers.current.values()) ctrl.abort()
+    }
+  }, [])
+
+  // Persist user messages to localStorage
+  useEffect(() => {
+    if (id) localStorage.setItem(`user-messages-${id}`, JSON.stringify(userMessages))
+  }, [id, userMessages])
+
+  // Auto-scroll feed
+  useEffect(() => {
+    feedBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [eventMap, userMessages])
+
+  // ── Feed building ─────────────────────────────────────────────────────────
+
+  const feed = useMemo((): FeedItem[] => {
+    // Collect all events from all agents + user messages
+    const allRaw: { event: AgentEvent; agentId: string }[] = []
+    for (const [agentId, evts] of Object.entries(eventMap)) {
+      for (const ev of evts) allRaw.push({ event: ev, agentId })
+    }
     for (const msg of userMessages) {
-      all.push({
+      allRaw.push({
         agentId: msg.agentId,
         event: {
           id: `user-${msg.timestamp}`,
@@ -153,48 +260,91 @@ export default function WorkspaceDetailPage() {
         },
       })
     }
-    all.sort((a, b) => a.event.timestamp.localeCompare(b.event.timestamp))
+    allRaw.sort((a, b) => a.event.timestamp.localeCompare(b.event.timestamp))
 
-    // Collapse text.delta into accumulated bubbles, keyed by message_id
-    const collapsed: (FeedEvent & { accumulated?: boolean; isUser?: boolean })[] = []
+    const items: FeedItem[] = []
+    // Track current open text buffer per message_id
     const textBuffers: Record<string, { idx: number; text: string }> = {}
-    for (const item of all) {
-      if (item.event.type === 'text.delta') {
-        const key = String(item.event.data.message_id ?? item.event.session_id)
-        const chunk = String(item.event.data.delta ?? '')
+    // Track index of the most recent activity block per agent
+    const activityIdx: Record<string, number> = {}
+
+    for (const { event, agentId } of allRaw) {
+      if (event.type === 'text.delta') {
+        const key = String(event.data.message_id ?? event.data.session_id ?? agentId)
+        const chunk = String(event.data.delta ?? '')
         if (textBuffers[key] !== undefined) {
           textBuffers[key].text += chunk
-          const existing = collapsed[textBuffers[key].idx]
-          existing.event = {
-            ...existing.event,
-            data: { ...existing.event.data, accumulated: textBuffers[key].text },
+          const item = items[textBuffers[key].idx] as Extract<FeedItem, { kind: 'message' }>
+          item.event = {
+            ...item.event,
+            data: { ...item.event.data, accumulated: textBuffers[key].text },
           }
         } else {
-          const idx = collapsed.length
-          textBuffers[key] = { idx, text: chunk }
-          collapsed.push({
-            ...item,
-            accumulated: true,
-            event: { ...item.event, data: { ...item.event.data, accumulated: chunk } },
+          textBuffers[key] = { idx: items.length, text: chunk }
+          items.push({
+            kind: 'message',
+            agentId,
+            key: event.id,
+            event: { ...event, data: { ...event.data, accumulated: chunk } },
+          })
+          delete activityIdx[agentId]
+        }
+      } else if (event.type === 'text.complete') {
+        const key = String(event.data.message_id ?? event.data.session_id ?? agentId)
+        delete textBuffers[key]
+      } else if (event.type === 'user.message') {
+        items.push({
+          kind: 'user',
+          agentId,
+          key: event.id,
+          prompt: String(event.data.prompt ?? ''),
+          timestamp: event.timestamp,
+        })
+        delete activityIdx[agentId]
+      } else if (isActivity(event.type)) {
+        const idx = activityIdx[agentId]
+        if (idx !== undefined) {
+          // Update existing block in-place
+          const item = items[idx] as Extract<FeedItem, { kind: 'activity' }>
+          item.block = {
+            ...item.block,
+            latest: event,
+            history: [...item.block.history, event],
+          }
+        } else {
+          // Create new activity block; blockId is stable (keyed to first event)
+          const blockId = `act-${agentId}-${event.id}`
+          activityIdx[agentId] = items.length
+          items.push({
+            kind: 'activity',
+            block: { blockId, agentId, latest: event, history: [event] },
           })
         }
-      } else if (item.event.type === 'text.complete') {
-        const key = String(item.event.data.message_id ?? item.event.session_id)
-        delete textBuffers[key]
-      } else if (item.event.type === 'user.message') {
-        collapsed.push({ ...item, isUser: true })
-      } else {
-        collapsed.push(item)
       }
+      // session.* events: already excluded from eventMap, skip
     }
-    return collapsed
-  })()
+
+    return items
+  }, [eventMap, userMessages])
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
 
   function agentName(agentId: string): string {
     const a = agents.find((x) => x.id === agentId)
     if (!a) return 'agent'
     return a.name ?? `${a.agent_type}/${a.model.split('/')[1]}`
   }
+
+  function toggleBlock(blockId: string) {
+    setExpandedBlocks((prev) => {
+      const next = new Set(prev)
+      if (next.has(blockId)) next.delete(blockId)
+      else next.add(blockId)
+      return next
+    })
+  }
+
+  // ── Actions ───────────────────────────────────────────────────────────────
 
   async function handleCreateAgent(prompt: string, model: string, name: string) {
     if (!id || !prompt.trim()) return
@@ -211,6 +361,8 @@ export default function WorkspaceDetailPage() {
       setShowForm(false)
       setFormPrompt('')
       setFormName('')
+      // Start SSE immediately for new agent
+      startSSE(agent.id)
     } finally {
       setCreating(false)
     }
@@ -228,6 +380,9 @@ export default function WorkspaceDetailPage() {
           { agentId: targetAgentId, prompt: chatInput.trim(), timestamp: new Date().toISOString() },
         ])
         await sendMessage(id, targetAgentId, chatInput.trim())
+        // Agent will start a new session turn — clear terminal flag and reconnect SSE
+        setAgentTerminal((prev) => ({ ...prev, [targetAgentId]: false }))
+        startSSE(targetAgentId)
       }
       setChatInput('')
     } finally {
@@ -236,6 +391,8 @@ export default function WorkspaceDetailPage() {
   }
 
   const workspaceName = workspace?.name ?? '…'
+
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div style={styles.page}>
@@ -249,14 +406,11 @@ export default function WorkspaceDetailPage() {
 
       {/* Body */}
       <div style={styles.body}>
-        {/* Left column / sidebar */}
+        {/* Sidebar */}
         <div style={styles.sidebar}>
           <div style={styles.sidebarTitle}>╔══ AGENTS ══╗</div>
 
-          <button
-            style={styles.newAgentBtn}
-            onClick={() => setShowForm((v) => !v)}
-          >
+          <button style={styles.newAgentBtn} onClick={() => setShowForm((v) => !v)}>
             {showForm ? '[ ▲ Close Form ]' : '[ + New Agent  ]'}
           </button>
 
@@ -271,16 +425,12 @@ export default function WorkspaceDetailPage() {
                 >
                   <optgroup label="── Anthropic ──">
                     {ANTHROPIC_MODELS.map((m) => (
-                      <option key={m.value} value={m.value}>
-                        {m.label}
-                      </option>
+                      <option key={m.value} value={m.value}>{m.label}</option>
                     ))}
                   </optgroup>
                   <optgroup label="── OpenAI ──">
                     {OPENAI_MODELS.map((m) => (
-                      <option key={m.value} value={m.value}>
-                        {m.label}
-                      </option>
+                      <option key={m.value} value={m.value}>{m.label}</option>
                     ))}
                   </optgroup>
                 </select>
@@ -305,10 +455,7 @@ export default function WorkspaceDetailPage() {
                 />
               </div>
               <button
-                style={{
-                  ...styles.submitBtn,
-                  opacity: creating || !formPrompt.trim() ? 0.5 : 1,
-                }}
+                style={{ ...styles.submitBtn, opacity: creating || !formPrompt.trim() ? 0.5 : 1 }}
                 disabled={creating || !formPrompt.trim()}
                 onClick={() => handleCreateAgent(formPrompt, formModel, formName)}
               >
@@ -323,9 +470,12 @@ export default function WorkspaceDetailPage() {
                 key={agent.id}
                 agent={agent}
                 selected={selectedAgentId === agent.id}
+                isRunning={!agentTerminal[agent.id]}
                 onClick={() => setSelectedAgentId(agent.id)}
                 onDelete={async () => {
                   if (!id) return
+                  sseControllers.current.get(agent.id)?.abort()
+                  sseControllers.current.delete(agent.id)
                   await deleteAgent(id, agent.id)
                   setAgents((prev) => prev.filter((a) => a.id !== agent.id))
                   if (selectedAgentId === agent.id) setSelectedAgentId(null)
@@ -335,7 +485,7 @@ export default function WorkspaceDetailPage() {
           </div>
         </div>
 
-        {/* Main terminal area */}
+        {/* Main terminal */}
         <div style={styles.main}>
           <div style={styles.feed}>
             {feed.length === 0 && (
@@ -344,36 +494,64 @@ export default function WorkspaceDetailPage() {
                 Dispatch an agent to get started.
               </div>
             )}
+
             {feed.map((item, i) => {
-              const isSystem = isSessionStatusEvent(item.event.type)
-              if (item.isUser) {
+              if (item.kind === 'user') {
                 return (
-                  <div key={`${item.agentId}-${i}`} style={styles.userRow}>
+                  <div key={item.key} style={styles.userRow}>
                     <span style={styles.userPrefix}>YOU ▶ {agentName(item.agentId)}:</span>
-                    <span style={styles.userText}>{String(item.event.data.prompt ?? '')}</span>
+                    <span style={styles.userText}>{item.prompt}</span>
                   </div>
                 )
               }
-              if (isSystem) {
+
+              if (item.kind === 'message') {
                 return (
-                  <div key={`${item.agentId}-${i}`} style={styles.systemRow}>
-                    {'──── '}
-                    <span style={styles.systemLabel}>[{agentName(item.agentId)}]</span>
-                    {' '}{item.event.type}{' ────'}
+                  <div key={item.key} style={styles.msgRow}>
+                    <span style={styles.msgPrefix}>{agentName(item.agentId)} ▶</span>
+                    <span style={styles.msgText}>
+                      {String(item.event.data.accumulated ?? item.event.data.delta ?? '')}
+                    </span>
                   </div>
                 )
               }
+
+              // activity block
               return (
-                <div key={`${item.agentId}-${i}`} style={styles.eventRow}>
-                  <span style={styles.eventPrefix}>{agentName(item.agentId)} ▶</span>
-                  <span style={styles.eventContent}>
-                    {renderEventContent(item.event)}
-                  </span>
-                </div>
+                <ActivityLine
+                  key={item.block.blockId}
+                  block={item.block}
+                  expanded={expandedBlocks.has(item.block.blockId)}
+                  onToggle={() => toggleBlock(item.block.blockId)}
+                  agentLabel={agentName(item.block.agentId)}
+                />
               )
             })}
+
             <div ref={feedBottomRef} />
           </div>
+
+          {/* Per-agent status indicators (fixed above input bar) */}
+          {agents.some((a) => !agentTerminal[a.id]) && (
+            <div style={styles.statusBar}>
+              {agents
+                .filter((a) => !agentTerminal[a.id])
+                .map((a) => (
+                  <span key={a.id} style={styles.statusItem}>
+                    <span style={styles.statusName}>{agentName(a.id)}</span>
+                    {agentBusy[a.id] ? (
+                      <span style={styles.statusDots}>
+                        <span className="dos-dot-1">.</span>
+                        <span className="dos-dot-2">.</span>
+                        <span className="dos-dot-3">.</span>
+                      </span>
+                    ) : (
+                      <span style={styles.statusDotsIdle}>...</span>
+                    )}
+                  </span>
+                ))}
+            </div>
+          )}
 
           {/* Input bar */}
           <div style={styles.inputBar}>
@@ -404,10 +582,7 @@ export default function WorkspaceDetailPage() {
               }}
             />
             <button
-              style={{
-                ...styles.sendBtn,
-                opacity: creating || !chatInput.trim() ? 0.5 : 1,
-              }}
+              style={{ ...styles.sendBtn, opacity: creating || !chatInput.trim() ? 0.5 : 1 }}
               disabled={creating || !chatInput.trim()}
               onClick={handleChatSend}
             >
@@ -449,25 +624,10 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 'bold',
     flexShrink: 0,
   },
-  headerSep: {
-    color: '#555555',
-    flexShrink: 0,
-  },
-  title: {
-    fontWeight: 'bold',
-    flexShrink: 0,
-    letterSpacing: '0.5px',
-  },
-  headerFill: {
-    color: '#555555',
-    overflow: 'hidden',
-    flex: 1,
-  },
-  body: {
-    display: 'flex',
-    flex: 1,
-    overflow: 'hidden',
-  },
+  headerSep: { color: '#555555', flexShrink: 0 },
+  title: { fontWeight: 'bold', flexShrink: 0, letterSpacing: '0.5px' },
+  headerFill: { color: '#555555', overflow: 'hidden', flex: 1 },
+  body: { display: 'flex', flex: 1, overflow: 'hidden' },
   sidebar: {
     width: '260px',
     flexShrink: 0,
@@ -479,12 +639,7 @@ const styles: Record<string, React.CSSProperties> = {
     overflowY: 'auto',
     gap: '4px',
   },
-  sidebarTitle: {
-    color: '#55FFFF',
-    fontSize: '12px',
-    marginBottom: '4px',
-    textAlign: 'center',
-  },
+  sidebarTitle: { color: '#55FFFF', fontSize: '12px', marginBottom: '4px', textAlign: 'center' },
   newAgentBtn: {
     width: '100%',
     padding: '3px 0',
@@ -496,195 +651,92 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     marginBottom: '4px',
   },
-  form: {
-    border: '1px solid #AAAAAA',
-    padding: '6px',
-    marginBottom: '4px',
-    background: '#000066',
-  },
-  formRow: {
-    marginBottom: '4px',
-  },
-  label: {
-    display: 'block',
-    fontSize: '11px',
-    color: '#55FFFF',
-    marginBottom: '2px',
-  },
+  form: { border: '1px solid #AAAAAA', padding: '6px', marginBottom: '4px', background: '#000066' },
+  formRow: { marginBottom: '4px' },
+  label: { display: 'block', fontSize: '11px', color: '#55FFFF', marginBottom: '2px' },
   select: {
-    width: '100%',
-    padding: '2px 4px',
-    border: '1px solid #AAAAAA',
-    background: '#000080',
-    color: '#FFFFFF',
-    fontSize: '12px',
-    outline: 'none',
+    width: '100%', padding: '2px 4px', border: '1px solid #AAAAAA',
+    background: '#000080', color: '#FFFFFF', fontSize: '12px', outline: 'none',
   },
   input: {
-    width: '100%',
-    padding: '2px 4px',
-    border: '1px solid #AAAAAA',
-    background: '#000080',
-    color: '#FFFFFF',
-    fontSize: '12px',
-    outline: 'none',
+    width: '100%', padding: '2px 4px', border: '1px solid #AAAAAA',
+    background: '#000080', color: '#FFFFFF', fontSize: '12px', outline: 'none',
   },
   textarea: {
-    width: '100%',
-    padding: '2px 4px',
-    border: '1px solid #AAAAAA',
-    background: '#000080',
-    color: '#FFFFFF',
-    fontSize: '12px',
-    resize: 'vertical',
-    outline: 'none',
+    width: '100%', padding: '2px 4px', border: '1px solid #AAAAAA',
+    background: '#000080', color: '#FFFFFF', fontSize: '12px', resize: 'vertical', outline: 'none',
   },
   submitBtn: {
-    width: '100%',
-    padding: '3px 0',
-    background: '#AAAAAA',
-    color: '#000000',
-    border: '1px solid #FFFFFF',
-    fontSize: '13px',
-    fontWeight: 'bold',
-    cursor: 'pointer',
+    width: '100%', padding: '3px 0', background: '#AAAAAA', color: '#000000',
+    border: '1px solid #FFFFFF', fontSize: '13px', fontWeight: 'bold', cursor: 'pointer',
   },
-  agentList: {
-    flex: 1,
-  },
-  main: {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column',
-    overflow: 'hidden',
-    background: '#0000AA',
-  },
+  agentList: { flex: 1 },
+  main: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#0000AA' },
   feed: {
-    flex: 1,
-    overflowY: 'auto',
-    padding: '8px 12px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '3px',
+    flex: 1, overflowY: 'auto', padding: '8px 12px',
+    display: 'flex', flexDirection: 'column', gap: '2px',
   },
-  empty: {
-    color: '#AAAAAA',
-    fontSize: '12px',
-    textAlign: 'center',
-    marginTop: '3rem',
-    lineHeight: 1.8,
-  },
-  userRow: {
-    display: 'flex',
-    gap: '0.5rem',
-    flexWrap: 'wrap',
-    paddingLeft: '0',
-  },
-  userPrefix: {
-    color: '#FFFF55',
-    fontWeight: 'bold',
-    flexShrink: 0,
-    fontSize: '12px',
-  },
-  userText: {
-    color: '#FFFF55',
-    whiteSpace: 'pre-wrap',
-    wordBreak: 'break-word',
-    fontSize: '13px',
-  },
-  systemRow: {
-    color: '#AAAAAA',
-    fontSize: '11px',
-    textAlign: 'center',
-    padding: '2px 0',
-    fontStyle: 'italic',
-  },
-  systemLabel: {
-    color: '#55FFFF',
-  },
-  eventRow: {
-    display: 'flex',
-    gap: '0.5rem',
-    flexWrap: 'wrap',
-    alignItems: 'flex-start',
-  },
-  eventPrefix: {
-    color: '#55FFFF',
-    fontWeight: 'bold',
-    flexShrink: 0,
-    fontSize: '12px',
-  },
-  eventContent: {
-    color: '#FFFFFF',
-    whiteSpace: 'pre-wrap',
-    wordBreak: 'break-word',
-    fontSize: '13px',
-    flex: 1,
-  },
-  systemMsg: {
-    color: '#AAAAAA',
-    fontStyle: 'italic',
-    fontSize: '12px',
-  },
-  pill: {
-    color: '#55FFFF',
-    fontSize: '12px',
+  empty: { color: '#AAAAAA', fontSize: '12px', textAlign: 'center', marginTop: '3rem', lineHeight: 1.8 },
+
+  // User message row
+  userRow: { display: 'flex', gap: '6px', flexWrap: 'wrap' },
+  userPrefix: { color: '#FFFF55', fontWeight: 'bold', flexShrink: 0, fontSize: '12px' },
+  userText: { color: '#FFFF55', whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
+
+  // Agent text message row
+  msgRow: { display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'flex-start' },
+  msgPrefix: { color: '#55FFFF', fontWeight: 'bold', flexShrink: 0, fontSize: '12px' },
+  msgText: { color: '#FFFFFF', whiteSpace: 'pre-wrap', wordBreak: 'break-word', flex: 1 },
+
+  // Activity block
+  activityWrap: { display: 'flex', flexDirection: 'column' },
+  activityRow: { display: 'flex', alignItems: 'center', gap: '4px' },
+  chevron: {
+    background: 'none', border: 'none', color: '#AAAAAA', cursor: 'pointer',
+    fontSize: '11px', padding: '0', flexShrink: 0,
     fontFamily: 'Courier New, Courier, monospace',
   },
-  pre: {
-    margin: 0,
-    fontSize: '12px',
-    whiteSpace: 'pre-wrap',
-    wordBreak: 'break-all',
-    color: '#AAAAAA',
-    fontFamily: 'Courier New, Courier, monospace',
-  },
-  inputBar: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.375rem',
-    padding: '4px 8px',
-    borderTop: '1px solid #AAAAAA',
+  activityPrefix: { color: '#55FFFF', fontWeight: 'bold', fontSize: '12px', flexShrink: 0 },
+  activityLatest: { color: '#AAAAAA', fontSize: '12px' },
+  historyList: { paddingLeft: '28px', display: 'flex', flexDirection: 'column', gap: '1px' },
+  historyItem: { display: 'flex', gap: '4px', alignItems: 'flex-start', fontSize: '12px' },
+  historyBullet: { color: '#555555', flexShrink: 0 },
+
+  // Status bar (between feed and input)
+  statusBar: {
+    borderTop: '1px solid #003388',
     background: '#000066',
+    padding: '2px 12px',
+    display: 'flex',
+    gap: '1rem',
     flexShrink: 0,
+    flexWrap: 'wrap',
   },
-  inputLabel: {
-    color: '#55FFFF',
-    fontSize: '12px',
-    flexShrink: 0,
+  statusItem: { display: 'inline-flex', alignItems: 'baseline', gap: '3px' },
+  statusName: { color: '#AAAAAA', fontSize: '12px' },
+  statusDots: { color: '#FFFFFF', fontSize: '12px', letterSpacing: '1px' },
+  statusDotsIdle: { color: '#555555', fontSize: '12px', letterSpacing: '1px' },
+
+  // Input bar
+  inputBar: {
+    display: 'flex', alignItems: 'center', gap: '0.375rem',
+    padding: '4px 8px', borderTop: '1px solid #AAAAAA',
+    background: '#000066', flexShrink: 0,
   },
+  inputLabel: { color: '#55FFFF', fontSize: '12px', flexShrink: 0 },
   targetSelect: {
-    padding: '2px 4px',
-    border: '1px solid #AAAAAA',
-    background: '#000080',
-    color: '#FFFFFF',
-    fontSize: '12px',
-    flexShrink: 0,
-    maxWidth: '150px',
-    outline: 'none',
+    padding: '2px 4px', border: '1px solid #AAAAAA',
+    background: '#000080', color: '#FFFFFF', fontSize: '12px',
+    flexShrink: 0, maxWidth: '150px', outline: 'none',
   },
-  inputPrompt: {
-    color: '#55FFFF',
-    fontSize: '14px',
-    flexShrink: 0,
-  },
+  inputPrompt: { color: '#55FFFF', fontSize: '14px', flexShrink: 0 },
   chatInput: {
-    flex: 1,
-    padding: '2px 6px',
-    border: '1px solid #AAAAAA',
-    background: '#000080',
-    color: '#FFFFFF',
-    fontSize: '13px',
-    outline: 'none',
+    flex: 1, padding: '2px 6px', border: '1px solid #AAAAAA',
+    background: '#000080', color: '#FFFFFF', fontSize: '13px', outline: 'none',
   },
   sendBtn: {
-    padding: '2px 10px',
-    background: '#AAAAAA',
-    color: '#000000',
-    border: '1px solid #FFFFFF',
-    fontWeight: 'bold',
-    fontSize: '13px',
-    cursor: 'pointer',
-    flexShrink: 0,
+    padding: '2px 10px', background: '#AAAAAA', color: '#000000',
+    border: '1px solid #FFFFFF', fontWeight: 'bold', fontSize: '13px',
+    cursor: 'pointer', flexShrink: 0,
   },
 }
