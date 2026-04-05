@@ -3,7 +3,7 @@ export
 
 DB_CONTAINER = romulus6-db
 
-.PHONY: dev backend db stop-db frontend install-frontend migrate makemigrations install-tests test-backend
+.PHONY: dev backend db stop-db frontend install-frontend migrate makemigrations install-tests test-backend worker worker-build worker-deploy
 
 dev: db backend
 
@@ -15,7 +15,10 @@ db:
 		-e POSTGRES_PASSWORD=$(DB_PASSWORD) \
 		-e POSTGRES_DB=$(DB_NAME) \
 		-p $(DB_PORT):5432 \
+		-v $(PWD)/.pg-data:/var/lib/postgresql/data \
 		postgres:16
+	@echo "Waiting for postgres..."
+	@until docker exec $(DB_CONTAINER) pg_isready -U $(DB_USER) -d $(DB_NAME) -q; do sleep 1; done
 
 backend: migrate
 	cd backend && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port $(BACKEND_PORT)
@@ -40,3 +43,12 @@ install-tests:
 
 test-backend:
 	cd tests && npm run test
+
+worker:
+	cd worker && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
+
+worker-build:
+	eval $$(minikube docker-env) && docker build -t worker:latest worker/
+
+worker-deploy: worker-build
+	kubectl apply -f worker/k8s/
