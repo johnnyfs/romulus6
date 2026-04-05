@@ -51,6 +51,7 @@ async def create_agent(
     sandbox, worker = sandbox_svc.create_sandbox(session, workspace_id, name)
 
     if worker.worker_url is None:
+        sandbox_svc.delete_sandbox(session, workspace_id, sandbox.id)
         raise RuntimeError("Worker URL not available")
 
     agent = Agent(
@@ -66,15 +67,21 @@ async def create_agent(
     session.commit()
     session.refresh(agent)
 
-    data = await _post_session_with_retry(
-        worker.worker_url,
-        payload={
-            "prompt": prompt,
-            "agent_type": agent_type.value,
-            "model": model,
-            "workspace_name": str(workspace_id),
-        },
-    )
+    try:
+        data = await _post_session_with_retry(
+            worker.worker_url,
+            payload={
+                "prompt": prompt,
+                "agent_type": agent_type.value,
+                "model": model,
+                "workspace_name": str(workspace_id),
+            },
+        )
+    except Exception:
+        # Clean up the orphaned agent, sandbox, and K8s worker so they don't
+        # accumulate across failed creation attempts.
+        delete_agent(session, workspace_id, agent.id)
+        raise
 
     agent.session_id = data["session"]["id"]
     agent.updated_at = datetime.datetime.utcnow()
@@ -159,9 +166,41 @@ def _persist_event(
     session.commit()
 
 
+async def _sync_events_from_worker(
+    session: Session, agent: Agent
+) -> None:
+    """Fetch events from the worker and persist any that are missing in the DB."""
+    if agent.session_id is None or agent.sandbox_id is None:
+        return
+
+    sandbox = session.get(Sandbox, agent.sandbox_id)
+    if sandbox is None or sandbox.worker_id is None:
+        return
+
+    worker = session.get(Worker, sandbox.worker_id)
+    if worker is None or worker.worker_url is None:
+        return
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{worker.worker_url}/sessions/{agent.session_id}/events",
+                params={"stream": "false"},
+                timeout=5.0,
+            )
+            if resp.status_code != 200:
+                return
+            for payload in resp.json():
+                _persist_event(session, agent.workspace_id, agent.id, payload)
+    except Exception:
+        pass  # best-effort: never block the read path on sync failures
+
+
 async def get_agent_events(
     session: Session, agent: Agent, since: int = 0
 ) -> list[dict[str, Any]]:
+    await _sync_events_from_worker(session, agent)
+
     results = session.exec(
         select(Event)
         .where(Event.workspace_id == agent.workspace_id)
