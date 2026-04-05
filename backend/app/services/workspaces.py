@@ -17,6 +17,10 @@ def create_workspace(session: Session, name: str) -> Workspace:
     return workspace
 
 
+def get_workspace(session: Session, id: uuid.UUID) -> Workspace | None:
+    return session.get(Workspace, id)
+
+
 def delete_workspace(session: Session, id: uuid.UUID) -> bool:
     workspace = session.get(Workspace, id)
     if workspace is None:

@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import type { Workspace } from '../api/workspaces'
 
 interface Props {
@@ -9,7 +10,9 @@ export default function WorkspaceCard({ workspace, onDelete }: Props) {
   return (
     <div style={styles.card}>
       <div>
-        <div style={styles.name}>{workspace.name}</div>
+        <Link to={`/workspaces/${workspace.id}`} style={styles.nameLink}>
+          {workspace.name}
+        </Link>
         <div style={styles.id}>{workspace.id}</div>
       </div>
       <button style={styles.deleteBtn} onClick={() => onDelete(workspace.id)}>
@@ -29,10 +32,13 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '0.5rem',
     background: '#fff',
   },
-  name: {
+  nameLink: {
+    display: 'block',
     fontWeight: 600,
     fontSize: '1rem',
     marginBottom: '0.25rem',
+    color: 'inherit',
+    textDecoration: 'none',
   },
   id: {
     fontSize: '0.75rem',

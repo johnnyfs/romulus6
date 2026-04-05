@@ -5,6 +5,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import k8s
+from app.routers.agents import router as agents_router
+from app.routers.graphs import router as graphs_router
 from app.routers.sandboxes import router as sandboxes_router
 from app.routers.workspaces import router as workspaces_router
 
@@ -27,6 +29,8 @@ app.add_middleware(
 
 app.include_router(workspaces_router, prefix="/api/v1")
 app.include_router(sandboxes_router, prefix="/api/v1")
+app.include_router(agents_router, prefix="/api/v1")
+app.include_router(graphs_router, prefix="/api/v1")
 
 
 @app.get("/health")

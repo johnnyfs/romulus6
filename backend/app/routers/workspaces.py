@@ -28,6 +28,14 @@ def create_workspace(body: CreateWorkspaceRequest, session: SessionDep):
     return svc.create_workspace(session, body.name)
 
 
+@router.get("/{id}", response_model=Workspace)
+def get_workspace(id: uuid.UUID, session: SessionDep):
+    workspace = svc.get_workspace(session, id)
+    if workspace is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
+    return workspace
+
+
 @router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_workspace(id: uuid.UUID, session: SessionDep):
     if not svc.delete_workspace(session, id):

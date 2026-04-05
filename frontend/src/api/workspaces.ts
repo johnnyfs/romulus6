@@ -19,6 +19,12 @@ export async function createWorkspace(name: string): Promise<Workspace> {
   return res.json()
 }
 
+export async function getWorkspace(id: string): Promise<Workspace> {
+  const res = await fetch(`/api/workspaces/${id}`)
+  if (!res.ok) throw new Error('Workspace not found')
+  return res.json()
+}
+
 export async function deleteWorkspace(id: string): Promise<void> {
   const res = await fetch(`/api/workspaces/${id}`, { method: 'DELETE' })
   if (!res.ok) throw new Error('Failed to delete workspace')
