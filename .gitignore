@@ -50,6 +50,11 @@ Thumbs.db
 htmlcov/
 .tox/
 
+# Playwright
+tests/node_modules
+tests/playwright-report
+tests/test-results
+
 # mypy / type checkers
 .mypy_cache/
 .dmypy.json
