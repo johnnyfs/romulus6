@@ -33,29 +33,45 @@ export default function WorkspacesPage() {
 
   return (
     <div style={styles.page}>
-      <h1 style={styles.heading}>Workspaces</h1>
+      <div style={styles.window}>
+        {/* Title bar */}
+        <div style={styles.titleBar}>
+          ═══════════════════ WORKSPACES ═══════════════════
+        </div>
 
-      <form onSubmit={handleCreate} style={styles.form}>
-        <input
-          style={styles.input}
-          type="text"
-          placeholder="Workspace name"
-          value={newName}
-          onChange={(e) => setNewName(e.target.value)}
-        />
-        <button style={styles.createBtn} type="submit" disabled={creating}>
-          {creating ? 'Creating…' : 'New Workspace'}
-        </button>
-      </form>
+        {/* Window body */}
+        <div style={styles.windowBody}>
+          <form onSubmit={handleCreate} style={styles.form}>
+            <span style={styles.prompt}>▶</span>
+            <input
+              style={styles.input}
+              type="text"
+              placeholder="workspace name"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+            />
+            <button style={styles.createBtn} type="submit" disabled={creating}>
+              {creating ? '[ Creating… ]' : '[ New Workspace ]'}
+            </button>
+          </form>
 
-      <div style={styles.list}>
-        {workspaces.length === 0 ? (
-          <p style={styles.empty}>No workspaces yet.</p>
-        ) : (
-          workspaces.map((ws) => (
-            <WorkspaceCard key={ws.id} workspace={ws} onDelete={handleDelete} />
-          ))
-        )}
+          <div style={styles.divider}>{'─'.repeat(56)}</div>
+
+          <div style={styles.list}>
+            {workspaces.length === 0 ? (
+              <p style={styles.empty}>No workspaces yet.</p>
+            ) : (
+              workspaces.map((ws) => (
+                <WorkspaceCard key={ws.id} workspace={ws} onDelete={handleDelete} />
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* Status bar */}
+        <div style={styles.statusBar}>
+          F1-Help  F2-New  F10-Menu
+        </div>
       </div>
     </div>
   )
@@ -63,45 +79,81 @@ export default function WorkspacesPage() {
 
 const styles: Record<string, React.CSSProperties> = {
   page: {
-    maxWidth: '640px',
-    margin: '3rem auto',
-    padding: '0 1rem',
-    fontFamily: 'system-ui, sans-serif',
+    minHeight: '100vh',
+    background: '#0000AA',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '2rem 1rem',
   },
-  heading: {
-    fontSize: '1.75rem',
-    fontWeight: 700,
-    marginBottom: '1.5rem',
+  window: {
+    width: '600px',
+    maxWidth: '100%',
+    border: '1px solid #AAAAAA',
+    background: '#000080',
+    boxShadow: '4px 4px 0 #000000',
+  },
+  titleBar: {
+    background: '#AAAAAA',
+    color: '#000000',
+    padding: '2px 8px',
+    fontWeight: 'bold',
+    fontSize: '13px',
+    textAlign: 'center',
+    letterSpacing: '0.5px',
+  },
+  windowBody: {
+    padding: '1rem',
   },
   form: {
     display: 'flex',
-    gap: '0.75rem',
-    marginBottom: '1.5rem',
+    alignItems: 'center',
+    gap: '0.5rem',
+    marginBottom: '0.75rem',
+  },
+  prompt: {
+    color: '#55FFFF',
+    fontSize: '14px',
+    flexShrink: 0,
   },
   input: {
     flex: 1,
-    padding: '0.5rem 0.75rem',
-    border: '1px solid #cbd5e1',
-    borderRadius: '0.375rem',
-    fontSize: '0.875rem',
+    padding: '3px 6px',
+    border: '1px solid #AAAAAA',
+    background: '#000066',
+    color: '#FFFFFF',
+    fontSize: '14px',
+    outline: 'none',
   },
   createBtn: {
-    padding: '0.5rem 1rem',
-    background: '#3b82f6',
-    color: '#fff',
-    border: 'none',
-    borderRadius: '0.375rem',
+    padding: '3px 8px',
+    background: '#AAAAAA',
+    color: '#000000',
+    border: '1px solid #FFFFFF',
+    fontSize: '13px',
+    fontWeight: 'bold',
     cursor: 'pointer',
-    fontSize: '0.875rem',
-    fontWeight: 500,
+    flexShrink: 0,
+  },
+  divider: {
+    color: '#AAAAAA',
+    fontSize: '13px',
+    marginBottom: '0.5rem',
+    overflow: 'hidden',
   },
   list: {
     display: 'flex',
     flexDirection: 'column',
-    gap: '0.75rem',
   },
   empty: {
-    color: '#94a3b8',
-    fontSize: '0.875rem',
+    color: '#AAAAAA',
+    fontSize: '13px',
+    padding: '0.5rem 0',
+  },
+  statusBar: {
+    background: '#AAAAAA',
+    color: '#000000',
+    padding: '2px 8px',
+    fontSize: '12px',
   },
 }

@@ -17,8 +17,14 @@ class Graph(SQLModel, table=True):
     created_at: datetime.datetime = Field(default_factory=datetime.datetime.utcnow)
     updated_at: datetime.datetime = Field(default_factory=datetime.datetime.utcnow)
 
-    nodes: List["GraphNode"] = Relationship(back_populates="graph")
-    edges: List["GraphEdge"] = Relationship(back_populates="graph")
+    nodes: List["GraphNode"] = Relationship(
+        back_populates="graph",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+    edges: List["GraphEdge"] = Relationship(
+        back_populates="graph",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
 
 
 class GraphNode(SQLModel, table=True):
@@ -30,11 +36,17 @@ class GraphNode(SQLModel, table=True):
     graph: Optional[Graph] = Relationship(back_populates="nodes")
     outgoing_edges: List["GraphEdge"] = Relationship(
         back_populates="from_node",
-        sa_relationship_kwargs={"foreign_keys": "[GraphEdge.from_node_id]"},
+        sa_relationship_kwargs={
+            "foreign_keys": "[GraphEdge.from_node_id]",
+            "passive_deletes": True,
+        },
     )
     incoming_edges: List["GraphEdge"] = Relationship(
         back_populates="to_node",
-        sa_relationship_kwargs={"foreign_keys": "[GraphEdge.to_node_id]"},
+        sa_relationship_kwargs={
+            "foreign_keys": "[GraphEdge.to_node_id]",
+            "passive_deletes": True,
+        },
     )
 
 

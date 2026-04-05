@@ -29,20 +29,21 @@ function renderEventContent(event: AgentEvent): React.ReactNode {
     case 'file.edit':
       return (
         <span style={styles.pill}>
-          ✎ {String(event.data.path ?? 'file')}
+          [✎ {String(event.data.path ?? 'file')}]
         </span>
       )
     case 'tool.use':
       return (
         <span style={styles.pill}>
-          ⚙ {String(event.data.tool ?? 'tool')}
+          [⚙ {String(event.data.tool ?? 'tool')}]
         </span>
       )
     case 'command.output':
       return (
         <pre style={styles.pre}>
+          {'┌─ stdout ─┐\n'}
           {String(event.data.stdout ?? '')}
-          {event.data.stderr ? `\n${String(event.data.stderr)}` : ''}
+          {event.data.stderr ? `\n┌─ stderr ─┐\n${String(event.data.stderr)}` : ''}
         </pre>
       )
     default:
@@ -192,7 +193,7 @@ export default function WorkspaceDetailPage() {
   function agentName(agentId: string): string {
     const a = agents.find((x) => x.id === agentId)
     if (!a) return 'agent'
-    return a.name ?? `${a.agent_type} / ${a.model.split('/')[1]}`
+    return a.name ?? `${a.agent_type}/${a.model.split('/')[1]}`
   }
 
   async function handleCreateAgent(prompt: string, model: string, name: string) {
@@ -234,44 +235,48 @@ export default function WorkspaceDetailPage() {
     }
   }
 
+  const workspaceName = workspace?.name ?? '…'
+
   return (
     <div style={styles.page}>
-      {/* Header */}
+      {/* Header / menu bar */}
       <div style={styles.header}>
-        <Link to="/workspaces" style={styles.back}>
-          ← Back
-        </Link>
-        <span style={styles.title}>{workspace?.name ?? '…'}</span>
+        <Link to="/workspaces" style={styles.back}>[ ← Back ]</Link>
+        <span style={styles.headerSep}>══</span>
+        <span style={styles.title}>{workspaceName.toUpperCase()}</span>
+        <span style={styles.headerFill}>{'═'.repeat(40)}</span>
       </div>
 
       {/* Body */}
       <div style={styles.body}>
-        {/* Left column */}
+        {/* Left column / sidebar */}
         <div style={styles.sidebar}>
+          <div style={styles.sidebarTitle}>╔══ AGENTS ══╗</div>
+
           <button
             style={styles.newAgentBtn}
             onClick={() => setShowForm((v) => !v)}
           >
-            + New Agent
+            {showForm ? '[ ▲ Close Form ]' : '[ + New Agent  ]'}
           </button>
 
           {showForm && (
             <div style={styles.form}>
               <div style={styles.formRow}>
-                <label style={styles.label}>Model</label>
+                <label style={styles.label}>Model:</label>
                 <select
                   style={styles.select}
                   value={formModel}
                   onChange={(e) => setFormModel(e.target.value)}
                 >
-                  <optgroup label="Anthropic">
+                  <optgroup label="── Anthropic ──">
                     {ANTHROPIC_MODELS.map((m) => (
                       <option key={m.value} value={m.value}>
                         {m.label}
                       </option>
                     ))}
                   </optgroup>
-                  <optgroup label="OpenAI">
+                  <optgroup label="── OpenAI ──">
                     {OPENAI_MODELS.map((m) => (
                       <option key={m.value} value={m.value}>
                         {m.label}
@@ -281,16 +286,16 @@ export default function WorkspaceDetailPage() {
                 </select>
               </div>
               <div style={styles.formRow}>
-                <label style={styles.label}>Name (optional)</label>
+                <label style={styles.label}>Name (opt):</label>
                 <input
                   style={styles.input}
                   value={formName}
                   onChange={(e) => setFormName(e.target.value)}
-                  placeholder="Agent name"
+                  placeholder="agent name"
                 />
               </div>
               <div style={styles.formRow}>
-                <label style={styles.label}>Prompt</label>
+                <label style={styles.label}>Prompt:</label>
                 <textarea
                   style={styles.textarea}
                   value={formPrompt}
@@ -300,11 +305,14 @@ export default function WorkspaceDetailPage() {
                 />
               </div>
               <button
-                style={styles.submitBtn}
+                style={{
+                  ...styles.submitBtn,
+                  opacity: creating || !formPrompt.trim() ? 0.5 : 1,
+                }}
                 disabled={creating || !formPrompt.trim()}
                 onClick={() => handleCreateAgent(formPrompt, formModel, formName)}
               >
-                {creating ? 'Starting…' : 'Dispatch'}
+                {creating ? '[ Dispatching… ]' : '[   Dispatch   ]'}
               </button>
             </div>
           )}
@@ -327,48 +335,49 @@ export default function WorkspaceDetailPage() {
           </div>
         </div>
 
-        {/* Main chat area */}
+        {/* Main terminal area */}
         <div style={styles.main}>
           <div style={styles.feed}>
             {feed.length === 0 && (
-              <div style={styles.empty}>No events yet. Dispatch an agent to get started.</div>
+              <div style={styles.empty}>
+                {'─'.repeat(20)} NO EVENTS {'─'.repeat(20)}<br />
+                Dispatch an agent to get started.
+              </div>
             )}
             {feed.map((item, i) => {
               const isSystem = isSessionStatusEvent(item.event.type)
               if (item.isUser) {
                 return (
                   <div key={`${item.agentId}-${i}`} style={styles.userRow}>
-                    <div style={styles.userBubble}>
-                      {String(item.event.data.prompt ?? '')}
-                    </div>
-                    <div style={styles.userLabel}>you → {agentName(item.agentId)}</div>
+                    <span style={styles.userPrefix}>YOU ▶ {agentName(item.agentId)}:</span>
+                    <span style={styles.userText}>{String(item.event.data.prompt ?? '')}</span>
+                  </div>
+                )
+              }
+              if (isSystem) {
+                return (
+                  <div key={`${item.agentId}-${i}`} style={styles.systemRow}>
+                    {'──── '}
+                    <span style={styles.systemLabel}>[{agentName(item.agentId)}]</span>
+                    {' '}{item.event.type}{' ────'}
                   </div>
                 )
               }
               return (
-                <div
-                  key={`${item.agentId}-${i}`}
-                  style={isSystem ? styles.systemRow : styles.eventRow}
-                >
-                  {isSystem ? (
-                    <span style={styles.systemMsg}>
-                      [{agentName(item.agentId)}] {item.event.type}
-                    </span>
-                  ) : (
-                    <>
-                      <div style={styles.eventLabel}>{agentName(item.agentId)}</div>
-                      <div style={styles.bubble}>
-                        {renderEventContent(item.event)}
-                      </div>
-                    </>
-                  )}
+                <div key={`${item.agentId}-${i}`} style={styles.eventRow}>
+                  <span style={styles.eventPrefix}>{agentName(item.agentId)} ▶</span>
+                  <span style={styles.eventContent}>
+                    {renderEventContent(item.event)}
+                  </span>
                 </div>
               )
             })}
             <div ref={feedBottomRef} />
           </div>
 
+          {/* Input bar */}
           <div style={styles.inputBar}>
+            <span style={styles.inputLabel}>Agent:</span>
             <select
               style={styles.targetSelect}
               value={targetAgentId}
@@ -377,15 +386,16 @@ export default function WorkspaceDetailPage() {
               <option value="new">+ New agent</option>
               {agents.map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.name ?? `${a.agent_type} / ${a.model.split('/')[1]}`}
+                  {a.name ?? `${a.agent_type}/${a.model.split('/')[1]}`}
                 </option>
               ))}
             </select>
+            <span style={styles.inputPrompt}>▶</span>
             <input
               style={styles.chatInput}
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
-              placeholder={targetAgentId === 'new' ? 'Dispatch a new agent…' : 'Send a message…'}
+              placeholder={targetAgentId === 'new' ? 'dispatch a new agent…' : 'send a message…'}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault()
@@ -394,11 +404,14 @@ export default function WorkspaceDetailPage() {
               }}
             />
             <button
-              style={styles.sendBtn}
+              style={{
+                ...styles.sendBtn,
+                opacity: creating || !chatInput.trim() ? 0.5 : 1,
+              }}
               disabled={creating || !chatInput.trim()}
               onClick={handleChatSend}
             >
-              Send
+              [ Send ]
             </button>
           </div>
         </div>
@@ -413,26 +426,42 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     height: '100vh',
     maxWidth: '100%',
-    textAlign: 'left',
     overflow: 'hidden',
+    background: '#0000AA',
+    fontFamily: 'Courier New, Courier, monospace',
+    fontSize: '13px',
+    color: '#FFFFFF',
   },
   header: {
     display: 'flex',
     alignItems: 'center',
-    gap: '1rem',
-    padding: '0.75rem 1.5rem',
-    borderBottom: '1px solid #e2e8f0',
-    background: '#fff',
+    gap: '0.5rem',
+    padding: '2px 8px',
+    background: '#AAAAAA',
+    color: '#000000',
     flexShrink: 0,
+    fontSize: '13px',
+    overflow: 'hidden',
   },
   back: {
-    color: '#64748b',
+    color: '#000000',
     textDecoration: 'none',
-    fontSize: '0.875rem',
+    fontWeight: 'bold',
+    flexShrink: 0,
+  },
+  headerSep: {
+    color: '#555555',
+    flexShrink: 0,
   },
   title: {
-    fontWeight: 700,
-    fontSize: '1.125rem',
+    fontWeight: 'bold',
+    flexShrink: 0,
+    letterSpacing: '0.5px',
+  },
+  headerFill: {
+    color: '#555555',
+    overflow: 'hidden',
+    flex: 1,
   },
   body: {
     display: 'flex',
@@ -440,78 +469,84 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
   },
   sidebar: {
-    width: '280px',
+    width: '260px',
     flexShrink: 0,
-    borderRight: '1px solid #e2e8f0',
-    background: '#f8fafc',
+    borderRight: '1px solid #AAAAAA',
+    background: '#000080',
     display: 'flex',
     flexDirection: 'column',
-    padding: '1rem',
+    padding: '6px 8px',
     overflowY: 'auto',
+    gap: '4px',
+  },
+  sidebarTitle: {
+    color: '#55FFFF',
+    fontSize: '12px',
+    marginBottom: '4px',
+    textAlign: 'center',
   },
   newAgentBtn: {
     width: '100%',
-    padding: '0.5rem',
-    background: '#aa3bff',
-    color: '#fff',
-    border: 'none',
-    borderRadius: '0.5rem',
-    fontWeight: 600,
-    fontSize: '0.875rem',
+    padding: '3px 0',
+    background: '#AAAAAA',
+    color: '#000000',
+    border: '1px solid #FFFFFF',
+    fontSize: '13px',
+    fontWeight: 'bold',
     cursor: 'pointer',
-    marginBottom: '0.75rem',
+    marginBottom: '4px',
   },
   form: {
-    background: '#fff',
-    border: '1px solid #e2e8f0',
-    borderRadius: '0.5rem',
-    padding: '0.75rem',
-    marginBottom: '0.75rem',
+    border: '1px solid #AAAAAA',
+    padding: '6px',
+    marginBottom: '4px',
+    background: '#000066',
   },
   formRow: {
-    marginBottom: '0.5rem',
+    marginBottom: '4px',
   },
   label: {
     display: 'block',
-    fontSize: '0.75rem',
-    fontWeight: 600,
-    color: '#475569',
-    marginBottom: '0.25rem',
+    fontSize: '11px',
+    color: '#55FFFF',
+    marginBottom: '2px',
   },
   select: {
     width: '100%',
-    padding: '0.375rem 0.5rem',
-    border: '1px solid #e2e8f0',
-    borderRadius: '0.375rem',
-    fontSize: '0.8125rem',
-    boxSizing: 'border-box',
+    padding: '2px 4px',
+    border: '1px solid #AAAAAA',
+    background: '#000080',
+    color: '#FFFFFF',
+    fontSize: '12px',
+    outline: 'none',
   },
   input: {
     width: '100%',
-    padding: '0.375rem 0.5rem',
-    border: '1px solid #e2e8f0',
-    borderRadius: '0.375rem',
-    fontSize: '0.8125rem',
-    boxSizing: 'border-box',
+    padding: '2px 4px',
+    border: '1px solid #AAAAAA',
+    background: '#000080',
+    color: '#FFFFFF',
+    fontSize: '12px',
+    outline: 'none',
   },
   textarea: {
     width: '100%',
-    padding: '0.375rem 0.5rem',
-    border: '1px solid #e2e8f0',
-    borderRadius: '0.375rem',
-    fontSize: '0.8125rem',
+    padding: '2px 4px',
+    border: '1px solid #AAAAAA',
+    background: '#000080',
+    color: '#FFFFFF',
+    fontSize: '12px',
     resize: 'vertical',
-    boxSizing: 'border-box',
+    outline: 'none',
   },
   submitBtn: {
     width: '100%',
-    padding: '0.5rem',
-    background: '#aa3bff',
-    color: '#fff',
-    border: 'none',
-    borderRadius: '0.375rem',
-    fontWeight: 600,
-    fontSize: '0.8125rem',
+    padding: '3px 0',
+    background: '#AAAAAA',
+    color: '#000000',
+    border: '1px solid #FFFFFF',
+    fontSize: '13px',
+    fontWeight: 'bold',
     cursor: 'pointer',
   },
   agentList: {
@@ -522,122 +557,134 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     overflow: 'hidden',
+    background: '#0000AA',
   },
   feed: {
     flex: 1,
     overflowY: 'auto',
-    padding: '1rem 1.5rem',
+    padding: '8px 12px',
     display: 'flex',
     flexDirection: 'column',
-    gap: '0.5rem',
+    gap: '3px',
   },
   empty: {
-    color: '#94a3b8',
-    fontSize: '0.875rem',
+    color: '#AAAAAA',
+    fontSize: '12px',
     textAlign: 'center',
-    marginTop: '2rem',
-  },
-  eventRow: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '0.125rem',
-    maxWidth: '720px',
-  },
-  systemRow: {
-    display: 'flex',
-    justifyContent: 'center',
-    padding: '0.25rem 0',
-  },
-  eventLabel: {
-    fontSize: '0.6875rem',
-    fontWeight: 600,
-    color: '#94a3b8',
-    textTransform: 'uppercase',
-    letterSpacing: '0.05em',
-  },
-  bubble: {
-    background: '#f1f5f9',
-    borderRadius: '0 0.75rem 0.75rem 0.75rem',
-    padding: '0.5rem 0.75rem',
-    fontSize: '0.875rem',
-    lineHeight: 1.6,
-    whiteSpace: 'pre-wrap',
-    wordBreak: 'break-word',
+    marginTop: '3rem',
+    lineHeight: 1.8,
   },
   userRow: {
     display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'flex-end',
-    gap: '0.125rem',
-    maxWidth: '720px',
-    alignSelf: 'flex-end',
+    gap: '0.5rem',
+    flexWrap: 'wrap',
+    paddingLeft: '0',
   },
-  userBubble: {
-    background: '#aa3bff',
-    color: '#fff',
-    borderRadius: '0.75rem 0 0.75rem 0.75rem',
-    padding: '0.5rem 0.75rem',
-    fontSize: '0.875rem',
-    lineHeight: 1.6,
+  userPrefix: {
+    color: '#FFFF55',
+    fontWeight: 'bold',
+    flexShrink: 0,
+    fontSize: '12px',
+  },
+  userText: {
+    color: '#FFFF55',
     whiteSpace: 'pre-wrap',
     wordBreak: 'break-word',
+    fontSize: '13px',
   },
-  userLabel: {
-    fontSize: '0.6875rem',
-    color: '#94a3b8',
-  },
-  systemMsg: {
-    fontSize: '0.75rem',
-    color: '#94a3b8',
+  systemRow: {
+    color: '#AAAAAA',
+    fontSize: '11px',
+    textAlign: 'center',
+    padding: '2px 0',
     fontStyle: 'italic',
   },
+  systemLabel: {
+    color: '#55FFFF',
+  },
+  eventRow: {
+    display: 'flex',
+    gap: '0.5rem',
+    flexWrap: 'wrap',
+    alignItems: 'flex-start',
+  },
+  eventPrefix: {
+    color: '#55FFFF',
+    fontWeight: 'bold',
+    flexShrink: 0,
+    fontSize: '12px',
+  },
+  eventContent: {
+    color: '#FFFFFF',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    fontSize: '13px',
+    flex: 1,
+  },
+  systemMsg: {
+    color: '#AAAAAA',
+    fontStyle: 'italic',
+    fontSize: '12px',
+  },
   pill: {
-    display: 'inline-block',
-    background: '#e2e8f0',
-    borderRadius: '0.25rem',
-    padding: '0.125rem 0.375rem',
-    fontSize: '0.75rem',
-    fontFamily: 'monospace',
+    color: '#55FFFF',
+    fontSize: '12px',
+    fontFamily: 'Courier New, Courier, monospace',
   },
   pre: {
     margin: 0,
-    fontSize: '0.75rem',
+    fontSize: '12px',
     whiteSpace: 'pre-wrap',
     wordBreak: 'break-all',
+    color: '#AAAAAA',
+    fontFamily: 'Courier New, Courier, monospace',
   },
   inputBar: {
     display: 'flex',
-    gap: '0.5rem',
-    padding: '0.75rem 1.5rem',
-    borderTop: '1px solid #e2e8f0',
-    background: '#fff',
+    alignItems: 'center',
+    gap: '0.375rem',
+    padding: '4px 8px',
+    borderTop: '1px solid #AAAAAA',
+    background: '#000066',
+    flexShrink: 0,
+  },
+  inputLabel: {
+    color: '#55FFFF',
+    fontSize: '12px',
     flexShrink: 0,
   },
   targetSelect: {
-    padding: '0.5rem 0.5rem',
-    border: '1px solid #e2e8f0',
-    borderRadius: '0.5rem',
-    fontSize: '0.8125rem',
-    background: '#fff',
+    padding: '2px 4px',
+    border: '1px solid #AAAAAA',
+    background: '#000080',
+    color: '#FFFFFF',
+    fontSize: '12px',
     flexShrink: 0,
-    maxWidth: '160px',
+    maxWidth: '150px',
+    outline: 'none',
+  },
+  inputPrompt: {
+    color: '#55FFFF',
+    fontSize: '14px',
+    flexShrink: 0,
   },
   chatInput: {
     flex: 1,
-    padding: '0.5rem 0.75rem',
-    border: '1px solid #e2e8f0',
-    borderRadius: '0.5rem',
-    fontSize: '0.875rem',
+    padding: '2px 6px',
+    border: '1px solid #AAAAAA',
+    background: '#000080',
+    color: '#FFFFFF',
+    fontSize: '13px',
     outline: 'none',
   },
   sendBtn: {
-    padding: '0.5rem 1.25rem',
-    background: '#aa3bff',
-    color: '#fff',
-    border: 'none',
-    borderRadius: '0.5rem',
-    fontWeight: 600,
-    fontSize: '0.875rem',
+    padding: '2px 10px',
+    background: '#AAAAAA',
+    color: '#000000',
+    border: '1px solid #FFFFFF',
+    fontWeight: 'bold',
+    fontSize: '13px',
     cursor: 'pointer',
+    flexShrink: 0,
   },
 }
