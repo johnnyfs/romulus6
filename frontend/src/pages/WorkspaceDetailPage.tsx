@@ -77,7 +77,7 @@ function renderActivityHistory(event: AgentEvent): React.ReactNode {
 const hist: Record<string, React.CSSProperties> = {
   cyan: { color: '#55FFFF' },
   dim: { color: '#AAAAAA', fontStyle: 'italic' },
-  pre: { margin: '2px 0 0 0', fontSize: '12px', color: '#AAAAAA', whiteSpace: 'pre-wrap', wordBreak: 'break-all' },
+  pre: { margin: '2px 0 0 0', color: '#AAAAAA', whiteSpace: 'pre-wrap', wordBreak: 'break-all' },
 }
 
 // ─── Activity block component ─────────────────────────────────────────────────
@@ -408,7 +408,7 @@ export default function WorkspaceDetailPage() {
       <div style={styles.body}>
         {/* Sidebar */}
         <div style={styles.sidebar}>
-          <div style={styles.sidebarTitle}>╔══ AGENTS ══╗</div>
+          <div style={styles.sidebarTitle}>AGENTS</div>
 
           <button style={styles.newAgentBtn} onClick={() => setShowForm((v) => !v)}>
             {showForm ? '[ ▲ Close Form ]' : '[ + New Agent  ]'}
@@ -615,7 +615,6 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#AAAAAA',
     color: '#000000',
     flexShrink: 0,
-    fontSize: '13px',
     overflow: 'hidden',
   },
   back: {
@@ -631,44 +630,41 @@ const styles: Record<string, React.CSSProperties> = {
   sidebar: {
     width: '260px',
     flexShrink: 0,
-    borderRight: '1px solid #AAAAAA',
     background: '#000080',
     display: 'flex',
     flexDirection: 'column',
-    padding: '6px 8px',
+    padding: '4px 6px',
     overflowY: 'auto',
-    gap: '4px',
+    gap: '2px',
   },
-  sidebarTitle: { color: '#55FFFF', fontSize: '12px', marginBottom: '4px', textAlign: 'center' },
+  sidebarTitle: { color: '#55FFFF', marginBottom: '2px' },
   newAgentBtn: {
     width: '100%',
-    padding: '3px 0',
+    padding: '1px 0',
     background: '#AAAAAA',
     color: '#000000',
-    border: '1px solid #FFFFFF',
-    fontSize: '13px',
-    fontWeight: 'bold',
+    border: 'none',
     cursor: 'pointer',
     marginBottom: '4px',
   },
-  form: { border: '1px solid #AAAAAA', padding: '6px', marginBottom: '4px', background: '#000066' },
-  formRow: { marginBottom: '4px' },
-  label: { display: 'block', fontSize: '11px', color: '#55FFFF', marginBottom: '2px' },
+  form: { marginBottom: '6px' },
+  formRow: { marginBottom: '2px' },
+  label: { display: 'block', marginBottom: '1px' },
   select: {
-    width: '100%', padding: '2px 4px', border: '1px solid #AAAAAA',
-    background: '#000080', color: '#FFFFFF', fontSize: '12px', outline: 'none',
+    width: '100%', padding: '0 4px', border: 'none',
+    background: '#AAAAAA', color: '#000000', outline: 'none', display: 'block',
   },
   input: {
-    width: '100%', padding: '2px 4px', border: '1px solid #AAAAAA',
-    background: '#000080', color: '#FFFFFF', fontSize: '12px', outline: 'none',
+    width: '100%', padding: '0 4px', border: 'none',
+    background: '#AAAAAA', color: '#000000', outline: 'none', display: 'block',
   },
   textarea: {
-    width: '100%', padding: '2px 4px', border: '1px solid #AAAAAA',
-    background: '#000080', color: '#FFFFFF', fontSize: '12px', resize: 'vertical', outline: 'none',
+    width: '100%', padding: '1px 4px', border: 'none',
+    background: '#AAAAAA', color: '#000000', resize: 'vertical', outline: 'none', display: 'block',
   },
   submitBtn: {
-    width: '100%', padding: '3px 0', background: '#AAAAAA', color: '#000000',
-    border: '1px solid #FFFFFF', fontSize: '13px', fontWeight: 'bold', cursor: 'pointer',
+    width: '100%', padding: '1px 0', background: '#AAAAAA', color: '#000000',
+    border: 'none', cursor: 'pointer',
   },
   agentList: { flex: 1 },
   main: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#0000AA' },
@@ -676,16 +672,16 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1, overflowY: 'auto', padding: '8px 12px',
     display: 'flex', flexDirection: 'column', gap: '2px',
   },
-  empty: { color: '#AAAAAA', fontSize: '12px', textAlign: 'center', marginTop: '3rem', lineHeight: 1.8 },
+  empty: { color: '#AAAAAA', textAlign: 'center', marginTop: '3rem', lineHeight: 1.8 },
 
   // User message row
   userRow: { display: 'flex', gap: '6px', flexWrap: 'wrap' },
-  userPrefix: { color: '#FFFF55', fontWeight: 'bold', flexShrink: 0, fontSize: '12px' },
+  userPrefix: { color: '#FFFF55', fontWeight: 'bold', flexShrink: 0 },
   userText: { color: '#FFFF55', whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
 
   // Agent text message row
   msgRow: { display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'flex-start' },
-  msgPrefix: { color: '#55FFFF', fontWeight: 'bold', flexShrink: 0, fontSize: '12px' },
+  msgPrefix: { color: '#55FFFF', fontWeight: 'bold', flexShrink: 0 },
   msgText: { color: '#FFFFFF', whiteSpace: 'pre-wrap', wordBreak: 'break-word', flex: 1 },
 
   // Activity block
@@ -693,18 +689,17 @@ const styles: Record<string, React.CSSProperties> = {
   activityRow: { display: 'flex', alignItems: 'center', gap: '4px' },
   chevron: {
     background: 'none', border: 'none', color: '#AAAAAA', cursor: 'pointer',
-    fontSize: '11px', padding: '0', flexShrink: 0,
+    padding: '0', flexShrink: 0,
     fontFamily: 'Courier New, Courier, monospace',
   },
-  activityPrefix: { color: '#55FFFF', fontWeight: 'bold', fontSize: '12px', flexShrink: 0 },
-  activityLatest: { color: '#AAAAAA', fontSize: '12px' },
+  activityPrefix: { color: '#55FFFF', fontWeight: 'bold', flexShrink: 0 },
+  activityLatest: { color: '#AAAAAA' },
   historyList: { paddingLeft: '28px', display: 'flex', flexDirection: 'column', gap: '1px' },
-  historyItem: { display: 'flex', gap: '4px', alignItems: 'flex-start', fontSize: '12px' },
+  historyItem: { display: 'flex', gap: '4px', alignItems: 'flex-start' },
   historyBullet: { color: '#555555', flexShrink: 0 },
 
   // Status bar (between feed and input)
   statusBar: {
-    borderTop: '1px solid #003388',
     background: '#000066',
     padding: '2px 12px',
     display: 'flex',
@@ -713,30 +708,29 @@ const styles: Record<string, React.CSSProperties> = {
     flexWrap: 'wrap',
   },
   statusItem: { display: 'inline-flex', alignItems: 'baseline', gap: '3px' },
-  statusName: { color: '#AAAAAA', fontSize: '12px' },
-  statusDots: { color: '#FFFFFF', fontSize: '12px', letterSpacing: '1px' },
-  statusDotsIdle: { color: '#555555', fontSize: '12px', letterSpacing: '1px' },
+  statusName: { color: '#AAAAAA' },
+  statusDots: { color: '#FFFFFF', letterSpacing: '1px' },
+  statusDotsIdle: { color: '#555555', letterSpacing: '1px' },
 
   // Input bar
   inputBar: {
     display: 'flex', alignItems: 'center', gap: '0.375rem',
-    padding: '4px 8px', borderTop: '1px solid #AAAAAA',
+    padding: '2px 6px',
     background: '#000066', flexShrink: 0,
   },
-  inputLabel: { color: '#55FFFF', fontSize: '12px', flexShrink: 0 },
+  inputLabel: { color: '#55FFFF', flexShrink: 0 },
   targetSelect: {
-    padding: '2px 4px', border: '1px solid #AAAAAA',
-    background: '#000080', color: '#FFFFFF', fontSize: '12px',
+    padding: '0 4px', border: 'none',
+    background: '#AAAAAA', color: '#000000',
     flexShrink: 0, maxWidth: '150px', outline: 'none',
   },
-  inputPrompt: { color: '#55FFFF', fontSize: '14px', flexShrink: 0 },
+  inputPrompt: { color: '#55FFFF', flexShrink: 0 },
   chatInput: {
-    flex: 1, padding: '2px 6px', border: '1px solid #AAAAAA',
-    background: '#000080', color: '#FFFFFF', fontSize: '13px', outline: 'none',
+    flex: 1, padding: '0 6px', border: 'none',
+    background: '#AAAAAA', color: '#000000', outline: 'none',
   },
   sendBtn: {
-    padding: '2px 10px', background: '#AAAAAA', color: '#000000',
-    border: '1px solid #FFFFFF', fontWeight: 'bold', fontSize: '13px',
-    cursor: 'pointer', flexShrink: 0,
+    padding: '1px 10px', background: '#AAAAAA', color: '#000000',
+    border: 'none', cursor: 'pointer', flexShrink: 0,
   },
 }

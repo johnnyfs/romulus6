@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { Agent, AgentStatus } from '../api/agents'
+import type { Agent } from '../api/agents'
 import { TERMINAL_STATUSES } from '../api/agents'
 
 interface Props {
@@ -8,20 +8,6 @@ interface Props {
   isRunning?: boolean  // true until a terminal session event is received
   onClick: () => void
   onDelete: () => void
-}
-
-function statusColor(status: AgentStatus): string {
-  switch (status) {
-    case 'starting':
-    case 'busy':
-      return '#FFFF55'
-    case 'idle':
-    case 'completed':
-      return '#55FF55'
-    case 'error':
-    case 'interrupted':
-      return '#FF5555'
-  }
 }
 
 // ☺ (U+263A) white smiley, ☻ (U+263B) black smiley — classic CP437 characters 1 & 2
@@ -45,8 +31,9 @@ function BlinkFace({ running, selected }: { running: boolean; selected: boolean 
 
 export default function AgentCard({ agent, selected, isRunning, onClick, onDelete }: Props) {
   const displayName =
-    agent.name ?? `${agent.agent_type}/${agent.model.split('/')[1]}`
+    agent.name ?? agent.model.split('/')[1]
   const modelShort = agent.model.split('/')[1]
+  const label = agent.name ? `${agent.name}  ${modelShort}` : displayName
 
   // Fallback: if isRunning prop not provided, derive from agent.status
   const running = isRunning ?? !TERMINAL_STATUSES.includes(agent.status)
@@ -63,12 +50,7 @@ export default function AgentCard({ agent, selected, isRunning, onClick, onDelet
       <span style={{ ...styles.arrow, color: selected ? '#000080' : '#55FFFF' }}>
         {selected ? '►' : ' '}
       </span>
-      <div style={styles.info}>
-        <div style={styles.name}>{displayName}</div>
-        <div style={{ ...styles.model, color: selected ? '#000066' : '#AAAAAA' }}>
-          {modelShort}
-        </div>
-      </div>
+      <span style={styles.label}>{label}</span>
       <BlinkFace running={running} selected={selected} />
       <button
         style={{ ...styles.deleteBtn, color: selected ? '#000000' : '#AAAAAA' }}
@@ -86,34 +68,23 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     gap: '0.375rem',
-    padding: '3px 4px',
+    padding: '2px 4px',
     cursor: 'pointer',
-    borderBottom: '1px solid #000066',
-    fontSize: '13px',
   },
   arrow: {
     flexShrink: 0,
     width: '12px',
   },
-  info: {
+  label: {
     flex: 1,
-    overflow: 'hidden',
-    minWidth: 0,
-  },
-  name: {
-    fontWeight: 'bold',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
-  },
-  model: {
-    fontSize: '11px',
   },
   deleteBtn: {
     background: 'none',
     border: 'none',
     cursor: 'pointer',
-    fontSize: '13px',
     padding: '0 2px',
     flexShrink: 0,
     fontFamily: 'Courier New, Courier, monospace',
