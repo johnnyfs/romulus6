@@ -44,6 +44,9 @@ Thumbs.db
 # Local DB data
 .pg-data/
 
+# Worker build artifacts
+worker/opencode
+
 # Logs
 *.log
 
