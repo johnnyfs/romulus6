@@ -31,7 +31,7 @@ export interface AgentEvent {
 }
 
 export interface CreateOpenCodeAgentRequest {
-  type: 'opencode'
+  agent_type: 'opencode'
   model: string
   prompt: string
   name?: string

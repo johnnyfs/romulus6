@@ -1,7 +1,7 @@
 import datetime
 import uuid
 
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from app.models.sandbox import Sandbox
 from app.models.worker import Worker
@@ -10,7 +10,7 @@ from app.services import workers as worker_svc
 
 def list_sandboxes(session: Session, workspace_id: uuid.UUID) -> list[Sandbox]:
     return list(
-        session.exec(select(Sandbox).where(Sandbox.workspace_id == workspace_id)).all()
+        session.exec(Sandbox.active().where(Sandbox.workspace_id == workspace_id)).all()
     )
 
 
@@ -52,6 +52,9 @@ def delete_sandbox(
     if sandbox.worker_id is not None:
         worker_svc.delete_worker(session, sandbox.worker_id)
 
-    session.delete(sandbox)
+    sandbox.deleted = True
+    sandbox.worker_id = None
+    sandbox.updated_at = datetime.datetime.utcnow()
+    session.add(sandbox)
     session.commit()
     return True

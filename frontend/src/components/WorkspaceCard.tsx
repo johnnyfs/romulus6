@@ -8,8 +8,7 @@ interface Props {
 
 export default function WorkspaceCard({ workspace, onDelete }: Props) {
   return (
-    <div style={styles.row}>
-      <span style={styles.arrow}>►</span>
+    <div style={styles.card}>
       <div style={styles.info}>
         <Link to={`/workspaces/${workspace.id}`} style={styles.nameLink}>
           {workspace.name}
@@ -17,24 +16,21 @@ export default function WorkspaceCard({ workspace, onDelete }: Props) {
         <div style={styles.id}>{workspace.id}</div>
       </div>
       <button style={styles.deleteBtn} onClick={() => onDelete(workspace.id)}>
-        [ Del ]
+        Delete
       </button>
     </div>
   )
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  row: {
+  card: {
     display: 'flex',
     alignItems: 'center',
-    gap: '0.5rem',
-    padding: '4px 0',
-    borderBottom: '1px solid #000066',
-  },
-  arrow: {
-    color: '#55FFFF',
-    fontSize: '13px',
-    flexShrink: 0,
+    gap: '12px',
+    padding: '12px 16px',
+    background: 'var(--surface)',
+    border: '1px solid var(--border)',
+    borderRadius: '6px',
   },
   info: {
     flex: 1,
@@ -42,9 +38,9 @@ const styles: Record<string, React.CSSProperties> = {
   },
   nameLink: {
     display: 'block',
-    fontWeight: 'bold',
+    fontWeight: 600,
     fontSize: '14px',
-    color: '#FFFFFF',
+    color: 'var(--text)',
     textDecoration: 'none',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
@@ -52,14 +48,16 @@ const styles: Record<string, React.CSSProperties> = {
   },
   id: {
     fontSize: '11px',
-    color: '#AAAAAA',
-    fontFamily: 'Courier New, Courier, monospace',
+    color: 'var(--text-dim)',
+    fontFamily: "'Menlo', 'Consolas', monospace",
+    marginTop: '2px',
   },
   deleteBtn: {
-    padding: '2px 6px',
-    background: '#AAAAAA',
-    color: '#000000',
-    border: '1px solid #555555',
+    padding: '4px 10px',
+    background: 'transparent',
+    color: 'var(--danger)',
+    border: '1px solid transparent',
+    borderRadius: '4px',
     fontSize: '12px',
     cursor: 'pointer',
     flexShrink: 0,

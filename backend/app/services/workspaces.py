@@ -3,14 +3,16 @@ import uuid
 from sqlmodel import Session, select
 
 from app.models.agent import Agent
+from app.models.event import Event
 from app.models.graph import Graph
+from app.models.run import GraphRun
 from app.models.sandbox import Sandbox
 from app.models.workspace import Workspace
-from app.services import sandboxes as sandbox_svc
+from app.services import workers as worker_svc
 
 
 def list_workspaces(session: Session) -> list[Workspace]:
-    return list(session.exec(select(Workspace)).all())
+    return list(session.exec(Workspace.active()).all())
 
 
 def create_workspace(session: Session, name: str) -> Workspace:
@@ -22,7 +24,10 @@ def create_workspace(session: Session, name: str) -> Workspace:
 
 
 def get_workspace(session: Session, id: uuid.UUID) -> Workspace | None:
-    return session.get(Workspace, id)
+    workspace = session.get(Workspace, id)
+    if workspace is None or workspace.deleted:
+        return None
+    return workspace
 
 
 def delete_workspace(session: Session, id: uuid.UUID) -> bool:
@@ -30,16 +35,32 @@ def delete_workspace(session: Session, id: uuid.UUID) -> bool:
     if workspace is None:
         return False
 
-    # Agents FK → sandbox, so delete them before sandboxes
+    # Hard-delete events first (they FK → workspace).
+    for event in session.exec(select(Event).where(Event.workspace_id == id)).all():
+        session.delete(event)
+    session.flush()
+
+    # Hard-delete agents (they FK → sandbox).
     for agent in session.exec(select(Agent).where(Agent.workspace_id == id)).all():
         session.delete(agent)
     session.flush()
 
-    # Sandboxes tear down k8s workers synchronously; delete_sandbox commits internally
+    # Tear down k8s workers and hard-delete sandboxes.
+    # We call worker_svc directly instead of sandbox_svc.delete_sandbox so that sandboxes
+    # are hard-deleted here (soft-deleting them would leave FK refs that block workspace deletion).
     for sandbox in session.exec(select(Sandbox).where(Sandbox.workspace_id == id)).all():
-        sandbox_svc.delete_sandbox(session, id, sandbox.id)
+        if sandbox.worker_id is not None:
+            worker_svc.delete_worker(session, sandbox.worker_id)
+        session.delete(sandbox)
+        session.commit()
 
-    # Graphs: DB cascades nodes + edges
+    # Delete graph runs before graphs: GraphRunNode.source_node_id → GraphNode has no DB
+    # cascade, so nodes cannot be deleted while run-node rows still reference them.
+    for run in session.exec(select(GraphRun).where(GraphRun.workspace_id == id)).all():
+        session.delete(run)
+    session.flush()
+
+    # Hard-delete graphs; ORM cascade (all, delete-orphan) handles nodes + edges.
     for graph in session.exec(select(Graph).where(Graph.workspace_id == id)).all():
         session.delete(graph)
     session.flush()

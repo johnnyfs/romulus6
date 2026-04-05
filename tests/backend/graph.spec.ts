@@ -479,6 +479,123 @@ test.describe('Graph API', () => {
     }
   });
 
+  // --- Agent node type ---
+
+  test('POST /graphs creates a graph with an agent node', async ({ request }) => {
+    const wid = await createWorkspace(request);
+    try {
+      const agentConfig = {
+        agent_type: 'opencode',
+        model: 'anthropic/claude-haiku-4-5',
+        prompt: 'do stuff',
+      };
+      const res = await request.post(`/api/v1/workspaces/${wid}/graphs`, {
+        data: {
+          name: 'agent graph',
+          nodes: [{ node_type: 'agent', name: 'my-agent', agent_config: agentConfig }],
+          edges: [],
+        },
+      });
+      expect(res.status()).toBe(201);
+      const body = await res.json();
+      expect(body.nodes).toHaveLength(1);
+      expect(body.nodes[0].node_type).toBe('agent');
+      expect(body.nodes[0].name).toBe('my-agent');
+      expect(body.nodes[0].agent_config).toMatchObject(agentConfig);
+
+      await request.delete(`/api/v1/workspaces/${wid}/graphs/${body.id}`);
+    } finally {
+      await deleteWorkspace(request, wid);
+    }
+  });
+
+  test('POST /nodes adds an agent node to an existing graph', async ({ request }) => {
+    const wid = await createWorkspace(request);
+    try {
+      const createRes = await request.post(`/api/v1/workspaces/${wid}/graphs`, {
+        data: { name: 'add-agent-node' },
+      });
+      const graph = await createRes.json();
+
+      const agentConfig = {
+        agent_type: 'opencode',
+        model: 'anthropic/claude-haiku-4-5',
+        prompt: 'hello',
+      };
+      const nodeRes = await request.post(
+        `/api/v1/workspaces/${wid}/graphs/${graph.id}/nodes`,
+        { data: { node_type: 'agent', name: 'a1', agent_config: agentConfig } },
+      );
+      expect(nodeRes.status()).toBe(201);
+      const node = await nodeRes.json();
+      expect(node.node_type).toBe('agent');
+      expect(node.agent_config).toMatchObject(agentConfig);
+
+      await request.delete(`/api/v1/workspaces/${wid}/graphs/${graph.id}`);
+    } finally {
+      await deleteWorkspace(request, wid);
+    }
+  });
+
+  test('PATCH /nodes updates agent config on a node', async ({ request }) => {
+    const wid = await createWorkspace(request);
+    try {
+      const agentConfig = {
+        agent_type: 'opencode',
+        model: 'anthropic/claude-haiku-4-5',
+        prompt: 'original',
+      };
+      const createRes = await request.post(`/api/v1/workspaces/${wid}/graphs`, {
+        data: {
+          name: 'patch-agent',
+          nodes: [{ node_type: 'agent', name: 'a1', agent_config: agentConfig }],
+          edges: [],
+        },
+      });
+      const graph = await createRes.json();
+      const nodeId = graph.nodes[0].id;
+
+      const updatedConfig = {
+        agent_type: 'opencode',
+        model: 'anthropic/claude-sonnet-4-6',
+        prompt: 'updated',
+      };
+      const patchRes = await request.patch(
+        `/api/v1/workspaces/${wid}/graphs/${graph.id}/nodes/${nodeId}`,
+        { data: { agent_config: updatedConfig } },
+      );
+      expect(patchRes.status()).toBe(200);
+      const patched = await patchRes.json();
+      expect(patched.agent_config).toMatchObject(updatedConfig);
+
+      await request.delete(`/api/v1/workspaces/${wid}/graphs/${graph.id}`);
+    } finally {
+      await deleteWorkspace(request, wid);
+    }
+  });
+
+  test('nop nodes have null agent_config', async ({ request }) => {
+    const wid = await createWorkspace(request);
+    try {
+      const res = await request.post(`/api/v1/workspaces/${wid}/graphs`, {
+        data: {
+          name: 'nop-null-config',
+          nodes: [{ node_type: 'nop', name: 'n1' }],
+          edges: [],
+        },
+      });
+      expect(res.status()).toBe(201);
+      const body = await res.json();
+      expect(body.nodes[0].agent_config).toBeNull();
+
+      await request.delete(`/api/v1/workspaces/${wid}/graphs/${body.id}`);
+    } finally {
+      await deleteWorkspace(request, wid);
+    }
+  });
+
+  // --- 404 cases ---
+
   test('DELETE /edges/{non_existent} returns 404', async ({ request }) => {
     const wid = await createWorkspace(request);
     try {

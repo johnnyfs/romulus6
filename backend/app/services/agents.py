@@ -1,13 +1,15 @@
 import asyncio
 import datetime
+import json
 import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
 import httpx
-from sqlmodel import Session, select
+from sqlmodel import Session, asc, select
 
 from app.models.agent import Agent, AgentStatus, AgentType
+from app.models.event import Event
 from app.models.sandbox import Sandbox
 from app.models.worker import Worker
 from app.services import sandboxes as sandbox_svc
@@ -44,10 +46,9 @@ async def create_agent(
     agent_type: AgentType,
     model: str,
     prompt: str,
-    name: str | None = None,
+    name: str,
 ) -> Agent:
-    sandbox_name = name or prompt[:40]
-    sandbox, worker = sandbox_svc.create_sandbox(session, workspace_id, sandbox_name)
+    sandbox, worker = sandbox_svc.create_sandbox(session, workspace_id, name)
 
     if worker.worker_url is None:
         raise RuntimeError("Worker URL not available")
@@ -85,15 +86,22 @@ async def create_agent(
 
 def list_agents(session: Session, workspace_id: uuid.UUID) -> list[Agent]:
     return list(
-        session.exec(select(Agent).where(Agent.workspace_id == workspace_id)).all()
+        session.exec(
+            Agent.active().where(Agent.workspace_id == workspace_id)
+        ).all()
     )
 
 
 def get_agent(
-    session: Session, workspace_id: uuid.UUID, agent_id: uuid.UUID
+    session: Session,
+    workspace_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    include_deleted: bool = False,
 ) -> Agent | None:
     agent = session.get(Agent, agent_id)
     if agent is None or agent.workspace_id != workspace_id:
+        return None
+    if not include_deleted and agent.deleted:
         return None
     return agent
 
@@ -122,33 +130,56 @@ def delete_agent(
     agent = get_agent(session, workspace_id, agent_id)
     if agent is None:
         return False
-    session.delete(agent)
+    if agent.sandbox_id is not None:
+        sandbox_svc.delete_sandbox(session, workspace_id, agent.sandbox_id)
+    agent.deleted = True
+    agent.sandbox_id = None
+    agent.updated_at = datetime.datetime.utcnow()
+    session.add(agent)
     session.commit()
     return True
+
+
+def _persist_event(
+    session: Session,
+    workspace_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    payload: dict[str, Any],
+) -> None:
+    event = Event(
+        id=str(payload.get("id", uuid.uuid4())),
+        workspace_id=workspace_id,
+        type="agent",
+        source_id=str(agent_id),
+        event_type=str(payload.get("type", "unknown")),
+        timestamp=str(payload.get("timestamp", "")),
+        data=payload,
+    )
+    session.merge(event)
+    session.commit()
 
 
 async def get_agent_events(
     session: Session, agent: Agent, since: int = 0
 ) -> list[dict[str, Any]]:
-    if agent.session_id is None:
-        return []
-
-    sandbox = session.get(Sandbox, agent.sandbox_id)
-    if sandbox is None:
-        return []
-
-    worker = session.get(Worker, sandbox.worker_id)
-    if worker is None or worker.worker_url is None:
-        return []
-
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{worker.worker_url}/sessions/{agent.session_id}/events",
-            params={"stream": "False", "since": since},
-            timeout=10.0,
-        )
-        resp.raise_for_status()
-        return resp.json()
+    results = session.exec(
+        select(Event)
+        .where(Event.workspace_id == agent.workspace_id)
+        .where(Event.type == "agent")
+        .where(Event.source_id == str(agent.id))
+        .order_by(asc(Event.persisted_at))
+        .offset(since)
+    ).all()
+    return [
+        {
+            "id": e.id,
+            "session_id": e.data.get("session_id", ""),
+            "type": e.event_type,
+            "timestamp": e.timestamp,
+            "data": e.data.get("data", {}),
+        }
+        for e in results
+    ]
 
 
 async def stream_agent_events(
@@ -167,6 +198,8 @@ async def stream_agent_events(
 
     worker_url = str(worker.worker_url)
     session_id = str(agent.session_id)
+    workspace_id = agent.workspace_id
+    agent_id = agent.id
 
     async with httpx.AsyncClient() as client:
         async with client.stream(
@@ -176,5 +209,16 @@ async def stream_agent_events(
             timeout=None,
         ) as resp:
             resp.raise_for_status()
+            sse_buffer = ""
             async for chunk in resp.aiter_bytes():
                 yield chunk
+                sse_buffer += chunk.decode("utf-8", errors="replace")
+                while "\n\n" in sse_buffer:
+                    message, sse_buffer = sse_buffer.split("\n\n", 1)
+                    for line in message.split("\n"):
+                        if line.startswith("data: "):
+                            try:
+                                payload = json.loads(line[6:])
+                                _persist_event(session, workspace_id, agent_id, payload)
+                            except Exception:
+                                pass  # never block the stream on persistence failure

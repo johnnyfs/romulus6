@@ -33,28 +33,21 @@ export default function WorkspacesPage() {
 
   return (
     <div style={styles.page}>
-      {/* Title bar */}
-      <div style={styles.titleBar}>
-        WORKSPACES
-      </div>
+      <div style={styles.inner}>
+        <h1 style={styles.heading}>Workspaces</h1>
 
-      {/* Body */}
-      <div style={styles.windowBody}>
-        workspace name
         <form onSubmit={handleCreate} style={styles.form}>
           <input
             style={styles.input}
             type="text"
-            placeholder="new workspace name"
+            placeholder="New workspace name"
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
           />
           <button style={styles.createBtn} type="submit" disabled={creating}>
-            {creating ? '[ Creating… ]' : '[ New ]'}
+            {creating ? 'Creating…' : 'Create'}
           </button>
         </form>
-
-        <div style={styles.divider}>{'─'.repeat(56)}</div>
 
         <div style={styles.list}>
           {workspaces.length === 0 ? (
@@ -66,11 +59,6 @@ export default function WorkspacesPage() {
           )}
         </div>
       </div>
-
-      {/* Status bar */}
-      <div style={styles.statusBar}>
-        F1-Help  F2-New  F10-Menu
-      </div>
     </div>
   )
 }
@@ -78,63 +66,54 @@ export default function WorkspacesPage() {
 const styles: Record<string, React.CSSProperties> = {
   page: {
     minHeight: '100vh',
-    background: '#0000AA',
+    background: 'var(--bg)',
+    display: 'flex',
+    justifyContent: 'center',
+    padding: '48px 24px',
+  },
+  inner: {
+    width: '100%',
+    maxWidth: '640px',
     display: 'flex',
     flexDirection: 'column',
-    fontFamily: 'Courier New, Courier, monospace',
-    fontSize: '13px',
-    color: '#FFFFFF',
+    gap: '24px',
   },
-  titleBar: {
-    background: '#AAAAAA',
-    color: '#000000',
-    padding: '2px 8px',
-    fontWeight: 'bold',
-    flexShrink: 0,
-  },
-  windowBody: {
-    padding: '8px 12px',
-    flex: 1,
+  heading: {
+    fontSize: '20px',
+    fontWeight: 600,
+    color: 'var(--text)',
   },
   form: {
     display: 'flex',
-    alignItems: 'center',
-    gap: '0',
-    marginBottom: '0.75rem',
+    gap: '8px',
   },
   input: {
     flex: 1,
-    padding: '0 6px',
-    border: 'none',
-    background: '#AAAAAA',
-    color: '#000000',
+    padding: '8px 12px',
+    background: 'var(--surface-2)',
+    border: '1px solid var(--border)',
+    borderRadius: '6px',
+    color: 'var(--text)',
     outline: 'none',
+    fontSize: '14px',
   },
   createBtn: {
-    padding: '0 8px',
-    background: '#AAAAAA',
-    color: '#000000',
+    padding: '8px 16px',
+    background: 'var(--accent)',
+    color: '#fff',
     border: 'none',
+    borderRadius: '6px',
     cursor: 'pointer',
+    fontSize: '14px',
+    fontWeight: 500,
     flexShrink: 0,
-  },
-  divider: {
-    color: '#AAAAAA',
-    marginBottom: '0.5rem',
-    overflow: 'hidden',
   },
   list: {
     display: 'flex',
     flexDirection: 'column',
+    gap: '8px',
   },
   empty: {
-    color: '#AAAAAA',
-    padding: '0.5rem 0',
-  },
-  statusBar: {
-    background: '#AAAAAA',
-    color: '#000000',
-    padding: '2px 8px',
-    flexShrink: 0,
+    color: 'var(--text-muted)',
   },
 }

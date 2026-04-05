@@ -16,6 +16,7 @@ import {
 } from '../api/agents'
 import { getWorkspace, type Workspace } from '../api/workspaces'
 import AgentCard from '../components/AgentCard'
+import GraphPanel from '../components/GraphPanel'
 
 // ─── Feed item types ────────────────────────────────────────────────────────
 
@@ -42,26 +43,26 @@ function isActivity(type: string): boolean {
 function renderActivityEvent(event: AgentEvent): string {
   switch (event.type) {
     case 'file.edit':
-      return `[✎ ${String(event.data.path ?? 'file')}]`
+      return `✎ ${String(event.data.path ?? 'file')}`
     case 'tool.use':
-      return `[⚙ ${String(event.data.tool ?? 'tool')}]`
+      return `⚙ ${String(event.data.tool ?? 'tool')}`
     case 'command.output': {
       const out = String(event.data.stdout ?? '').trim()
       const err = String(event.data.stderr ?? '').trim()
       const preview = (out || err).slice(0, 80)
-      return `[$ ${preview}]`
+      return `$ ${preview}`
     }
     default:
-      return `[${event.type}]`
+      return event.type
   }
 }
 
 function renderActivityHistory(event: AgentEvent): React.ReactNode {
   switch (event.type) {
     case 'file.edit':
-      return <span style={hist.cyan}>[✎ {String(event.data.path ?? 'file')}]</span>
+      return <span style={hist.accent}>✎ {String(event.data.path ?? 'file')}</span>
     case 'tool.use':
-      return <span style={hist.cyan}>[⚙ {String(event.data.tool ?? 'tool')}]</span>
+      return <span style={hist.accent}>⚙ {String(event.data.tool ?? 'tool')}</span>
     case 'command.output':
       return (
         <pre style={hist.pre}>
@@ -75,9 +76,20 @@ function renderActivityHistory(event: AgentEvent): React.ReactNode {
 }
 
 const hist: Record<string, React.CSSProperties> = {
-  cyan: { color: '#55FFFF' },
-  dim: { color: '#AAAAAA', fontStyle: 'italic' },
-  pre: { margin: '2px 0 0 0', color: '#AAAAAA', whiteSpace: 'pre-wrap', wordBreak: 'break-all' },
+  accent: { color: 'var(--accent)' },
+  dim: { color: 'var(--text-muted)', fontStyle: 'italic' },
+  pre: {
+    margin: '4px 0 0 0',
+    padding: '6px 10px',
+    background: 'var(--surface)',
+    border: '1px solid var(--border)',
+    borderRadius: '4px',
+    color: 'var(--text-dim)',
+    fontFamily: "'Menlo', 'Consolas', monospace",
+    fontSize: '12px',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-all',
+  },
 }
 
 // ─── Activity block component ─────────────────────────────────────────────────
@@ -97,9 +109,9 @@ function ActivityLine({
     <div style={styles.activityWrap}>
       <div style={styles.activityRow}>
         <button style={styles.chevron} onClick={onToggle} title="Toggle history">
-          {expanded ? '▼' : '►'}
+          {expanded ? '∨' : '›'}
         </button>
-        <span style={styles.activityPrefix}>{agentLabel} ▶</span>
+        <span style={styles.activityPrefix}>{agentLabel}</span>
         <span style={styles.activityLatest}>
           {renderActivityEvent(block.latest)}
         </span>
@@ -108,7 +120,6 @@ function ActivityLine({
         <div style={styles.historyList}>
           {block.history.map((ev) => (
             <div key={ev.id} style={styles.historyItem}>
-              <span style={styles.historyBullet}>·</span>
               {renderActivityHistory(ev)}
             </div>
           ))}
@@ -148,6 +159,11 @@ export default function WorkspaceDetailPage() {
   })
   const feedBottomRef = useRef<HTMLDivElement>(null)
   const sseControllers = useRef<Map<string, AbortController>>(new Map())
+  const seenEventIds = useRef<Set<string>>(new Set())
+  const [graphWidth, setGraphWidth] = useState(340)
+  const isDragging = useRef(false)
+  const dragStartX = useRef(0)
+  const dragStartWidth = useRef(0)
 
   // ── Data loading ─────────────────────────────────────────────────────────
 
@@ -172,14 +188,15 @@ export default function WorkspaceDetailPage() {
         agentId,
         0,
         (event: AgentEvent) => {
-          // Skip session status events from the event map display
           if (!event.type.startsWith('session.')) {
-            setEventMap((prev) => ({
-              ...prev,
-              [agentId]: [...(prev[agentId] ?? []), event],
-            }))
+            if (!seenEventIds.current.has(event.id)) {
+              seenEventIds.current.add(event.id)
+              setEventMap((prev) => ({
+                ...prev,
+                [agentId]: [...(prev[agentId] ?? []), event],
+              }))
+            }
           }
-          // Track busy / terminal state from session events
           if (event.type === 'session.busy') {
             setAgentBusy((prev) => ({ ...prev, [agentId]: true }))
           } else if (event.type === 'session.idle') {
@@ -195,23 +212,23 @@ export default function WorkspaceDetailPage() {
         },
         ctrl.signal,
       ).finally(() => {
-        // Stream ended (naturally or via abort) — clear so startSSE can reconnect
         sseControllers.current.delete(agentId)
       })
     },
     [id],
   )
 
-  // Start SSE for terminal agents via REST (load-once), SSE for active agents
   useEffect(() => {
     if (!id || agents.length === 0) return
     for (const agent of agents) {
       if (TERMINAL_STATUSES.includes(agent.status)) {
         if (!eventMap[agent.id]) {
           getAgentEvents(id, agent.id, 0).then((evts) => {
+            const filtered = evts.filter((e) => !e.type.startsWith('session.'))
+            for (const e of filtered) seenEventIds.current.add(e.id)
             setEventMap((prev) => ({
               ...prev,
-              [agent.id]: evts.filter((e) => !e.type.startsWith('session.')),
+              [agent.id]: filtered,
             }))
             setAgentTerminal((prev) => ({ ...prev, [agent.id]: true }))
           })
@@ -223,19 +240,16 @@ export default function WorkspaceDetailPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agents, id])
 
-  // Cleanup SSE connections on unmount
   useEffect(() => {
     return () => {
       for (const ctrl of sseControllers.current.values()) ctrl.abort()
     }
   }, [])
 
-  // Persist user messages to localStorage
   useEffect(() => {
     if (id) localStorage.setItem(`user-messages-${id}`, JSON.stringify(userMessages))
   }, [id, userMessages])
 
-  // Auto-scroll feed
   useEffect(() => {
     feedBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [eventMap, userMessages])
@@ -243,7 +257,6 @@ export default function WorkspaceDetailPage() {
   // ── Feed building ─────────────────────────────────────────────────────────
 
   const feed = useMemo((): FeedItem[] => {
-    // Collect all events from all agents + user messages
     const allRaw: { event: AgentEvent; agentId: string }[] = []
     for (const [agentId, evts] of Object.entries(eventMap)) {
       for (const ev of evts) allRaw.push({ event: ev, agentId })
@@ -263,9 +276,7 @@ export default function WorkspaceDetailPage() {
     allRaw.sort((a, b) => a.event.timestamp.localeCompare(b.event.timestamp))
 
     const items: FeedItem[] = []
-    // Track current open text buffer per message_id
     const textBuffers: Record<string, { idx: number; text: string }> = {}
-    // Track index of the most recent activity block per agent
     const activityIdx: Record<string, number> = {}
 
     for (const { event, agentId } of allRaw) {
@@ -304,7 +315,6 @@ export default function WorkspaceDetailPage() {
       } else if (isActivity(event.type)) {
         const idx = activityIdx[agentId]
         if (idx !== undefined) {
-          // Update existing block in-place
           const item = items[idx] as Extract<FeedItem, { kind: 'activity' }>
           item.block = {
             ...item.block,
@@ -312,7 +322,6 @@ export default function WorkspaceDetailPage() {
             history: [...item.block.history, event],
           }
         } else {
-          // Create new activity block; blockId is stable (keyed to first event)
           const blockId = `act-${agentId}-${event.id}`
           activityIdx[agentId] = items.length
           items.push({
@@ -321,7 +330,6 @@ export default function WorkspaceDetailPage() {
           })
         }
       }
-      // session.* events: already excluded from eventMap, skip
     }
 
     return items
@@ -351,7 +359,7 @@ export default function WorkspaceDetailPage() {
     setCreating(true)
     try {
       const agent = await createAgent(id, {
-        type: 'opencode',
+        agent_type: 'opencode',
         model,
         prompt: prompt.trim(),
         name: name.trim() || undefined,
@@ -361,7 +369,6 @@ export default function WorkspaceDetailPage() {
       setShowForm(false)
       setFormPrompt('')
       setFormName('')
-      // Start SSE immediately for new agent
       startSSE(agent.id)
     } finally {
       setCreating(false)
@@ -380,7 +387,6 @@ export default function WorkspaceDetailPage() {
           { agentId: targetAgentId, prompt: chatInput.trim(), timestamp: new Date().toISOString() },
         ])
         await sendMessage(id, targetAgentId, chatInput.trim())
-        // Agent will start a new session turn — clear terminal flag and reconnect SSE
         setAgentTerminal((prev) => ({ ...prev, [targetAgentId]: false }))
         startSSE(targetAgentId)
       }
@@ -392,43 +398,66 @@ export default function WorkspaceDetailPage() {
 
   const workspaceName = workspace?.name ?? '…'
 
+  // ── Graph panel resize ────────────────────────────────────────────────────
+
+  const handleGraphDragStart = (e: React.MouseEvent) => {
+    isDragging.current = true
+    dragStartX.current = e.clientX
+    dragStartWidth.current = graphWidth
+    e.preventDefault()
+  }
+
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (!isDragging.current) return
+      const delta = dragStartX.current - e.clientX
+      setGraphWidth(Math.max(180, Math.min(800, dragStartWidth.current + delta)))
+    }
+    const onMouseUp = () => { isDragging.current = false }
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+    }
+  }, [])
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div style={styles.page}>
-      {/* Header / menu bar */}
+      {/* Header */}
       <div style={styles.header}>
-        <Link to="/workspaces" style={styles.back}>[ ← Back ]</Link>
-        <span style={styles.headerSep}>══</span>
-        <span style={styles.title}>{workspaceName.toUpperCase()}</span>
-        <span style={styles.headerFill}>{'═'.repeat(40)}</span>
+        <Link to="/workspaces" style={styles.back}>← Back</Link>
+        <span style={styles.headerSep}>/</span>
+        <span style={styles.title}>{workspaceName}</span>
       </div>
 
       {/* Body */}
       <div style={styles.body}>
         {/* Sidebar */}
         <div style={styles.sidebar}>
-          <div style={styles.sidebarTitle}>AGENTS</div>
+          <div style={styles.sidebarLabel}>Agents</div>
 
           <button style={styles.newAgentBtn} onClick={() => setShowForm((v) => !v)}>
-            {showForm ? '[ ▲ Close Form ]' : '[ + New Agent  ]'}
+            {showForm ? '✕ Close' : '+ New agent'}
           </button>
 
           {showForm && (
             <div style={styles.form}>
               <div style={styles.formRow}>
-                <label style={styles.label}>Model:</label>
+                <label style={styles.label}>Model</label>
                 <select
                   style={styles.select}
                   value={formModel}
                   onChange={(e) => setFormModel(e.target.value)}
                 >
-                  <optgroup label="── Anthropic ──">
+                  <optgroup label="Anthropic">
                     {ANTHROPIC_MODELS.map((m) => (
                       <option key={m.value} value={m.value}>{m.label}</option>
                     ))}
                   </optgroup>
-                  <optgroup label="── OpenAI ──">
+                  <optgroup label="OpenAI">
                     {OPENAI_MODELS.map((m) => (
                       <option key={m.value} value={m.value}>{m.label}</option>
                     ))}
@@ -436,7 +465,7 @@ export default function WorkspaceDetailPage() {
                 </select>
               </div>
               <div style={styles.formRow}>
-                <label style={styles.label}>Name (opt):</label>
+                <label style={styles.label}>Name (optional)</label>
                 <input
                   style={styles.input}
                   value={formName}
@@ -445,7 +474,7 @@ export default function WorkspaceDetailPage() {
                 />
               </div>
               <div style={styles.formRow}>
-                <label style={styles.label}>Prompt:</label>
+                <label style={styles.label}>Prompt</label>
                 <textarea
                   style={styles.textarea}
                   value={formPrompt}
@@ -455,11 +484,11 @@ export default function WorkspaceDetailPage() {
                 />
               </div>
               <button
-                style={{ ...styles.submitBtn, opacity: creating || !formPrompt.trim() ? 0.5 : 1 }}
+                style={{ ...styles.submitBtn, opacity: creating || !formPrompt.trim() ? 0.4 : 1 }}
                 disabled={creating || !formPrompt.trim()}
                 onClick={() => handleCreateAgent(formPrompt, formModel, formName)}
               >
-                {creating ? '[ Dispatching… ]' : '[   Dispatch   ]'}
+                {creating ? 'Dispatching…' : 'Dispatch'}
               </button>
             </div>
           )}
@@ -478,6 +507,12 @@ export default function WorkspaceDetailPage() {
                   sseControllers.current.delete(agent.id)
                   await deleteAgent(id, agent.id)
                   setAgents((prev) => prev.filter((a) => a.id !== agent.id))
+                  setEventMap((prev) => {
+                    const next = { ...prev }
+                    delete next[agent.id]
+                    return next
+                  })
+                  setUserMessages((prev) => prev.filter((m) => m.agentId !== agent.id))
                   if (selectedAgentId === agent.id) setSelectedAgentId(null)
                 }}
               />
@@ -485,21 +520,20 @@ export default function WorkspaceDetailPage() {
           </div>
         </div>
 
-        {/* Main terminal */}
+        {/* Main feed */}
         <div style={styles.main}>
           <div style={styles.feed}>
             {feed.length === 0 && (
               <div style={styles.empty}>
-                {'─'.repeat(20)} NO EVENTS {'─'.repeat(20)}<br />
-                Dispatch an agent to get started.
+                No events yet. Dispatch an agent to get started.
               </div>
             )}
 
-            {feed.map((item, i) => {
+            {feed.map((item) => {
               if (item.kind === 'user') {
                 return (
                   <div key={item.key} style={styles.userRow}>
-                    <span style={styles.userPrefix}>YOU ▶ {agentName(item.agentId)}:</span>
+                    <span style={styles.userPrefix}>you → {agentName(item.agentId)}:</span>
                     <span style={styles.userText}>{item.prompt}</span>
                   </div>
                 )
@@ -508,7 +542,7 @@ export default function WorkspaceDetailPage() {
               if (item.kind === 'message') {
                 return (
                   <div key={item.key} style={styles.msgRow}>
-                    <span style={styles.msgPrefix}>{agentName(item.agentId)} ▶</span>
+                    <span style={styles.msgPrefix}>{agentName(item.agentId)}:</span>
                     <span style={styles.msgText}>
                       {String(item.event.data.accumulated ?? item.event.data.delta ?? '')}
                     </span>
@@ -516,7 +550,6 @@ export default function WorkspaceDetailPage() {
                 )
               }
 
-              // activity block
               return (
                 <ActivityLine
                   key={item.block.blockId}
@@ -531,7 +564,7 @@ export default function WorkspaceDetailPage() {
             <div ref={feedBottomRef} />
           </div>
 
-          {/* Per-agent status indicators (fixed above input bar) */}
+          {/* Agent status indicators */}
           {agents.some((a) => !agentTerminal[a.id]) && (
             <div style={styles.statusBar}>
               {agents
@@ -541,12 +574,12 @@ export default function WorkspaceDetailPage() {
                     <span style={styles.statusName}>{agentName(a.id)}</span>
                     {agentBusy[a.id] ? (
                       <span style={styles.statusDots}>
-                        <span className="dos-dot-1">.</span>
-                        <span className="dos-dot-2">.</span>
-                        <span className="dos-dot-3">.</span>
+                        <span className="pulse-dot-1">·</span>
+                        <span className="pulse-dot-2">·</span>
+                        <span className="pulse-dot-3">·</span>
                       </span>
                     ) : (
-                      <span style={styles.statusDotsIdle}>...</span>
+                      <span style={styles.statusDotsIdle}>···</span>
                     )}
                   </span>
                 ))}
@@ -555,7 +588,6 @@ export default function WorkspaceDetailPage() {
 
           {/* Input bar */}
           <div style={styles.inputBar}>
-            <span style={styles.inputLabel}>Agent:</span>
             <select
               style={styles.targetSelect}
               value={targetAgentId}
@@ -568,12 +600,11 @@ export default function WorkspaceDetailPage() {
                 </option>
               ))}
             </select>
-            <span style={styles.inputPrompt}>▶</span>
             <input
               style={styles.chatInput}
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
-              placeholder={targetAgentId === 'new' ? 'dispatch a new agent…' : 'send a message…'}
+              placeholder={targetAgentId === 'new' ? 'Dispatch a new agent…' : 'Send a message…'}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault()
@@ -582,14 +613,33 @@ export default function WorkspaceDetailPage() {
               }}
             />
             <button
-              style={{ ...styles.sendBtn, opacity: creating || !chatInput.trim() ? 0.5 : 1 }}
+              style={{ ...styles.sendBtn, opacity: creating || !chatInput.trim() ? 0.4 : 1 }}
               disabled={creating || !chatInput.trim()}
               onClick={handleChatSend}
             >
-              [ Send ]
+              Send
             </button>
           </div>
         </div>
+
+        {/* Drag handle */}
+        {id && (
+          <div
+            onMouseDown={handleGraphDragStart}
+            style={{
+              width: 5,
+              flexShrink: 0,
+              cursor: 'col-resize',
+              background: 'var(--border)',
+              transition: 'background 0.15s',
+            }}
+            onMouseEnter={e => (e.currentTarget.style.background = 'var(--accent)')}
+            onMouseLeave={e => (e.currentTarget.style.background = 'var(--border)')}
+          />
+        )}
+
+        {/* Graph editor panel */}
+        {id && <GraphPanel workspaceId={id} width={graphWidth} />}
       </div>
     </div>
   )
@@ -602,135 +652,215 @@ const styles: Record<string, React.CSSProperties> = {
     height: '100vh',
     maxWidth: '100%',
     overflow: 'hidden',
-    background: '#0000AA',
-    fontFamily: 'Courier New, Courier, monospace',
-    fontSize: '13px',
-    color: '#FFFFFF',
+    background: 'var(--bg)',
+    color: 'var(--text)',
   },
   header: {
     display: 'flex',
     alignItems: 'center',
-    gap: '0.5rem',
-    padding: '2px 8px',
-    background: '#AAAAAA',
-    color: '#000000',
+    gap: '8px',
+    padding: '10px 16px',
+    background: 'var(--surface)',
+    borderBottom: '1px solid var(--border)',
     flexShrink: 0,
-    overflow: 'hidden',
   },
   back: {
-    color: '#000000',
+    color: 'var(--text-dim)',
     textDecoration: 'none',
-    fontWeight: 'bold',
-    flexShrink: 0,
+    fontSize: '13px',
   },
-  headerSep: { color: '#555555', flexShrink: 0 },
-  title: { fontWeight: 'bold', flexShrink: 0, letterSpacing: '0.5px' },
-  headerFill: { color: '#555555', overflow: 'hidden', flex: 1 },
+  headerSep: { color: 'var(--border)', fontSize: '13px' },
+  title: { fontWeight: 600, fontSize: '14px', color: 'var(--text)' },
   body: { display: 'flex', flex: 1, overflow: 'hidden' },
+
+  // Sidebar
   sidebar: {
-    width: '260px',
+    width: '240px',
     flexShrink: 0,
-    background: '#000080',
+    background: 'var(--surface)',
+    borderRight: '1px solid var(--border)',
     display: 'flex',
     flexDirection: 'column',
-    padding: '4px 6px',
+    padding: '12px 8px',
     overflowY: 'auto',
-    gap: '2px',
+    gap: '4px',
   },
-  sidebarTitle: { color: '#55FFFF', marginBottom: '2px' },
-  newAgentBtn: {
-    width: '100%',
-    padding: '1px 0',
-    background: '#AAAAAA',
-    color: '#000000',
-    border: 'none',
-    cursor: 'pointer',
+  sidebarLabel: {
+    color: 'var(--text-muted)',
+    fontSize: '11px',
+    fontWeight: 600,
+    textTransform: 'uppercase',
+    letterSpacing: '0.08em',
+    padding: '0 6px',
     marginBottom: '4px',
   },
-  form: { marginBottom: '6px' },
-  formRow: { marginBottom: '2px' },
-  label: { display: 'block', marginBottom: '1px' },
+  newAgentBtn: {
+    width: '100%',
+    padding: '6px 10px',
+    background: 'transparent',
+    color: 'var(--text)',
+    border: '1px solid var(--border)',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '13px',
+    textAlign: 'left',
+    marginBottom: '4px',
+  },
+  form: { display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '8px' },
+  formRow: { display: 'flex', flexDirection: 'column', gap: '3px' },
+  label: { fontSize: '11px', color: 'var(--text-muted)', display: 'block' },
   select: {
-    width: '100%', padding: '0 4px', border: 'none',
-    background: '#AAAAAA', color: '#000000', outline: 'none', display: 'block',
+    width: '100%',
+    padding: '5px 8px',
+    background: 'var(--surface-2)',
+    border: '1px solid var(--border)',
+    borderRadius: '4px',
+    color: 'var(--text)',
+    outline: 'none',
+    fontSize: '13px',
+    display: 'block',
   },
   input: {
-    width: '100%', padding: '0 4px', border: 'none',
-    background: '#AAAAAA', color: '#000000', outline: 'none', display: 'block',
+    width: '100%',
+    padding: '5px 8px',
+    background: 'var(--surface-2)',
+    border: '1px solid var(--border)',
+    borderRadius: '4px',
+    color: 'var(--text)',
+    outline: 'none',
+    fontSize: '13px',
+    display: 'block',
   },
   textarea: {
-    width: '100%', padding: '1px 4px', border: 'none',
-    background: '#AAAAAA', color: '#000000', resize: 'vertical', outline: 'none', display: 'block',
+    width: '100%',
+    padding: '5px 8px',
+    background: 'var(--surface-2)',
+    border: '1px solid var(--border)',
+    borderRadius: '4px',
+    color: 'var(--text)',
+    resize: 'vertical',
+    outline: 'none',
+    fontSize: '13px',
+    display: 'block',
   },
   submitBtn: {
-    width: '100%', padding: '1px 0', background: '#AAAAAA', color: '#000000',
-    border: 'none', cursor: 'pointer',
+    width: '100%',
+    padding: '7px',
+    background: 'var(--accent)',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '13px',
+    fontWeight: 500,
   },
-  agentList: { flex: 1 },
-  main: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#0000AA' },
+  agentList: { flex: 1, display: 'flex', flexDirection: 'column', gap: '2px' },
+
+  // Main
+  main: {
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
+    background: 'var(--bg)',
+  },
   feed: {
-    flex: 1, overflowY: 'auto', padding: '8px 12px',
-    display: 'flex', flexDirection: 'column', gap: '2px',
+    flex: 1,
+    overflowY: 'auto',
+    padding: '16px 20px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '10px',
   },
-  empty: { color: '#AAAAAA', textAlign: 'center', marginTop: '3rem', lineHeight: 1.8 },
+  empty: {
+    color: 'var(--text-muted)',
+    textAlign: 'center',
+    marginTop: '3rem',
+  },
 
   // User message row
-  userRow: { display: 'flex', gap: '6px', flexWrap: 'wrap' },
-  userPrefix: { color: '#FFFF55', fontWeight: 'bold', flexShrink: 0 },
-  userText: { color: '#FFFF55', whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
+  userRow: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'baseline' },
+  userPrefix: { color: 'var(--user-color)', fontSize: '12px', flexShrink: 0, opacity: 0.8 },
+  userText: { color: 'var(--user-color)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
 
   // Agent text message row
-  msgRow: { display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'flex-start' },
-  msgPrefix: { color: '#55FFFF', fontWeight: 'bold', flexShrink: 0 },
-  msgText: { color: '#FFFFFF', whiteSpace: 'pre-wrap', wordBreak: 'break-word', flex: 1 },
+  msgRow: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'baseline' },
+  msgPrefix: { color: 'var(--accent)', fontSize: '12px', fontWeight: 600, flexShrink: 0 },
+  msgText: { color: 'var(--text)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', flex: 1 },
 
   // Activity block
   activityWrap: { display: 'flex', flexDirection: 'column' },
-  activityRow: { display: 'flex', alignItems: 'center', gap: '4px' },
+  activityRow: { display: 'flex', alignItems: 'center', gap: '6px' },
   chevron: {
-    background: 'none', border: 'none', color: '#AAAAAA', cursor: 'pointer',
-    padding: '0', flexShrink: 0,
-    fontFamily: 'Courier New, Courier, monospace',
+    background: 'none',
+    border: 'none',
+    color: 'var(--text-muted)',
+    cursor: 'pointer',
+    padding: '0',
+    flexShrink: 0,
+    fontSize: '14px',
+    lineHeight: 1,
   },
-  activityPrefix: { color: '#55FFFF', fontWeight: 'bold', flexShrink: 0 },
-  activityLatest: { color: '#AAAAAA' },
-  historyList: { paddingLeft: '28px', display: 'flex', flexDirection: 'column', gap: '1px' },
+  activityPrefix: { color: 'var(--text-dim)', fontSize: '12px', flexShrink: 0 },
+  activityLatest: { color: 'var(--text-muted)', fontSize: '13px' },
+  historyList: { paddingLeft: '20px', display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '4px' },
   historyItem: { display: 'flex', gap: '4px', alignItems: 'flex-start' },
-  historyBullet: { color: '#555555', flexShrink: 0 },
 
-  // Status bar (between feed and input)
+  // Status bar
   statusBar: {
-    background: '#000066',
-    padding: '2px 12px',
+    background: 'var(--surface)',
+    borderTop: '1px solid var(--border)',
+    padding: '6px 20px',
     display: 'flex',
-    gap: '1rem',
+    gap: '16px',
     flexShrink: 0,
     flexWrap: 'wrap',
   },
-  statusItem: { display: 'inline-flex', alignItems: 'baseline', gap: '3px' },
-  statusName: { color: '#AAAAAA' },
-  statusDots: { color: '#FFFFFF', letterSpacing: '1px' },
-  statusDotsIdle: { color: '#555555', letterSpacing: '1px' },
+  statusItem: { display: 'inline-flex', alignItems: 'baseline', gap: '4px' },
+  statusName: { color: 'var(--text-dim)', fontSize: '12px' },
+  statusDots: { color: 'var(--text)', letterSpacing: '2px', fontSize: '12px' },
+  statusDotsIdle: { color: 'var(--text-muted)', letterSpacing: '2px', fontSize: '12px' },
 
   // Input bar
   inputBar: {
-    display: 'flex', alignItems: 'center', gap: '0.375rem',
-    padding: '2px 6px',
-    background: '#000066', flexShrink: 0,
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    padding: '10px 16px',
+    background: 'var(--surface)',
+    borderTop: '1px solid var(--border)',
+    flexShrink: 0,
   },
-  inputLabel: { color: '#55FFFF', flexShrink: 0 },
   targetSelect: {
-    padding: '0 4px', border: 'none',
-    background: '#AAAAAA', color: '#000000',
-    flexShrink: 0, maxWidth: '150px', outline: 'none',
+    padding: '7px 8px',
+    background: 'var(--surface-2)',
+    border: '1px solid var(--border)',
+    borderRadius: '4px',
+    color: 'var(--text)',
+    flexShrink: 0,
+    maxWidth: '160px',
+    outline: 'none',
+    fontSize: '13px',
   },
-  inputPrompt: { color: '#55FFFF', flexShrink: 0 },
   chatInput: {
-    flex: 1, padding: '0 6px', border: 'none',
-    background: '#AAAAAA', color: '#000000', outline: 'none',
+    flex: 1,
+    padding: '7px 12px',
+    background: 'var(--surface-2)',
+    border: '1px solid var(--border)',
+    borderRadius: '4px',
+    color: 'var(--text)',
+    outline: 'none',
+    fontSize: '14px',
   },
   sendBtn: {
-    padding: '1px 10px', background: '#AAAAAA', color: '#000000',
-    border: 'none', cursor: 'pointer', flexShrink: 0,
+    padding: '7px 16px',
+    background: 'var(--accent)',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    flexShrink: 0,
+    fontSize: '14px',
+    fontWeight: 500,
   },
 }

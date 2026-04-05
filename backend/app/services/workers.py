@@ -85,6 +85,7 @@ def delete_worker(session: Session, worker_id: uuid.UUID) -> None:
         _delete_ignore_404(core.delete_namespaced_service, worker.nodeport_service_name)
 
     worker.status = WorkerStatus.terminated
+    worker.deleted = True
     worker.updated_at = datetime.datetime.utcnow()
     session.add(worker)
     session.commit()

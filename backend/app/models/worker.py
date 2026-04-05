@@ -1,9 +1,13 @@
-import datetime
 import uuid
 from enum import Enum
-from typing import Optional
+from typing import TYPE_CHECKING, List, Optional
 
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, Relationship
+
+from .base import RomulusBase
+
+if TYPE_CHECKING:
+    from .sandbox import Sandbox
 
 
 class WorkerStatus(str, Enum):
@@ -14,7 +18,7 @@ class WorkerStatus(str, Enum):
     terminated = "terminated"
 
 
-class Worker(SQLModel, table=True):
+class Worker(RomulusBase, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     status: WorkerStatus = Field(default=WorkerStatus.pending)
     worker_url: Optional[str] = Field(default=None)
@@ -22,5 +26,5 @@ class Worker(SQLModel, table=True):
     service_name: Optional[str] = Field(default=None)
     nodeport_service_name: Optional[str] = Field(default=None)
     node_port: Optional[int] = Field(default=None)
-    created_at: datetime.datetime = Field(default_factory=datetime.datetime.utcnow)
-    updated_at: datetime.datetime = Field(default_factory=datetime.datetime.utcnow)
+
+    sandboxes: List["Sandbox"] = Relationship(back_populates="worker")

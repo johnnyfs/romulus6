@@ -51,7 +51,8 @@ test.describe('Agent API', () => {
 
     // --- create Greeter and Farewell agents ---
     const greeterRes = await request.post(`/api/v1/workspaces/${workspaceId}/agents`, {
-      data: { type: 'opencode', model: 'anthropic/claude-haiku-4-5', name: 'Greeter', prompt: 'Just say hi. One sentence only.' },
+      data: { agent_type: 'opencode', model: 'anthropic/claude-haiku-4-5', name: 'Greeter', prompt: 'Just say hi. One sentence only.' },
+      timeout: 120_000,
     });
     expect(greeterRes.status()).toBe(201);
     const greeter = await greeterRes.json();
@@ -60,7 +61,8 @@ test.describe('Agent API', () => {
     expect(greeter.session_id).toBeTruthy();
 
     const farewellRes = await request.post(`/api/v1/workspaces/${workspaceId}/agents`, {
-      data: { type: 'opencode', model: 'anthropic/claude-haiku-4-5', name: 'Farewell', prompt: 'Just say bye. One sentence only.' },
+      data: { agent_type: 'opencode', model: 'anthropic/claude-haiku-4-5', name: 'Farewell', prompt: 'Just say bye. One sentence only.' },
+      timeout: 120_000,
     });
     expect(farewellRes.status()).toBe(201);
     const farewell = await farewellRes.json();

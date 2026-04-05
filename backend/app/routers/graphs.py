@@ -1,12 +1,13 @@
 import datetime
 import uuid
-from typing import Annotated, Any
+from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlmodel import Session
 
 from app.database import get_session
+from app.models.agent import AgentConfig
 from app.models.graph import Graph, NodeType
 from app.models.workspace import Workspace
 from app.services import graphs as svc
@@ -24,6 +25,8 @@ SessionDep = Annotated[Session, Depends(get_session)]
 
 class NodeInputSchema(BaseModel):
     node_type: NodeType = NodeType.nop
+    name: Optional[str] = None
+    agent_config: Optional[AgentConfig] = None
 
 
 class EdgeInputSchema(BaseModel):
@@ -39,6 +42,14 @@ class CreateGraphRequest(BaseModel):
 
 class AddNodeRequest(BaseModel):
     node_type: NodeType = NodeType.nop
+    name: Optional[str] = None
+    agent_config: Optional[AgentConfig] = None
+
+
+class PatchNodeRequest(BaseModel):
+    name: Optional[str] = None
+    node_type: Optional[NodeType] = None
+    agent_config: Optional[AgentConfig] = None
 
 
 class AddEdgeRequest(BaseModel):
@@ -52,6 +63,8 @@ class GraphNodeResponse(BaseModel):
     id: uuid.UUID
     graph_id: uuid.UUID
     node_type: NodeType
+    name: Optional[str] = None
+    agent_config: Optional[AgentConfig] = None
     created_at: datetime.datetime
 
     model_config = {"from_attributes": True}
@@ -79,6 +92,40 @@ class GraphDetailResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class GraphRunNodeResponse(BaseModel):
+    id: uuid.UUID
+    run_id: uuid.UUID
+    source_node_id: uuid.UUID
+    node_type: str
+    name: Optional[str] = None
+    state: str
+    agent_config: Optional[AgentConfig] = None
+    created_at: datetime.datetime
+
+    model_config = {"from_attributes": True}
+
+
+class GraphRunEdgeResponse(BaseModel):
+    id: uuid.UUID
+    run_id: uuid.UUID
+    from_run_node_id: uuid.UUID
+    to_run_node_id: uuid.UUID
+    created_at: datetime.datetime
+
+    model_config = {"from_attributes": True}
+
+
+class GraphRunResponse(BaseModel):
+    id: uuid.UUID
+    graph_id: uuid.UUID
+    workspace_id: uuid.UUID
+    created_at: datetime.datetime
+    run_nodes: list[GraphRunNodeResponse]
+    run_edges: list[GraphRunEdgeResponse]
+
+    model_config = {"from_attributes": True}
+
+
 # --- Helpers ---
 
 def _require_workspace(workspace_id: uuid.UUID, session: Session) -> Workspace:
@@ -101,6 +148,36 @@ def _require_graph(
     return graph
 
 
+def _agent_config_from(obj: Any) -> Optional[AgentConfig]:
+    if obj.agent_type is None:
+        return None
+    return AgentConfig(agent_type=obj.agent_type, model=obj.model, prompt=obj.prompt)
+
+
+def _node_response(n: Any) -> GraphNodeResponse:
+    return GraphNodeResponse(
+        id=n.id,
+        graph_id=n.graph_id,
+        node_type=n.node_type,
+        name=n.name,
+        agent_config=_agent_config_from(n),
+        created_at=n.created_at,
+    )
+
+
+def _run_node_response(rn: Any) -> GraphRunNodeResponse:
+    return GraphRunNodeResponse(
+        id=rn.id,
+        run_id=rn.run_id,
+        source_node_id=rn.source_node_id,
+        node_type=rn.node_type,
+        name=rn.name,
+        state=rn.state,
+        agent_config=_agent_config_from(rn),
+        created_at=rn.created_at,
+    )
+
+
 def _to_detail(graph: Any) -> GraphDetailResponse:
     return GraphDetailResponse(
         id=graph.id,
@@ -108,8 +185,19 @@ def _to_detail(graph: Any) -> GraphDetailResponse:
         name=graph.name,
         created_at=graph.created_at,
         updated_at=graph.updated_at,
-        nodes=[GraphNodeResponse.model_validate(n) for n in graph.nodes],
+        nodes=[_node_response(n) for n in graph.nodes],
         edges=[GraphEdgeResponse.model_validate(e) for e in graph.edges],
+    )
+
+
+def _node_input(n: NodeInputSchema) -> NodeInput:
+    ac = n.agent_config
+    return NodeInput(
+        node_type=n.node_type,
+        name=n.name,
+        agent_type=ac.agent_type if ac else None,
+        model=ac.model.value if ac else None,
+        prompt=ac.prompt if ac else None,
     )
 
 
@@ -125,7 +213,7 @@ def create_graph(
             session,
             workspace_id=workspace_id,
             name=body.name,
-            nodes=[NodeInput(node_type=n.node_type) for n in body.nodes],
+            nodes=[_node_input(n) for n in body.nodes],
             edges=[EdgeInput(from_index=e.from_index, to_index=e.to_index) for e in body.edges],
         )
     except ValueError as e:
@@ -160,7 +248,7 @@ def update_graph(
             session,
             graph=graph,
             name=body.name,
-            nodes=[NodeInput(node_type=n.node_type) for n in body.nodes],
+            nodes=[_node_input(n) for n in body.nodes],
             edges=[EdgeInput(from_index=e.from_index, to_index=e.to_index) for e in body.edges],
         )
     except ValueError as e:
@@ -189,8 +277,17 @@ def add_node(
 ) -> Any:
     _require_workspace(workspace_id, session)
     graph = _require_graph(workspace_id, graph_id, session)
-    node = svc.add_node(session, graph=graph, node_type=body.node_type)
-    return GraphNodeResponse.model_validate(node)
+    ac = body.agent_config
+    node = svc.add_node(
+        session,
+        graph=graph,
+        node_type=body.node_type,
+        name=body.name,
+        agent_type=ac.agent_type if ac else None,
+        model=ac.model.value if ac else None,
+        prompt=ac.prompt if ac else None,
+    )
+    return _node_response(node)
 
 
 @router.delete(
@@ -207,6 +304,35 @@ def delete_node(
     deleted = svc.delete_node(session, graph=graph, node_id=node_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Node not found")
+
+
+@router.patch(
+    "/{graph_id}/nodes/{node_id}",
+    response_model=GraphNodeResponse,
+)
+def patch_node(
+    workspace_id: uuid.UUID,
+    graph_id: uuid.UUID,
+    node_id: uuid.UUID,
+    body: PatchNodeRequest,
+    session: SessionDep,
+) -> Any:
+    _require_workspace(workspace_id, session)
+    graph = _require_graph(workspace_id, graph_id, session)
+    ac = body.agent_config
+    node = svc.patch_node(
+        session,
+        graph=graph,
+        node_id=node_id,
+        name=body.name,
+        node_type=body.node_type,
+        agent_type=ac.agent_type if ac else None,
+        model=ac.model.value if ac else None,
+        prompt=ac.prompt if ac else None,
+    )
+    if node is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Node not found")
+    return _node_response(node)
 
 
 @router.post(
@@ -251,3 +377,26 @@ def delete_edge(
     deleted = svc.delete_edge(session, graph=graph, edge_id=edge_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Edge not found")
+
+
+@router.post(
+    "/{graph_id}/runs",
+    response_model=GraphRunResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_run(
+    workspace_id: uuid.UUID,
+    graph_id: uuid.UUID,
+    session: SessionDep,
+) -> Any:
+    _require_workspace(workspace_id, session)
+    graph = _require_graph(workspace_id, graph_id, session)
+    run = svc.create_run(session, graph=graph)
+    return GraphRunResponse(
+        id=run.id,
+        graph_id=run.graph_id,
+        workspace_id=run.workspace_id,
+        created_at=run.created_at,
+        run_nodes=[_run_node_response(rn) for rn in run.run_nodes],
+        run_edges=[GraphRunEdgeResponse.model_validate(re) for re in run.run_edges],
+    )

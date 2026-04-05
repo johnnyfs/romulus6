@@ -6,11 +6,16 @@ from typing import Optional
 from sqlmodel import Session, select
 
 from app.models.graph import Graph, GraphEdge, GraphNode, NodeType
+from app.models.run import GraphRun, GraphRunEdge, GraphRunNode
 
 
 @dataclass
 class NodeInput:
     node_type: NodeType = NodeType.nop
+    name: Optional[str] = None
+    agent_type: Optional[str] = None
+    model: Optional[str] = None
+    prompt: Optional[str] = None
 
 
 @dataclass
@@ -75,7 +80,14 @@ def create_graph(
 
     db_nodes = []
     for node_input in nodes:
-        node = GraphNode(graph_id=graph.id, node_type=node_input.node_type)
+        node = GraphNode(
+            graph_id=graph.id,
+            node_type=node_input.node_type,
+            name=node_input.name,
+            agent_type=node_input.agent_type,
+            model=node_input.model,
+            prompt=node_input.prompt,
+        )
         session.add(node)
         db_nodes.append(node)
     session.flush()
@@ -94,14 +106,14 @@ def create_graph(
 
 
 def list_graphs(session: Session, workspace_id: uuid.UUID) -> list[Graph]:
-    return list(session.exec(select(Graph).where(Graph.workspace_id == workspace_id)).all())
+    return list(session.exec(Graph.active().where(Graph.workspace_id == workspace_id)).all())
 
 
 def get_graph(
     session: Session, workspace_id: uuid.UUID, graph_id: uuid.UUID
 ) -> Optional[Graph]:
     graph = session.get(Graph, graph_id)
-    if graph is None or graph.workspace_id != workspace_id:
+    if graph is None or graph.workspace_id != workspace_id or graph.deleted:
         return None
     return graph
 
@@ -132,7 +144,14 @@ def update_graph(
 
     db_nodes = []
     for node_input in nodes:
-        node = GraphNode(graph_id=graph.id, node_type=node_input.node_type)
+        node = GraphNode(
+            graph_id=graph.id,
+            node_type=node_input.node_type,
+            name=node_input.name,
+            agent_type=node_input.agent_type,
+            model=node_input.model,
+            prompt=node_input.prompt,
+        )
         session.add(node)
         db_nodes.append(node)
     session.flush()
@@ -159,13 +178,68 @@ def delete_graph(
     graph = get_graph(session, workspace_id, graph_id)
     if graph is None:
         return False
-    session.delete(graph)
+    now = datetime.datetime.utcnow()
+    for edge in session.exec(select(GraphEdge).where(GraphEdge.graph_id == graph.id)).all():
+        edge.deleted = True
+        edge.updated_at = now
+        session.add(edge)
+    for node in session.exec(select(GraphNode).where(GraphNode.graph_id == graph.id)).all():
+        node.deleted = True
+        node.updated_at = now
+        session.add(node)
+    graph.deleted = True
+    graph.updated_at = now
+    session.add(graph)
     session.commit()
     return True
 
 
-def add_node(session: Session, graph: Graph, node_type: NodeType) -> GraphNode:
-    node = GraphNode(graph_id=graph.id, node_type=node_type)
+def add_node(
+    session: Session,
+    graph: Graph,
+    node_type: NodeType,
+    name: Optional[str] = None,
+    agent_type: Optional[str] = None,
+    model: Optional[str] = None,
+    prompt: Optional[str] = None,
+) -> GraphNode:
+    node = GraphNode(
+        graph_id=graph.id,
+        node_type=node_type,
+        name=name,
+        agent_type=agent_type,
+        model=model,
+        prompt=prompt,
+    )
+    session.add(node)
+    session.commit()
+    session.refresh(node)
+    return node
+
+
+def patch_node(
+    session: Session,
+    graph: Graph,
+    node_id: uuid.UUID,
+    name: Optional[str],
+    node_type: Optional[NodeType],
+    agent_type: Optional[str] = None,
+    model: Optional[str] = None,
+    prompt: Optional[str] = None,
+) -> Optional[GraphNode]:
+    node = session.get(GraphNode, node_id)
+    if node is None or node.graph_id != graph.id:
+        return None
+    if name is not None:
+        node.name = name
+    if node_type is not None:
+        node.node_type = node_type
+    if agent_type is not None:
+        node.agent_type = agent_type
+    if model is not None:
+        node.model = model
+    if prompt is not None:
+        node.prompt = prompt
     session.add(node)
     session.commit()
     session.refresh(node)
@@ -244,3 +318,40 @@ def delete_edge(
     session.delete(edge)
     session.commit()
     return True
+
+
+def create_run(session: Session, graph: Graph) -> GraphRun:
+    run = GraphRun(graph_id=graph.id, workspace_id=graph.workspace_id)
+    session.add(run)
+    session.flush()
+
+    # Pass 1: snapshot nodes, record old→new ID mapping
+    run_nodes: list[tuple[uuid.UUID, GraphRunNode]] = []
+    for node in graph.nodes:
+        rn = GraphRunNode(
+            run_id=run.id,
+            source_node_id=node.id,
+            node_type=node.node_type.value,
+            name=node.name,
+            state="pending",
+            agent_type=node.agent_type,
+            model=node.model,
+            prompt=node.prompt,
+        )
+        session.add(rn)
+        run_nodes.append((node.id, rn))
+    session.flush()
+
+    node_id_map = {orig: rn.id for orig, rn in run_nodes}
+
+    # Pass 2: snapshot edges using remapped IDs
+    for edge in graph.edges:
+        session.add(GraphRunEdge(
+            run_id=run.id,
+            from_run_node_id=node_id_map[edge.from_node_id],
+            to_run_node_id=node_id_map[edge.to_node_id],
+        ))
+
+    session.commit()
+    session.refresh(run)
+    return run

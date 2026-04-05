@@ -55,6 +55,7 @@ worker/opencode
 .coverage
 htmlcov/
 .tox/
+test-results/
 
 # Playwright
 tests/node_modules

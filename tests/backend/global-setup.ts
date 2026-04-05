@@ -4,6 +4,7 @@ const TEST_WORKSPACE_NAMES = new Set([
   'Test Workspace',
   'To Be Deleted',
   'Graph Test WS',
+  'Run Test WS',
   'Agent Test WS',
 ]);
 

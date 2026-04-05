@@ -1,22 +1,37 @@
-import datetime
 import uuid
 from enum import Enum
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
-from sqlmodel import Field, Relationship, SQLModel
+from sqlalchemy import Column, Index, String, text
+from sqlmodel import Field, Relationship
+
+from .base import RomulusBase
+
+if TYPE_CHECKING:
+    from .workspace import Workspace
 
 
 class NodeType(str, Enum):
     nop = "nop"
+    agent = "agent"
 
 
-class Graph(SQLModel, table=True):
+class Graph(RomulusBase, table=True):
+    __table_args__ = (
+        Index(
+            "ix_graph_workspace_name_unique",
+            "workspace_id",
+            "name",
+            unique=True,
+            postgresql_where=text("deleted = false"),
+        ),
+    )
+
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     workspace_id: uuid.UUID = Field(foreign_key="workspace.id", index=True)
     name: str
-    created_at: datetime.datetime = Field(default_factory=datetime.datetime.utcnow)
-    updated_at: datetime.datetime = Field(default_factory=datetime.datetime.utcnow)
 
+    workspace: Optional["Workspace"] = Relationship(back_populates="graphs")
     nodes: List["GraphNode"] = Relationship(
         back_populates="graph",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},
@@ -27,11 +42,24 @@ class Graph(SQLModel, table=True):
     )
 
 
-class GraphNode(SQLModel, table=True):
+class GraphNode(RomulusBase, table=True):
+    __table_args__ = (
+        Index(
+            "ix_graphnode_graph_name_unique",
+            "graph_id",
+            "name",
+            unique=True,
+            postgresql_where=text("deleted = false"),
+        ),
+    )
+
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     graph_id: uuid.UUID = Field(foreign_key="graph.id", index=True)
     node_type: NodeType = Field(default=NodeType.nop)
-    created_at: datetime.datetime = Field(default_factory=datetime.datetime.utcnow)
+    name: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    agent_type: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    model: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    prompt: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
 
     graph: Optional[Graph] = Relationship(back_populates="nodes")
     outgoing_edges: List["GraphEdge"] = Relationship(
@@ -50,12 +78,11 @@ class GraphNode(SQLModel, table=True):
     )
 
 
-class GraphEdge(SQLModel, table=True):
+class GraphEdge(RomulusBase, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     graph_id: uuid.UUID = Field(foreign_key="graph.id", index=True)
     from_node_id: uuid.UUID = Field(foreign_key="graphnode.id")
     to_node_id: uuid.UUID = Field(foreign_key="graphnode.id")
-    created_at: datetime.datetime = Field(default_factory=datetime.datetime.utcnow)
 
     graph: Optional[Graph] = Relationship(back_populates="edges")
     from_node: Optional[GraphNode] = Relationship(

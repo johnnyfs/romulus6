@@ -1,5 +1,5 @@
 import uuid
-from typing import Annotated, Any, Literal, Optional
+from typing import Annotated, Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlmodel import Session
 
 from app.database import get_session
-from app.models.agent import Agent, AgentType, AnthropicModel, OpenAIModel
+from app.models.agent import Agent, AgentConfig, AgentType
 from app.models.workspace import Workspace
 from app.services import agents as svc
 
@@ -20,17 +20,14 @@ router = APIRouter(
 SessionDep = Annotated[Session, Depends(get_session)]
 
 
-class CreateOpenCodeAgentRequest(BaseModel):
-    type: Literal["opencode"] = "opencode"
-    model: AnthropicModel | OpenAIModel
-    prompt: str
-    name: Optional[str] = None
+class CreateOpenCodeAgentRequest(AgentConfig):
+    name: str
 
 
 # To add more agent types later, convert to:
 #   CreateAgentRequest = Annotated[
 #       CreateOpenCodeAgentRequest | CreateFooAgentRequest,
-#       Field(discriminator="type")
+#       Field(discriminator="agent_type")
 #   ]
 CreateAgentRequest = CreateOpenCodeAgentRequest
 
@@ -53,7 +50,7 @@ async def create_agent(
         return await svc.create_agent(
             session,
             workspace_id=workspace_id,
-            agent_type=AgentType(body.type),
+            agent_type=AgentType(body.agent_type),
             model=body.model.value,
             prompt=body.prompt,
             name=body.name,
@@ -126,7 +123,7 @@ async def get_agent_events(
     since: int = 0,
 ) -> Any:
     _require_workspace(workspace_id, session)
-    agent = svc.get_agent(session, workspace_id, agent_id)
+    agent = svc.get_agent(session, workspace_id, agent_id, include_deleted=True)
     if agent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
     return await svc.get_agent_events(session, agent, since=since)
@@ -140,7 +137,7 @@ async def stream_agent_events(
     since: int = 0,
 ) -> StreamingResponse:
     _require_workspace(workspace_id, session)
-    agent = svc.get_agent(session, workspace_id, agent_id)
+    agent = svc.get_agent(session, workspace_id, agent_id, include_deleted=True)
     if agent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
     return StreamingResponse(
