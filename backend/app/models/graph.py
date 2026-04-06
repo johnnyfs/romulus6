@@ -8,12 +8,15 @@ from sqlmodel import Field, Relationship
 from .base import RomulusBase
 
 if TYPE_CHECKING:
+    from .template import SubgraphTemplate, TaskTemplate
     from .workspace import Workspace
 
 
 class NodeType(str, Enum):
     agent = "agent"
     command = "command"
+    task_template = "task_template"
+    subgraph_template = "subgraph_template"
 
 
 class Graph(RomulusBase, table=True):
@@ -62,8 +65,23 @@ class GraphNode(RomulusBase, table=True):
     prompt: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     command: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     graph_tools: bool = Field(default=False)
+    task_template_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="tasktemplate.id"
+    )
+    subgraph_template_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="subgraphtemplate.id"
+    )
+    argument_bindings: Optional[str] = Field(
+        default=None, sa_column=Column(String, nullable=True)
+    )
 
     graph: Optional[Graph] = Relationship(back_populates="nodes")
+    ref_task_template: Optional["TaskTemplate"] = Relationship(
+        sa_relationship_kwargs={"foreign_keys": "[GraphNode.task_template_id]"},
+    )
+    ref_subgraph_template: Optional["SubgraphTemplate"] = Relationship(
+        sa_relationship_kwargs={"foreign_keys": "[GraphNode.subgraph_template_id]"},
+    )
     outgoing_edges: List["GraphEdge"] = Relationship(
         back_populates="from_node",
         sa_relationship_kwargs={

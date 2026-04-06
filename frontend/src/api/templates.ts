@@ -1,9 +1,9 @@
-import type { NodeType } from './graphs'
+import type { AgentConfig, CommandConfig, NodeType } from './graphs'
 
 const BASE = '/api'
 
 export type TaskTemplateArgType = 'string' | 'model_type'
-export type SubgraphTemplateNodeType = 'task_template' | 'subgraph_template'
+export type SubgraphTemplateNodeType = 'agent' | 'command' | 'task_template' | 'subgraph_template'
 
 export interface TaskTemplateArgument {
   id: string
@@ -34,6 +34,8 @@ export interface SubgraphTemplateNode {
   subgraph_template_id: string
   node_type: SubgraphTemplateNodeType
   name: string | null
+  agent_config: AgentConfig | null
+  command_config: CommandConfig | null
   task_template_id: string | null
   ref_subgraph_template_id: string | null
   argument_bindings: Record<string, string> | null
@@ -197,7 +199,7 @@ export async function deleteSubgraphTemplate(workspaceId: string, templateId: st
 export async function addSubgraphTemplateNode(
   workspaceId: string,
   templateId: string,
-  body: { node_type: SubgraphTemplateNodeType; name?: string; task_template_id?: string; ref_subgraph_template_id?: string; argument_bindings?: Record<string, string> },
+  body: { node_type: SubgraphTemplateNodeType; name?: string; agent_config?: AgentConfig; command_config?: CommandConfig; task_template_id?: string; ref_subgraph_template_id?: string; argument_bindings?: Record<string, string> },
 ): Promise<SubgraphTemplateNode> {
   const res = await fetch(`${BASE}/workspaces/${workspaceId}/subgraph-templates/${templateId}/nodes`, {
     method: 'POST',
@@ -212,7 +214,7 @@ export async function patchSubgraphTemplateNode(
   workspaceId: string,
   templateId: string,
   nodeId: string,
-  patch: { name?: string; node_type?: SubgraphTemplateNodeType; task_template_id?: string; ref_subgraph_template_id?: string; argument_bindings?: Record<string, string> },
+  patch: { name?: string; node_type?: SubgraphTemplateNodeType; agent_config?: AgentConfig; command_config?: CommandConfig; task_template_id?: string; ref_subgraph_template_id?: string; argument_bindings?: Record<string, string> },
 ): Promise<SubgraphTemplateNode> {
   const res = await fetch(`${BASE}/workspaces/${workspaceId}/subgraph-templates/${templateId}/nodes/${nodeId}`, {
     method: 'PATCH',

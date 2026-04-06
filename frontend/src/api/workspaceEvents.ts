@@ -20,13 +20,20 @@ export async function listWorkspaceEvents(
     type: item.type,
     timestamp: item.event_time,
     received_at: item.received_at,
-    data: item.data ?? {},
-    source_name: item.source_name ?? null,
-    agent_id: item.agent_id ?? null,
-    source_id: item.source_id ?? null,
-    source_type: item.source_type ?? null,
-    workspace_id: item.workspace_id,
-  }))
+              data: item.data ?? {},
+              source_name: item.source_name ?? null,
+              agent_id: item.agent_id ?? null,
+              run_id: item.run_id ?? null,
+              node_id: item.node_id ?? null,
+              sandbox_id: item.sandbox_id ?? null,
+              worker_id: item.worker_id ?? null,
+              source_id: item.source_id ?? null,
+              source_type: item.source_type ?? null,
+              display_label: item.display_label ?? null,
+              path_parts: item.path_parts ?? [],
+              stream_key: item.stream_key ?? null,
+              workspace_id: item.workspace_id,
+            }))
 }
 
 export async function streamWorkspaceEvents(
@@ -67,8 +74,15 @@ export async function streamWorkspaceEvents(
                 data: item.data ?? {},
                 source_name: item.source_name ?? null,
                 agent_id: item.agent_id ?? null,
+                run_id: item.run_id ?? null,
+                node_id: item.node_id ?? null,
+                sandbox_id: item.sandbox_id ?? null,
+                worker_id: item.worker_id ?? null,
                 source_id: item.source_id ?? null,
                 source_type: item.source_type ?? null,
+                display_label: item.display_label ?? null,
+                path_parts: item.path_parts ?? [],
+                stream_key: item.stream_key ?? null,
                 workspace_id: item.workspace_id,
               })
             } catch {}

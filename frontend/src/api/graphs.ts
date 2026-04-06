@@ -1,6 +1,6 @@
 const BASE = '/api'
 
-export type NodeType = 'agent' | 'command'
+export type NodeType = 'agent' | 'command' | 'task_template' | 'subgraph_template'
 
 export interface AgentConfig {
   agent_type: string
@@ -20,6 +20,9 @@ export interface GraphNode {
   name: string | null
   agent_config: AgentConfig | null
   command_config: CommandConfig | null
+  task_template_id: string | null
+  subgraph_template_id: string | null
+  argument_bindings: Record<string, string> | null
   created_at: string
 }
 
@@ -50,12 +53,14 @@ export type RunState = 'pending' | 'running' | 'completed' | 'error'
 export interface GraphRunNode {
   id: string
   run_id: string
-  source_node_id: string
-  node_type: NodeType
+  source_node_id: string | null
+  source_type: string
+  node_type: string
   name: string | null
   state: RunNodeState
   agent_config: AgentConfig | null
   command_config: CommandConfig | null
+  child_run_id: string | null
   created_at: string
 }
 
@@ -69,10 +74,11 @@ export interface GraphRunEdge {
 
 export interface GraphRun {
   id: string
-  graph_id: string
+  graph_id: string | null
   workspace_id: string
   state: RunState
   sandbox_id: string | null
+  parent_run_node_id: string | null
   created_at: string
   run_nodes: GraphRunNode[]
   run_edges: GraphRunEdge[]
@@ -120,11 +126,18 @@ export async function addNode(
   graphId: string,
   nodeType: NodeType,
   name?: string,
+  extra?: {
+    agent_config?: AgentConfig
+    command_config?: CommandConfig
+    task_template_id?: string
+    subgraph_template_id?: string
+    argument_bindings?: Record<string, string>
+  },
 ): Promise<GraphNode> {
   const res = await fetch(`${BASE}/workspaces/${workspaceId}/graphs/${graphId}/nodes`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ node_type: nodeType, name: name ?? null }),
+    body: JSON.stringify({ node_type: nodeType, name: name ?? null, ...extra }),
   })
   await _check(res)
   return res.json()
@@ -173,7 +186,15 @@ export async function patchNode(
   workspaceId: string,
   graphId: string,
   nodeId: string,
-  patch: { name?: string; node_type?: NodeType; agent_config?: AgentConfig; command_config?: CommandConfig },
+  patch: {
+    name?: string
+    node_type?: NodeType
+    agent_config?: AgentConfig
+    command_config?: CommandConfig
+    task_template_id?: string
+    subgraph_template_id?: string
+    argument_bindings?: Record<string, string>
+  },
 ): Promise<GraphNode> {
   const res = await fetch(
     `${BASE}/workspaces/${workspaceId}/graphs/${graphId}/nodes/${nodeId}`,
@@ -203,6 +224,12 @@ export async function createRun(workspaceId: string, graphId: string): Promise<G
 
 export async function getRun(workspaceId: string, graphId: string, runId: string): Promise<GraphRun> {
   const res = await fetch(`${BASE}/workspaces/${workspaceId}/graphs/${graphId}/runs/${runId}`)
+  await _check(res)
+  return res.json()
+}
+
+export async function getRunById(workspaceId: string, runId: string): Promise<GraphRun> {
+  const res = await fetch(`${BASE}/workspaces/${workspaceId}/runs/${runId}`)
   await _check(res)
   return res.json()
 }

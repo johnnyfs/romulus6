@@ -7,6 +7,7 @@ import {
   listRuns,
   createRun,
   getRun,
+  getRunById,
 } from '../api/graphs'
 import { NODE_W, NODE_H, PADDING_TOP, CANVAS_WIDTH, computeLayout } from './graphLayout'
 
@@ -23,6 +24,7 @@ export default function RunsView({ workspaceId }: { workspaceId: string }) {
   const [runs, setRuns] = useState<GraphRun[]>([])
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const [activeRun, setActiveRun] = useState<GraphRun | null>(null)
+  const [runPath, setRunPath] = useState<GraphRun[]>([])
   const [creating, setCreating] = useState(false)
 
   // Load graphs
@@ -45,26 +47,40 @@ export default function RunsView({ workspaceId }: { workspaceId: string }) {
 
   // Load run detail when selection changes
   useEffect(() => {
-    if (!selectedRunId || !selectedGraphId) { setActiveRun(null); return }
+    if (!selectedRunId || !selectedGraphId) {
+      setActiveRun(null)
+      setRunPath([])
+      return
+    }
     const run = runs.find(r => r.id === selectedRunId)
-    if (run) setActiveRun(run)
+    if (run) {
+      setActiveRun(run)
+      setRunPath([run])
+    }
   }, [selectedRunId, runs, selectedGraphId])
 
   // Poll active run if non-terminal
   useEffect(() => {
-    if (!activeRun || !selectedGraphId) return
+    if (!activeRun) return
     if (activeRun.state === 'completed' || activeRun.state === 'error') return
 
     const interval = setInterval(async () => {
       try {
-        const updated = await getRun(workspaceId, selectedGraphId, activeRun.id)
+        const updated =
+          activeRun.graph_id && selectedGraphId && activeRun.graph_id === selectedGraphId
+            ? await getRun(workspaceId, selectedGraphId, activeRun.id)
+            : await getRunById(workspaceId, activeRun.id)
         setActiveRun(updated)
+        setRunPath(prev => {
+          if (prev.length === 0) return [updated]
+          return prev.map((run, index) => (index === prev.length - 1 ? updated : run))
+        })
         setRuns(prev => prev.map(r => r.id === updated.id ? updated : r))
       } catch { /* ignore poll errors */ }
     }, 2000)
 
     return () => clearInterval(interval)
-  }, [activeRun?.id, activeRun?.state, workspaceId, selectedGraphId])
+  }, [activeRun?.id, activeRun?.state, activeRun?.graph_id, workspaceId, selectedGraphId])
 
   // Layout for active run
   const positions = useMemo(() => {
@@ -94,10 +110,26 @@ export default function RunsView({ workspaceId }: { workspaceId: string }) {
       const run = await createRun(workspaceId, selectedGraphId)
       await loadRuns()
       setSelectedRunId(run.id)
+      setRunPath([run])
     } finally {
       setCreating(false)
     }
   }, [workspaceId, selectedGraphId, loadRuns])
+
+  const handleOpenChildRun = useCallback(async (childRunId: string) => {
+    const childRun = await getRunById(workspaceId, childRunId)
+    setActiveRun(childRun)
+    setRunPath(prev => [...prev, childRun])
+  }, [workspaceId])
+
+  const handleSelectRunAtDepth = useCallback(async (index: number) => {
+    setRunPath(prev => {
+      const next = prev.slice(0, index + 1)
+      const selected = next[next.length - 1] ?? null
+      setActiveRun(selected)
+      return next
+    })
+  }, [])
 
   const runStateColor = (state: string) => {
     if (state === 'running') return '#3b82f6'
@@ -152,6 +184,21 @@ export default function RunsView({ workspaceId }: { workspaceId: string }) {
           <span style={{ ...rs.stateDot, background: runStateColor(activeRun.state) }} title={activeRun.state} />
         )}
       </div>
+
+      {runPath.length > 1 && (
+        <div style={rs.breadcrumbBar}>
+          {runPath.map((run, index) => (
+            <button
+              key={run.id}
+              style={index === runPath.length - 1 ? rs.crumbActive : rs.crumb}
+              onClick={() => void handleSelectRunAtDepth(index)}
+              title={run.id}
+            >
+              {index === 0 ? 'root' : (run.run_nodes.find((node) => node.child_run_id === runPath[index + 1]?.id)?.name ?? `subgraph ${index}`)}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Visualization */}
       <div style={rs.canvasWrap}>
@@ -228,10 +275,23 @@ export default function RunsView({ workspaceId }: { workspaceId: string }) {
                     textOverflow: 'ellipsis',
                     paddingInline: 8,
                     color,
+                    gap: 6,
                   }}
                   title={`${rn.name ?? rn.node_type} — ${rn.state}`}
                 >
-                  {rn.name || rn.node_type}
+                  <span style={rs.nodeLabel}>{rn.name || rn.node_type}</span>
+                  {rn.child_run_id && (
+                    <button
+                      style={rs.childRunBtn}
+                      title="Open child run"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        void handleOpenChildRun(rn.child_run_id!)
+                      }}
+                    >
+                      ↗
+                    </button>
+                  )}
                 </div>
               )
             })}
@@ -282,6 +342,32 @@ const rs: Record<string, React.CSSProperties> = {
     flexShrink: 0,
     display: 'inline-block',
   },
+  breadcrumbBar: {
+    display: 'flex',
+    gap: 6,
+    padding: '6px 8px',
+    borderBottom: '1px solid var(--border)',
+    flexWrap: 'wrap',
+  },
+  crumb: {
+    padding: '2px 8px',
+    borderRadius: 999,
+    border: '1px solid var(--border)',
+    background: 'var(--surface-2)',
+    color: 'var(--text)',
+    cursor: 'pointer',
+    fontSize: '11px',
+  },
+  crumbActive: {
+    padding: '2px 8px',
+    borderRadius: 999,
+    border: '1px solid var(--accent)',
+    background: 'color-mix(in srgb, var(--accent) 18%, var(--surface) 82%)',
+    color: 'var(--text)',
+    cursor: 'pointer',
+    fontSize: '11px',
+    fontWeight: 600,
+  },
   canvasWrap: {
     flex: 1,
     overflowY: 'auto',
@@ -294,5 +380,20 @@ const rs: Record<string, React.CSSProperties> = {
     textAlign: 'center',
     fontSize: '13px',
     whiteSpace: 'pre-wrap',
+  },
+  nodeLabel: {
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  },
+  childRunBtn: {
+    border: '1px solid currentColor',
+    borderRadius: 4,
+    background: 'transparent',
+    color: 'inherit',
+    cursor: 'pointer',
+    fontSize: '10px',
+    lineHeight: 1,
+    padding: '2px 4px',
+    flexShrink: 0,
   },
 }

@@ -7,10 +7,31 @@ from app.models.event import Event
 from app.models.graph import Graph
 from app.models.lease import WorkerLease
 from app.models.reconcile import RunReconcile
-from app.models.run import GraphRun
+from app.models.run import GraphRun, GraphRunNode
 from app.models.sandbox import Sandbox
+from app.models.template import SubgraphTemplate, SubgraphTemplateNode, TaskTemplate
 from app.models.workspace import Workspace
 from app.services import workers as worker_svc
+
+
+def _run_delete_depth(run_by_id: dict[uuid.UUID, GraphRun], run: GraphRun) -> int:
+    depth = 0
+    current = run
+    seen: set[uuid.UUID] = set()
+    while current.parent_run_node_id is not None and current.id not in seen:
+        seen.add(current.id)
+        parent_node = next(
+            (node for candidate in run_by_id.values() for node in candidate.run_nodes if node.id == current.parent_run_node_id),
+            None,
+        )
+        if parent_node is None:
+            break
+        parent_run = run_by_id.get(parent_node.run_id)
+        if parent_run is None:
+            break
+        depth += 1
+        current = parent_run
+    return depth
 
 
 def list_workspaces(session: Session) -> list[Workspace]:
@@ -52,7 +73,24 @@ def delete_workspace(session: Session, id: uuid.UUID) -> bool:
     # Delete graph runs before agents and sandboxes:
     # graphrunnode.agent_id FK → agent (NO ACTION),
     # graphrun.sandbox_id FK → sandbox (NO ACTION).
-    for run in session.exec(select(GraphRun).where(GraphRun.workspace_id == id)).all():
+    runs = list(session.exec(select(GraphRun).where(GraphRun.workspace_id == id)).all())
+    run_ids = [run.id for run in runs]
+    run_nodes = list(
+        session.exec(select(GraphRunNode).where(GraphRunNode.run_id.in_(run_ids))).all()
+    ) if run_ids else []
+
+    for node in run_nodes:
+        if node.child_run_id is not None:
+            node.child_run_id = None
+            session.add(node)
+    for run in runs:
+        if run.parent_run_node_id is not None:
+            run.parent_run_node_id = None
+            session.add(run)
+    session.flush()
+
+    run_by_id = {run.id: run for run in runs}
+    for run in sorted(runs, key=lambda candidate: _run_delete_depth(run_by_id, candidate), reverse=True):
         session.delete(run)
     session.flush()
 
@@ -77,6 +115,25 @@ def delete_workspace(session: Session, id: uuid.UUID) -> bool:
     # Hard-delete graphs; ORM cascade (all, delete-orphan) handles nodes + edges.
     for graph in session.exec(select(Graph).where(Graph.workspace_id == id)).all():
         session.delete(graph)
+    session.flush()
+
+    # Hard-delete templates and their children before deleting the workspace.
+    for template_node in session.exec(
+        select(SubgraphTemplateNode)
+        .join(SubgraphTemplate, SubgraphTemplateNode.subgraph_template_id == SubgraphTemplate.id)
+        .where(SubgraphTemplate.workspace_id == id)
+    ).all():
+        if template_node.task_template_id is not None:
+            template_node.task_template_id = None
+        if template_node.ref_subgraph_template_id is not None:
+            template_node.ref_subgraph_template_id = None
+        session.add(template_node)
+    session.flush()
+
+    for subgraph_template in session.exec(select(SubgraphTemplate).where(SubgraphTemplate.workspace_id == id)).all():
+        session.delete(subgraph_template)
+    for task_template in session.exec(select(TaskTemplate).where(TaskTemplate.workspace_id == id)).all():
+        session.delete(task_template)
     session.flush()
 
     session.delete(workspace)

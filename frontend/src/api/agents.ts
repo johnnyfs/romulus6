@@ -33,8 +33,15 @@ export interface AgentEvent {
   data: Record<string, unknown>
   source_name?: string | null
   agent_id?: string | null
+  run_id?: string | null
+  node_id?: string | null
+  sandbox_id?: string | null
+  worker_id?: string | null
   source_id?: string | null
   source_type?: string | null
+  display_label?: string | null
+  path_parts?: string[]
+  stream_key?: string | null
 }
 
 export interface CreateOpenCodeAgentRequest {

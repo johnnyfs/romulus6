@@ -12,6 +12,7 @@ const TEST_WORKSPACE_NAME_PREFIXES = [
   'Workspace Events Test WS',
   'Worker API Test WS',
   'Feedback Test WS',
+  'Materialization Test WS',
 ];
 
 async function tryDelete(ctx: Awaited<ReturnType<typeof request.newContext>>, path: string) {
