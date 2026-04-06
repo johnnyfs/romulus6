@@ -47,6 +47,8 @@ class CreateSessionRequest(BaseModel):
     agent_type: str = "opencode"
     model: str = "anthropic/claude-sonnet-4-5"
     workspace_name: str | None = None
+    graph_tools: bool = False
+    workspace_id: str | None = None
 
 class CreateSessionResponse(BaseModel):
     session: Session

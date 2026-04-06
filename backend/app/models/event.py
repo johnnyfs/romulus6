@@ -19,5 +19,6 @@ class Event(SQLModel, table=True):
     source_id: str = Field(index=True)  # agent_id or future source ids as string
     event_type: str                     # specific event: "session.busy", "text.delta", etc.
     timestamp: str                      # ISO-8601 from source
+    source_name: str | None = Field(default=None)  # denormalized human-readable name
     data: dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
     persisted_at: datetime.datetime = Field(default_factory=datetime.datetime.utcnow)

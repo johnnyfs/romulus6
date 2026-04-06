@@ -6,6 +6,7 @@ const TEST_WORKSPACE_NAMES = new Set([
   'Graph Test WS',
   'Run Test WS',
   'Agent Test WS',
+  'Run Execution Test WS',
 ]);
 
 async function tryDelete(ctx: Awaited<ReturnType<typeof request.newContext>>, path: string) {

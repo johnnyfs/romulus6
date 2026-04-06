@@ -3,26 +3,21 @@ import {
   type Graph,
   type GraphDetail,
   type AgentConfig,
+  type CommandConfig,
   type GraphNode,
   type NodeType,
   addEdge,
   addNode,
   createGraph,
   deleteGraph,
+  deleteEdge,
   deleteNode,
   getGraph,
   listGraphs,
   patchNode,
 } from '../api/graphs'
-
-// ─── Layout constants ────────────────────────────────────────────────────────
-
-const NODE_W = 130
-const NODE_H = 32
-const H_GAP = 16
-const LAYER_H = 80
-const PADDING_TOP = 24
-const CANVAS_WIDTH = 320
+import { NODE_W, NODE_H, H_GAP, LAYER_H, PADDING_TOP, CANVAS_WIDTH, computeLayout } from './graphLayout'
+import RunsView from './RunsView'
 
 const MODEL_OPTIONS = [
   { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
@@ -33,96 +28,10 @@ const MODEL_OPTIONS = [
   { value: 'openai/o3-mini', label: 'o3 Mini' },
 ]
 
-// ─── BFS layer layout ────────────────────────────────────────────────────────
-
-interface Pos { x: number; y: number }
-
-function computeLayout(detail: GraphDetail): Map<string, Pos> {
-  const { nodes, edges } = detail
-  const inDegree = new Map<string, number>()
-  const children = new Map<string, string[]>()
-  const parents = new Map<string, string[]>()
-
-  for (const n of nodes) {
-    inDegree.set(n.id, 0)
-    children.set(n.id, [])
-    parents.set(n.id, [])
-  }
-  for (const e of edges) {
-    inDegree.set(e.to_node_id, (inDegree.get(e.to_node_id) ?? 0) + 1)
-    children.get(e.from_node_id)?.push(e.to_node_id)
-    parents.get(e.to_node_id)?.push(e.from_node_id)
-  }
-
-  const layer = new Map<string, number>()
-  const processed = new Set<string>()
-  const queue: string[] = []
-
-  for (const n of nodes) {
-    if (inDegree.get(n.id) === 0) {
-      layer.set(n.id, 0)
-      queue.push(n.id)
-    }
-  }
-
-  // Fallback: if no roots (cycle), assign all to layer 0
-  if (queue.length === 0) {
-    for (const n of nodes) {
-      layer.set(n.id, 0)
-      queue.push(n.id)
-    }
-  }
-
-  let head = 0
-  while (head < queue.length) {
-    const nodeId = queue[head++]
-    if (processed.has(nodeId)) continue
-    processed.add(nodeId)
-    const nodeLayer = layer.get(nodeId) ?? 0
-    for (const childId of (children.get(nodeId) ?? [])) {
-      const current = layer.get(childId) ?? 0
-      layer.set(childId, Math.max(current, nodeLayer + 1))
-      // Enqueue when all parents processed
-      const allParentsDone = (parents.get(childId) ?? []).every((p) => processed.has(p))
-      if (allParentsDone && !processed.has(childId)) {
-        queue.push(childId)
-      }
-    }
-  }
-
-  // Ensure any unprocessed nodes get a layer
-  for (const n of nodes) {
-    if (!layer.has(n.id)) layer.set(n.id, 0)
-  }
-
-  // Group by layer
-  const layerGroups = new Map<number, string[]>()
-  for (const n of nodes) {
-    const l = layer.get(n.id) ?? 0
-    if (!layerGroups.has(l)) layerGroups.set(l, [])
-    layerGroups.get(l)!.push(n.id)
-  }
-
-  // Compute positions
-  const positions = new Map<string, Pos>()
-  for (const [l, ids] of layerGroups) {
-    const count = ids.length
-    const totalW = count * NODE_W + (count - 1) * H_GAP
-    const startX = Math.max(0, (CANVAS_WIDTH - totalW) / 2)
-    ids.forEach((id, i) => {
-      positions.set(id, {
-        x: startX + i * (NODE_W + H_GAP),
-        y: PADDING_TOP + l * LAYER_H,
-      })
-    })
-  }
-
-  return positions
-}
-
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function GraphPanel({ workspaceId, width }: { workspaceId: string; width?: number }) {
+  const [activeTab, setActiveTab] = useState<'graph' | 'runs'>('graph')
   const [graphs, setGraphs] = useState<Graph[]>([])
   const [activeGraphId, setActiveGraphId] = useState<string | null>(null)
   const [detail, setDetail] = useState<GraphDetail | null>(null)
@@ -130,10 +39,15 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
   const [mutating, setMutating] = useState(false)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
+  const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null)
+  const [newDepFrom, setNewDepFrom] = useState<string>('')
+  const [newDeptTo, setNewDeptTo] = useState<string>('')
   const [editName, setEditName] = useState('')
-  const [editType, setEditType] = useState<NodeType>('nop')
+  const [editType, setEditType] = useState<NodeType>('agent')
   const [editModel, setEditModel] = useState(MODEL_OPTIONS[0].value)
   const [editPrompt, setEditPrompt] = useState('')
+  const [editCommand, setEditCommand] = useState('')
+  const [editGraphTools, setEditGraphTools] = useState(false)
 
   // ── Data loading ─────────────────────────────────────────────────────────
 
@@ -171,6 +85,8 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
   // Seed inspector when selection changes
   useEffect(() => {
     if (!selectedNodeId || !detail) return
+    setNewDepFrom('')
+    setNewDeptTo('')
     const node = detail.nodes.find((n) => n.id === selectedNodeId)
     if (node) {
       setEditName(node.name ?? '')
@@ -178,9 +94,16 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
       if (node.agent_config) {
         setEditModel(node.agent_config.model)
         setEditPrompt(node.agent_config.prompt)
+        setEditGraphTools(node.agent_config.graph_tools ?? false)
       } else {
         setEditModel(MODEL_OPTIONS[0].value)
         setEditPrompt('')
+        setEditGraphTools(false)
+      }
+      if (node.command_config) {
+        setEditCommand(node.command_config.command)
+      } else {
+        setEditCommand('')
       }
     }
   }, [selectedNodeId, detail])
@@ -198,6 +121,14 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
     for (const pos of positions.values()) maxY = Math.max(maxY, pos.y)
     return maxY + NODE_H + 40
   }, [positions])
+
+  const selectedNodeEdges = useMemo(() => {
+    if (!detail || !selectedNodeId) return { incoming: [] as typeof detail.edges, outgoing: [] as typeof detail.edges }
+    return {
+      incoming: detail.edges.filter((e) => e.to_node_id === selectedNodeId),
+      outgoing: detail.edges.filter((e) => e.from_node_id === selectedNodeId),
+    }
+  }, [detail, selectedNodeId])
 
   // ── Actions ───────────────────────────────────────────────────────────────
 
@@ -247,7 +178,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
     if (!activeGraphId) return
     setMutating(true)
     try {
-      await addNode(workspaceId, activeGraphId, nextNodeName('nop'))
+      await addNode(workspaceId, activeGraphId, 'agent', nextNodeName('agent'))
       await loadDetail(activeGraphId)
     } finally {
       setMutating(false)
@@ -258,7 +189,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
     if (!activeGraphId || mutating) return
     setMutating(true)
     try {
-      const newNode = await addNode(workspaceId, activeGraphId, nextNodeName('nop'))
+      const newNode = await addNode(workspaceId, activeGraphId, 'agent', nextNodeName('agent'))
       try {
         await addEdge(workspaceId, activeGraphId, newNode.id, nodeId)
       } catch (err) {
@@ -275,7 +206,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
     if (!activeGraphId || mutating || !detail) return
     setMutating(true)
     try {
-      const newNode = await addNode(workspaceId, activeGraphId, nextNodeName('nop'))
+      const newNode = await addNode(workspaceId, activeGraphId, 'agent', nextNodeName('agent'))
       const parentIds = detail.edges
         .filter((e) => e.to_node_id === nodeId)
         .map((e) => e.from_node_id)
@@ -296,7 +227,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
     if (!activeGraphId || mutating) return
     setMutating(true)
     try {
-      const newNode = await addNode(workspaceId, activeGraphId, nextNodeName('nop'))
+      const newNode = await addNode(workspaceId, activeGraphId, 'agent', nextNodeName('agent'))
       try {
         await addEdge(workspaceId, activeGraphId, nodeId, newNode.id)
       } catch (err) {
@@ -325,9 +256,11 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
 
   async function handleSaveType(val: NodeType) {
     if (!selectedNodeId || !activeGraphId) return
-    const patch: { node_type: NodeType; agent_config?: AgentConfig } = { node_type: val }
+    const patch: { node_type: NodeType; agent_config?: AgentConfig; command_config?: CommandConfig } = { node_type: val }
     if (val === 'agent') {
-      patch.agent_config = { agent_type: 'opencode', model: editModel, prompt: editPrompt }
+      patch.agent_config = { agent_type: 'opencode', model: editModel, prompt: editPrompt, graph_tools: editGraphTools }
+    } else if (val === 'command') {
+      patch.command_config = { command: editCommand }
     }
     const updated = await patchNode(workspaceId, activeGraphId, selectedNodeId, patch)
     setDetail((prev) =>
@@ -343,6 +276,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
       agent_type: 'opencode',
       model: overrides?.model ?? editModel,
       prompt: overrides?.prompt ?? editPrompt,
+      graph_tools: overrides?.graph_tools ?? editGraphTools,
     }
     const updated = await patchNode(workspaceId, activeGraphId, selectedNodeId, {
       agent_config: config,
@@ -354,13 +288,67 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
     )
   }
 
-  async function handleDeleteSelectedNode() {
+  async function handleSaveCommandConfig() {
     if (!selectedNodeId || !activeGraphId) return
+    const config: CommandConfig = { command: editCommand }
+    const updated = await patchNode(workspaceId, activeGraphId, selectedNodeId, {
+      command_config: config,
+    })
+    setDetail((prev) =>
+      prev
+        ? { ...prev, nodes: prev.nodes.map((n) => (n.id === updated.id ? updated : n)) }
+        : prev,
+    )
+  }
+
+  async function handleDeleteNode(nodeId: string) {
+    if (!activeGraphId || mutating) return
     setMutating(true)
     try {
-      await deleteNode(workspaceId, activeGraphId, selectedNodeId)
-      setSelectedNodeId(null)
+      await deleteNode(workspaceId, activeGraphId, nodeId)
+      if (selectedNodeId === nodeId) setSelectedNodeId(null)
       await loadDetail(activeGraphId)
+    } finally {
+      setMutating(false)
+    }
+  }
+
+  async function handleDeleteEdge(edgeId: string) {
+    if (!activeGraphId || mutating) return
+    setMutating(true)
+    try {
+      await deleteEdge(workspaceId, activeGraphId, edgeId)
+      await loadDetail(activeGraphId)
+    } finally {
+      setMutating(false)
+    }
+  }
+
+  async function handleInsertNodeOnEdge(edgeId: string, fromNodeId: string, toNodeId: string) {
+    if (!activeGraphId || mutating) return
+    setMutating(true)
+    try {
+      const newNode = await addNode(workspaceId, activeGraphId, 'agent', nextNodeName('agent'))
+      await deleteEdge(workspaceId, activeGraphId, edgeId)
+      await addEdge(workspaceId, activeGraphId, fromNodeId, newNode.id)
+      await addEdge(workspaceId, activeGraphId, newNode.id, toNodeId)
+      await loadDetail(activeGraphId)
+    } catch (err) {
+      alert(`Failed to insert node: ${String(err)}`)
+      await loadDetail(activeGraphId)
+    } finally {
+      setMutating(false)
+    }
+  }
+
+  async function handleAddEdgeFromInspector(fromNodeId: string, toNodeId: string) {
+    if (!activeGraphId || mutating || fromNodeId === toNodeId) return
+    setMutating(true)
+    try {
+      await addEdge(workspaceId, activeGraphId, fromNodeId, toNodeId)
+      await loadDetail(activeGraphId)
+    } catch (err) {
+      alert(`Cannot add edge: ${String(err)}`)
     } finally {
       setMutating(false)
     }
@@ -372,9 +360,26 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
 
   return (
     <div style={width !== undefined ? { ...s.panel, width } : s.panel}>
-      {/* Title */}
-      <div style={s.title}>GRAPHS</div>
+      {/* Tab bar */}
+      <div style={s.tabBar}>
+        <button
+          style={activeTab === 'graph' ? { ...s.tab, ...s.tabActive } : s.tab}
+          onClick={() => setActiveTab('graph')}
+        >
+          Graph
+        </button>
+        <button
+          style={activeTab === 'runs' ? { ...s.tab, ...s.tabActive } : s.tab}
+          onClick={() => setActiveTab('runs')}
+        >
+          Runs
+        </button>
+      </div>
 
+      {activeTab === 'runs' ? (
+        <RunsView workspaceId={workspaceId} />
+      ) : (
+      <>
       {/* Header bar: selector + new + delete */}
       <div style={s.headerBar}>
         <select
@@ -461,6 +466,62 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
               })}
             </svg>
 
+            {/* Edge midpoint buttons */}
+            {detail.edges.map((edge) => {
+              const from = positions.get(edge.from_node_id)
+              const to = positions.get(edge.to_node_id)
+              if (!from || !to) return null
+              const fx = from.x + NODE_W / 2
+              const fy = from.y + NODE_H
+              const tx = to.x + NODE_W / 2
+              const ty = to.y
+              const mx = (fx + tx) / 2
+              const my = (fy + ty) / 2
+              const isEdgeHovered = edge.id === hoveredEdgeId
+
+              return (
+                <div
+                  key={`edge-btns-${edge.id}`}
+                  style={{ position: 'absolute', left: mx - 20, top: my - 8, zIndex: 4 }}
+                  onMouseEnter={() => setHoveredEdgeId(edge.id)}
+                  onMouseLeave={() => setHoveredEdgeId(null)}
+                >
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    <button
+                      style={{
+                        ...s.edgeMidBtn,
+                        background: isEdgeHovered ? 'var(--accent)' : 'var(--surface)',
+                        color: isEdgeHovered ? '#fff' : 'var(--text-muted)',
+                        borderColor: isEdgeHovered ? 'var(--accent)' : 'var(--border)',
+                      }}
+                      onMouseDown={(e) => {
+                        e.stopPropagation()
+                        handleInsertNodeOnEdge(edge.id, edge.from_node_id, edge.to_node_id)
+                      }}
+                      title="Insert node on this edge"
+                    >
+                      +
+                    </button>
+                    <button
+                      style={{
+                        ...s.edgeMidBtn,
+                        background: isEdgeHovered ? 'var(--danger)' : 'var(--surface)',
+                        color: isEdgeHovered ? '#fff' : 'var(--text-muted)',
+                        borderColor: isEdgeHovered ? 'var(--danger)' : 'var(--border)',
+                      }}
+                      onMouseDown={(e) => {
+                        e.stopPropagation()
+                        handleDeleteEdge(edge.id)
+                      }}
+                      title="Delete edge"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
+
             {/* Nodes */}
             {detail.nodes.map((node) => {
               const pos = positions.get(node.id)
@@ -516,6 +577,21 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
                       ? MODEL_OPTIONS.find(m => m.value === node.agent_config!.model)?.label ?? 'agent'
                       : node.node_type)}
                   </div>
+
+                  {/* Delete node button (inside node, right side) */}
+                  {isHovered && (
+                    <button
+                      style={{
+                        ...s.nodeDeleteBtn,
+                        left: pos.x + NODE_W - 20,
+                        top: pos.y + (NODE_H - 16) / 2,
+                      }}
+                      onMouseDown={(e) => { e.stopPropagation(); handleDeleteNode(node.id) }}
+                      title="Delete node"
+                    >
+                      ×
+                    </button>
+                  )}
 
                   {/* Add sibling left button */}
                   {isHovered && (
@@ -594,8 +670,8 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
                 handleSaveType(val)
               }}
             >
-              <option value="nop">nop</option>
               <option value="agent">agent</option>
+              <option value="command">command</option>
             </select>
           </div>
           {editType === 'agent' && (
@@ -631,12 +707,142 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
                   placeholder="Enter agent prompt..."
                 />
               </div>
+              <div style={s.inspectorRow}>
+                <label style={s.inspectorLabel}>
+                  <input
+                    type="checkbox"
+                    checked={editGraphTools}
+                    onChange={(e) => {
+                      setEditGraphTools(e.target.checked)
+                      handleSaveAgentConfig({ graph_tools: e.target.checked })
+                    }}
+                    style={{ marginRight: 6 }}
+                  />
+                  Graph Editor
+                </label>
+              </div>
             </>
           )}
-          <button style={s.deleteNodeBtn} onClick={handleDeleteSelectedNode} disabled={mutating}>
+          {editType === 'command' && (
+            <div style={{ ...s.inspectorRow, alignItems: 'flex-start' }}>
+              <label style={{ ...s.inspectorLabel, marginTop: 4 }}>Command:</label>
+              <textarea
+                style={{ ...s.inspectorInput, minHeight: 80, resize: 'vertical', fontFamily: 'monospace' }}
+                value={editCommand}
+                onChange={(e) => setEditCommand(e.target.value)}
+                onBlur={() => handleSaveCommandConfig()}
+                placeholder="Enter bash command(s)..."
+              />
+            </div>
+          )}
+          {/* Dependencies (incoming edges — nodes that must run before this one) */}
+          <div style={{ ...s.inspectorTitle, marginTop: 8 }}>DEPENDENCIES</div>
+          {selectedNodeEdges.incoming.map((edge) => (
+            <div key={edge.id} style={s.inspectorRow}>
+              <select
+                style={{ ...s.inspectorSelect, flex: 1 }}
+                value={edge.from_node_id}
+                disabled
+              >
+                {detail!.nodes.map((n) => (
+                  <option key={n.id} value={n.id}>{n.name || n.node_type}</option>
+                ))}
+              </select>
+              <button
+                style={s.edgeDeleteBtn}
+                onMouseDown={() => handleDeleteEdge(edge.id)}
+                disabled={mutating}
+                title="Remove dependency"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          <div style={s.inspectorRow}>
+            <select
+              style={{ ...s.inspectorSelect, flex: 1 }}
+              value={newDepFrom}
+              onChange={(e) => setNewDepFrom(e.target.value)}
+            >
+              <option value="">add dependency...</option>
+              {detail!.nodes.filter((n) => n.id !== selectedNodeId).map((n) => (
+                <option key={n.id} value={n.id}>{n.name || n.node_type}</option>
+              ))}
+            </select>
+            <button
+              style={{
+                ...s.edgeMidBtn,
+                background: newDepFrom ? 'var(--accent)' : 'var(--surface-2)',
+                color: newDepFrom ? '#fff' : 'var(--text-muted)',
+                borderColor: newDepFrom ? 'var(--accent)' : 'var(--border)',
+              }}
+              onMouseDown={() => {
+                if (newDepFrom && selectedNodeId) handleAddEdgeFromInspector(newDepFrom, selectedNodeId)
+              }}
+              disabled={!newDepFrom || mutating}
+              title="Add dependency"
+            >
+              +
+            </button>
+          </div>
+
+          {/* Dependents (outgoing edges — nodes that run after this one) */}
+          <div style={{ ...s.inspectorTitle, marginTop: 8 }}>DEPENDENTS</div>
+          {selectedNodeEdges.outgoing.map((edge) => (
+            <div key={edge.id} style={s.inspectorRow}>
+              <select
+                style={{ ...s.inspectorSelect, flex: 1 }}
+                value={edge.to_node_id}
+                disabled
+              >
+                {detail!.nodes.map((n) => (
+                  <option key={n.id} value={n.id}>{n.name || n.node_type}</option>
+                ))}
+              </select>
+              <button
+                style={s.edgeDeleteBtn}
+                onMouseDown={() => handleDeleteEdge(edge.id)}
+                disabled={mutating}
+                title="Remove dependent"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          <div style={s.inspectorRow}>
+            <select
+              style={{ ...s.inspectorSelect, flex: 1 }}
+              value={newDeptTo}
+              onChange={(e) => setNewDeptTo(e.target.value)}
+            >
+              <option value="">add dependent...</option>
+              {detail!.nodes.filter((n) => n.id !== selectedNodeId).map((n) => (
+                <option key={n.id} value={n.id}>{n.name || n.node_type}</option>
+              ))}
+            </select>
+            <button
+              style={{
+                ...s.edgeMidBtn,
+                background: newDeptTo ? 'var(--accent)' : 'var(--surface-2)',
+                color: newDeptTo ? '#fff' : 'var(--text-muted)',
+                borderColor: newDeptTo ? 'var(--accent)' : 'var(--border)',
+              }}
+              onMouseDown={() => {
+                if (newDeptTo && selectedNodeId) handleAddEdgeFromInspector(selectedNodeId, newDeptTo)
+              }}
+              disabled={!newDeptTo || mutating}
+              title="Add dependent"
+            >
+              +
+            </button>
+          </div>
+
+          <button style={s.deleteNodeBtn} onClick={() => selectedNodeId && handleDeleteNode(selectedNodeId)} disabled={mutating}>
             [ Delete Node ]
           </button>
         </div>
+      )}
+      </>
       )}
     </div>
   )
@@ -655,6 +861,29 @@ const s: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     fontSize: '13px',
     color: 'var(--text)',
+  },
+  tabBar: {
+    display: 'flex',
+    borderBottom: '1px solid var(--border)',
+    flexShrink: 0,
+  },
+  tab: {
+    flex: 1,
+    padding: '8px 12px 6px',
+    textAlign: 'center' as const,
+    fontSize: '11px',
+    fontWeight: 600,
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.08em',
+    cursor: 'pointer',
+    color: 'var(--text-muted)',
+    background: 'transparent',
+    border: 'none',
+    borderBottom: '2px solid transparent',
+  },
+  tabActive: {
+    color: 'var(--accent)',
+    borderBottom: '2px solid var(--accent)',
   },
   title: {
     color: 'var(--text-muted)',
@@ -793,5 +1022,51 @@ const s: Record<string, React.CSSProperties> = {
     borderRadius: '4px',
     cursor: 'pointer',
     fontSize: '12px',
+  },
+  nodeDeleteBtn: {
+    position: 'absolute',
+    width: 16,
+    height: 16,
+    background: 'var(--danger)',
+    color: '#ffffff',
+    border: 'none',
+    borderRadius: '3px',
+    cursor: 'pointer',
+    fontSize: '11px',
+    lineHeight: '14px',
+    padding: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 10,
+  },
+  edgeMidBtn: {
+    width: 16,
+    height: 16,
+    border: '1px solid var(--border)',
+    borderRadius: '3px',
+    cursor: 'pointer',
+    fontSize: '11px',
+    lineHeight: '14px',
+    padding: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  edgeDeleteBtn: {
+    width: 16,
+    height: 16,
+    background: 'transparent',
+    color: 'var(--danger)',
+    border: '1px solid var(--danger)',
+    borderRadius: '3px',
+    cursor: 'pointer',
+    fontSize: '11px',
+    lineHeight: '14px',
+    padding: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
   },
 }

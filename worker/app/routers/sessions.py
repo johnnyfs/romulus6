@@ -19,6 +19,8 @@ async def create_session(body: CreateSessionRequest, mgr: SessionManager = Depen
         agent_type=body.agent_type,
         model=body.model,
         workspace_name=body.workspace_name,
+        graph_tools=body.graph_tools,
+        workspace_id=body.workspace_id,
     )
     return CreateSessionResponse(session=session)
 

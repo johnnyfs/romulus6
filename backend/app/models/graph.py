@@ -12,8 +12,8 @@ if TYPE_CHECKING:
 
 
 class NodeType(str, Enum):
-    nop = "nop"
     agent = "agent"
+    command = "command"
 
 
 class Graph(RomulusBase, table=True):
@@ -55,11 +55,13 @@ class GraphNode(RomulusBase, table=True):
 
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     graph_id: uuid.UUID = Field(foreign_key="graph.id", index=True)
-    node_type: NodeType = Field(default=NodeType.nop)
+    node_type: NodeType
     name: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     agent_type: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     model: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     prompt: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    command: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    graph_tools: bool = Field(default=False)
 
     graph: Optional[Graph] = Relationship(back_populates="nodes")
     outgoing_edges: List["GraphEdge"] = Relationship(

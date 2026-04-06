@@ -54,6 +54,7 @@ async def create_agent(
             model=body.model.value,
             prompt=body.prompt,
             name=body.name,
+            graph_tools=body.graph_tools,
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))

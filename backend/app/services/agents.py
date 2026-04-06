@@ -47,6 +47,7 @@ async def create_agent(
     model: str,
     prompt: str,
     name: str,
+    graph_tools: bool = False,
 ) -> Agent:
     sandbox, worker = sandbox_svc.create_sandbox(session, workspace_id, name)
 
@@ -62,6 +63,7 @@ async def create_agent(
         prompt=prompt,
         name=name,
         status=AgentStatus.starting,
+        graph_tools=graph_tools,
     )
     session.add(agent)
     session.commit()
@@ -75,6 +77,8 @@ async def create_agent(
                 "agent_type": agent_type.value,
                 "model": model,
                 "workspace_name": str(workspace_id),
+                "graph_tools": graph_tools,
+                "workspace_id": str(workspace_id),
             },
         )
     except Exception:
@@ -152,12 +156,14 @@ def _persist_event(
     workspace_id: uuid.UUID,
     agent_id: uuid.UUID,
     payload: dict[str, Any],
+    source_name: str | None = None,
 ) -> None:
     event = Event(
         id=str(payload.get("id", uuid.uuid4())),
         workspace_id=workspace_id,
         type="agent",
         source_id=str(agent_id),
+        source_name=source_name,
         event_type=str(payload.get("type", "unknown")),
         timestamp=str(payload.get("timestamp", "")),
         data=payload,
@@ -191,7 +197,7 @@ async def _sync_events_from_worker(
             if resp.status_code != 200:
                 return
             for payload in resp.json():
-                _persist_event(session, agent.workspace_id, agent.id, payload)
+                _persist_event(session, agent.workspace_id, agent.id, payload, source_name=agent.name)
     except Exception:
         pass  # best-effort: never block the read path on sync failures
 
@@ -216,6 +222,7 @@ async def get_agent_events(
             "type": e.event_type,
             "timestamp": e.timestamp,
             "data": e.data.get("data", {}),
+            "source_name": e.source_name,
         }
         for e in results
     ]
@@ -239,6 +246,7 @@ async def stream_agent_events(
     session_id = str(agent.session_id)
     workspace_id = agent.workspace_id
     agent_id = agent.id
+    agent_name = agent.name
 
     async with httpx.AsyncClient() as client:
         async with client.stream(
@@ -258,6 +266,6 @@ async def stream_agent_events(
                         if line.startswith("data: "):
                             try:
                                 payload = json.loads(line[6:])
-                                _persist_event(session, workspace_id, agent_id, payload)
+                                _persist_event(session, workspace_id, agent_id, payload, source_name=agent_name)
                             except Exception:
                                 pass  # never block the stream on persistence failure

@@ -46,7 +46,7 @@ install-tests:
 	cd tests && npm install
 
 test-backend:
-	cd tests && npm run test
+	cd tests && npm run test -- $(ARGS)
 
 worker:
 	cd worker && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8080

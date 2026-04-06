@@ -193,5 +193,25 @@ class OpenCodeRunner(AgentRunner):
                 "path": props.get("path"),
             })
 
+        elif oc_type == "message.part.done":
+            # Tool call completions include the tool name and arguments
+            part = props.get("part", {})
+            if part.get("type") == "tool-invocation":
+                return Event(session_id=self._session_id, type=EventType.TOOL_USE, data={
+                    "tool_name": part.get("toolInvocation", {}).get("toolName", ""),
+                    "args": part.get("toolInvocation", {}).get("args", {}),
+                    "state": part.get("toolInvocation", {}).get("state", ""),
+                    "message_id": props.get("messageID"),
+                    "part_id": props.get("partID"),
+                })
+
+        elif oc_type == "tool.call":
+            # Alternative event format for tool calls
+            return Event(session_id=self._session_id, type=EventType.TOOL_USE, data={
+                "tool_name": props.get("name", props.get("toolName", "")),
+                "args": props.get("args", props.get("arguments", {})),
+                "message_id": props.get("messageID"),
+            })
+
         logger.debug("dropping opencode event: %s", oc_type)
         return None
