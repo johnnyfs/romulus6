@@ -36,6 +36,7 @@ class AgentStatus(str, Enum):
     starting = "starting"
     busy = "busy"
     idle = "idle"
+    waiting = "waiting"
     completed = "completed"
     error = "error"
     interrupted = "interrupted"

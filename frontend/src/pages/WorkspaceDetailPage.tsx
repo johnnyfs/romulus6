@@ -10,11 +10,13 @@ import {
   createAgent,
   deleteAgent,
   listAgents,
+  sendFeedback,
   sendMessage,
 } from '../api/agents'
 import { listWorkspaceEvents, streamWorkspaceEvents } from '../api/workspaceEvents'
 import { getWorkspace, type Workspace } from '../api/workspaces'
 import AgentCard from '../components/AgentCard'
+import FeedbackRequest from '../components/FeedbackRequest'
 import GraphPanel from '../components/GraphPanel'
 
 // ─── Feed item types ────────────────────────────────────────────────────────
@@ -30,6 +32,7 @@ type FeedItem =
   | { kind: 'message'; agentId: string; event: AgentEvent; key: string }
   | { kind: 'user'; agentId: string; prompt: string; timestamp: string; key: string }
   | { kind: 'activity'; block: ActivityBlock }
+  | { kind: 'feedback'; agentId: string; event: AgentEvent; key: string; resolved: boolean; resolvedResponse?: string }
 
 const ACTIVITY_TYPES = new Set(['tool.use', 'file.edit', 'command.output'])
 
@@ -170,6 +173,8 @@ export default function WorkspaceDetailPage() {
     }
   })
   const [collapsedRuns, setCollapsedRuns] = useState<Set<string>>(new Set())
+  const [agentWaiting, setAgentWaiting] = useState<Record<string, boolean>>({})
+  const [resolvedFeedback, setResolvedFeedback] = useState<Record<string, string>>({})
   const [graphWidth, setGraphWidth] = useState(340)
   const isDragging = useRef(false)
   const dragStartX = useRef(0)
@@ -204,6 +209,7 @@ export default function WorkspaceDetailPage() {
       }
       if (event.type === 'session.busy') {
         setAgentBusy((prev) => ({ ...prev, [agentId]: true }))
+        setAgentWaiting((prev) => ({ ...prev, [agentId]: false }))
       } else if (event.type === 'session.idle') {
         setAgentBusy((prev) => ({ ...prev, [agentId]: false }))
       } else if (
@@ -212,7 +218,17 @@ export default function WorkspaceDetailPage() {
         event.type === 'session.interrupted'
       ) {
         setAgentBusy((prev) => ({ ...prev, [agentId]: false }))
+        setAgentWaiting((prev) => ({ ...prev, [agentId]: false }))
         setAgentTerminal((prev) => ({ ...prev, [agentId]: true }))
+      }
+      if (event.type === 'feedback.request') {
+        setAgentBusy((prev) => ({ ...prev, [agentId]: false }))
+        setAgentWaiting((prev) => ({ ...prev, [agentId]: true }))
+      } else if (event.type === 'feedback.response') {
+        const fbId = String(event.data?.feedback_id ?? '')
+        const fbResp = String(event.data?.response ?? '')
+        if (fbId) setResolvedFeedback((prev) => ({ ...prev, [fbId]: fbResp }))
+        setAgentWaiting((prev) => ({ ...prev, [agentId]: false }))
       }
     }
 
@@ -223,6 +239,8 @@ export default function WorkspaceDetailPage() {
       const nextMap: Record<string, AgentEvent[]> = {}
       const nextTerminal: Record<string, boolean> = {}
       const nextBusy: Record<string, boolean> = {}
+      const nextWaiting: Record<string, boolean> = {}
+      const nextResolved: Record<string, string> = {}
       eventCursor.current = 0
       for (const event of events) {
         eventCursor.current += 1
@@ -231,7 +249,10 @@ export default function WorkspaceDetailPage() {
           seenEventIds.current.add(event.id)
           nextMap[agentId] = [...(nextMap[agentId] ?? []), event]
         }
-        if (event.type === 'session.busy') nextBusy[agentId] = true
+        if (event.type === 'session.busy') {
+          nextBusy[agentId] = true
+          nextWaiting[agentId] = false
+        }
         if (event.type === 'session.idle') nextBusy[agentId] = false
         if (
           event.type === 'session.completed' ||
@@ -240,11 +261,23 @@ export default function WorkspaceDetailPage() {
         ) {
           nextBusy[agentId] = false
           nextTerminal[agentId] = true
+          nextWaiting[agentId] = false
+        }
+        if (event.type === 'feedback.request') {
+          nextBusy[agentId] = false
+          nextWaiting[agentId] = true
+        } else if (event.type === 'feedback.response') {
+          const fbId = String(event.data?.feedback_id ?? '')
+          const fbResp = String(event.data?.response ?? '')
+          if (fbId) nextResolved[fbId] = fbResp
+          nextWaiting[agentId] = false
         }
       }
       setEventMap(nextMap)
       setAgentBusy((prev) => ({ ...prev, ...nextBusy }))
       setAgentTerminal((prev) => ({ ...prev, ...nextTerminal }))
+      setAgentWaiting((prev) => ({ ...prev, ...nextWaiting }))
+      setResolvedFeedback((prev) => ({ ...prev, ...nextResolved }))
       await streamWorkspaceEvents(id, eventCursor.current, applyEvent, ctrl.signal)
     })().catch(() => {})
     return () => ctrl.abort()
@@ -338,6 +371,19 @@ export default function WorkspaceDetailPage() {
           timestamp: event.timestamp,
         })
         delete activityIdx[agentId]
+      } else if (event.type === 'feedback.request') {
+        const fbId = String(event.data.feedback_id ?? '')
+        items.push({
+          kind: 'feedback',
+          agentId,
+          key: event.id,
+          event,
+          resolved: fbId in resolvedFeedback,
+          resolvedResponse: resolvedFeedback[fbId],
+        })
+        delete activityIdx[agentId]
+      } else if (event.type === 'feedback.response') {
+        // audit-only, skip rendering
       } else if (isActivity(event.type)) {
         const idx = activityIdx[agentId]
         if (idx !== undefined) {
@@ -359,7 +405,7 @@ export default function WorkspaceDetailPage() {
     }
 
     return items
-  }, [eventMap, userMessages, showDeadMessages, deadAgentIds])
+  }, [eventMap, userMessages, showDeadMessages, deadAgentIds, resolvedFeedback])
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -649,6 +695,25 @@ export default function WorkspaceDetailPage() {
                 )
               }
 
+              if (item.kind === 'feedback') {
+                return (
+                  <FeedbackRequest
+                    key={item.key}
+                    event={item.event}
+                    agentLabel={agentName(item.agentId)}
+                    resolved={item.resolved}
+                    resolvedResponse={item.resolvedResponse}
+                    disabled={!!agentTerminal[item.agentId]}
+                    onRespond={async (feedbackId, feedbackType, response) => {
+                      if (!id) return
+                      await sendFeedback(id, item.agentId, feedbackId, feedbackType, response)
+                      setResolvedFeedback((prev) => ({ ...prev, [feedbackId]: response }))
+                      setAgentWaiting((prev) => ({ ...prev, [item.agentId]: false }))
+                    }}
+                  />
+                )
+              }
+
               return (
                 <ActivityLine
                   key={item.block.blockId}
@@ -671,7 +736,9 @@ export default function WorkspaceDetailPage() {
                 .map((a) => (
                   <span key={a.id} style={styles.statusItem}>
                     <span style={styles.statusName}>{agentName(a.id)}</span>
-                    {agentBusy[a.id] ? (
+                    {agentWaiting[a.id] ? (
+                      <span style={styles.statusWaiting}>awaiting input</span>
+                    ) : agentBusy[a.id] ? (
                       <span style={styles.statusDots}>
                         <span className="pulse-dot-1">·</span>
                         <span className="pulse-dot-2">·</span>
@@ -952,6 +1019,7 @@ const styles: Record<string, React.CSSProperties> = {
   statusName: { color: 'var(--text-dim)', fontSize: '12px' },
   statusDots: { color: 'var(--text)', letterSpacing: '2px', fontSize: '12px' },
   statusDotsIdle: { color: 'var(--text-muted)', letterSpacing: '2px', fontSize: '12px' },
+  statusWaiting: { color: '#e0a855', fontSize: '12px', fontStyle: 'italic' },
 
   // Input bar
   inputBar: {

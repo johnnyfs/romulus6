@@ -111,6 +111,40 @@ async def send_message(
     return {"accepted": True}
 
 
+class SendFeedbackRequest(BaseModel):
+    feedback_id: str
+    feedback_type: str
+    response: str
+
+
+@router.post("/{agent_id}/feedback", status_code=status.HTTP_202_ACCEPTED)
+async def send_feedback(
+    workspace_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    body: SendFeedbackRequest,
+    session: SessionDep,
+) -> Any:
+    _require_workspace(workspace_id, session)
+    agent = svc.get_agent(session, workspace_id, agent_id)
+    if agent is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found"
+        )
+    try:
+        await svc.send_feedback(
+            session, agent, body.feedback_id, body.feedback_type, body.response
+        )
+    except RuntimeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)
+        )
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)
+        )
+    return {"accepted": True}
+
+
 @router.delete("/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_agent(workspace_id: uuid.UUID, agent_id: uuid.UUID, session: SessionDep) -> None:
     _require_workspace(workspace_id, session)

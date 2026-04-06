@@ -172,6 +172,8 @@ def ingest_worker_event(
             agent.status = AgentStatus.error
         elif event_type == "session.interrupted":
             agent.status = AgentStatus.interrupted
+        elif event_type == "feedback.request":
+            agent.status = AgentStatus.waiting
         agent.updated_at = datetime.datetime.utcnow()
         session.add(agent)
         session.commit()
