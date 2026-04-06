@@ -132,6 +132,11 @@ async def send_feedback(
 ) -> None:
     from app.services.events import persist_event
 
+    agent.status = AgentStatus.busy
+    agent.updated_at = datetime.datetime.utcnow()
+    session.add(agent)
+    session.commit()
+
     persist_event(
         session,
         workspace_id=agent.workspace_id,
