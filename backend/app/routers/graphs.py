@@ -1,4 +1,3 @@
-import asyncio
 import datetime
 import uuid
 from typing import Annotated, Any, Optional
@@ -441,7 +440,7 @@ async def create_run(
     _require_workspace(workspace_id, session)
     graph = _require_graph(workspace_id, graph_id, session)
     run = svc.create_run(session, graph=graph)
-    asyncio.create_task(run_svc.execute_run(run.id, workspace_id))
+    run_svc.enqueue_run(session, run.id, reason="run created")
     return _run_response(run)
 
 

@@ -8,7 +8,7 @@ import {
   createRun,
   getRun,
 } from '../api/graphs'
-import { NODE_W, NODE_H, LAYER_H, PADDING_TOP, CANVAS_WIDTH, computeLayout } from './graphLayout'
+import { NODE_W, NODE_H, PADDING_TOP, CANVAS_WIDTH, computeLayout } from './graphLayout'
 
 const STATE_COLORS: Record<RunNodeState, string> = {
   pending: 'var(--text-muted)',

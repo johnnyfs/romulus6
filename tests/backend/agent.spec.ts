@@ -1,112 +1,137 @@
-import { test, expect, type APIRequestContext } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const REPLY_TIMEOUT_MS = 120_000;
-const POLL_INTERVAL_MS = 3_000;
+import {
+  UUID_RE,
+  createWorkspace,
+  deleteWorkspaceWithChildren,
+  listWorkspaceEvents,
+  waitForWorkspaceEvents,
+} from './helpers';
 
-async function waitForTextReply(
-  request: APIRequestContext,
+const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:8000';
+
+async function readFirstSseEvent(
   workspaceId: string,
-  agentId: string,
   since = 0,
-  timeoutMs = REPLY_TIMEOUT_MS,
-): Promise<{ text: string; since: number }> {
-  const deadline = Date.now() + timeoutMs;
-  let cursor = since;
-  let text = '';
-  let gotText = false;
+): Promise<any> {
+  const controller = new AbortController();
+  const response = await fetch(`${BASE_URL}/api/v1/workspaces/${workspaceId}/events/stream?since=${since}`, {
+    signal: controller.signal,
+  });
+  expect(response.ok).toBeTruthy();
+  expect(response.body).toBeTruthy();
 
-  while (Date.now() < deadline) {
-    const res = await request.get(
-      `/api/v1/workspaces/${workspaceId}/agents/${agentId}/events?since=${cursor}`,
-    );
-    expect(res.status()).toBe(200);
-    const events: any[] = await res.json();
-    cursor += events.length;
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
 
-    for (const ev of events) {
-      if (ev.type === 'text.delta') {
-        text += ev.data.delta ?? '';
-        gotText = true;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
       }
-      if (gotText && (ev.type === 'session.idle' || ev.type === 'session.completed')) {
-        return { text, since: cursor };
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split('\n\n');
+      buffer = chunks.pop() ?? '';
+
+      for (const chunk of chunks) {
+        const dataLine = chunk
+          .split('\n')
+          .find((line) => line.startsWith('data: '));
+        if (!dataLine) {
+          continue;
+        }
+        return JSON.parse(dataLine.slice('data: '.length));
       }
     }
-
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+  } finally {
+    controller.abort();
+    await reader.cancel().catch(() => undefined);
   }
 
-  throw new Error(`Timed out waiting for reply from agent ${agentId} (received so far: "${text}")`);
+  throw new Error(`No SSE event received for workspace ${workspaceId}`);
 }
 
 test.describe('Agent API', () => {
   test.setTimeout(300_000);
 
-  test('create two agents, get replies, send follow-up, delete agents and sandboxes', async ({ request }) => {
-    // --- setup ---
-    const wsRes = await request.post('/api/v1/workspaces', { data: { name: 'Agent Test WS' } });
-    expect(wsRes.status()).toBe(201);
-    const { id: workspaceId } = await wsRes.json();
+  test('agent lifecycle is observable through workspace events, not agent-local polling', async ({ request }) => {
+    const workspaceId = await createWorkspace(request, 'Agent Test WS');
 
-    // --- create Greeter and Farewell agents ---
-    const greeterRes = await request.post(`/api/v1/workspaces/${workspaceId}/agents`, {
-      data: { agent_type: 'opencode', model: 'anthropic/claude-haiku-4-5', name: 'Greeter', prompt: 'Just say hi. One sentence only.' },
-      timeout: 120_000,
-    });
-    expect(greeterRes.status()).toBe(201);
-    const greeter = await greeterRes.json();
-    expect(greeter.name).toBe('Greeter');
-    expect(greeter.id).toMatch(UUID_RE);
-    expect(greeter.session_id).toBeTruthy();
+    try {
+      const createRes = await request.post(`/api/v1/workspaces/${workspaceId}/agents`, {
+        data: {
+          agent_type: 'opencode',
+          model: 'anthropic/claude-haiku-4-5',
+          name: 'Greeter',
+          prompt: 'Say hello in one short sentence.',
+        },
+        timeout: 120_000,
+      });
+      expect(createRes.status()).toBe(201);
+      const agent = await createRes.json();
+      expect(agent.id).toMatch(UUID_RE);
+      expect(agent.sandbox_id).toMatch(UUID_RE);
+      expect(agent.session_id).toBeTruthy();
 
-    const farewellRes = await request.post(`/api/v1/workspaces/${workspaceId}/agents`, {
-      data: { agent_type: 'opencode', model: 'anthropic/claude-haiku-4-5', name: 'Farewell', prompt: 'Just say bye. One sentence only.' },
-      timeout: 120_000,
-    });
-    expect(farewellRes.status()).toBe(201);
-    const farewell = await farewellRes.json();
-    expect(farewell.name).toBe('Farewell');
-    expect(farewell.id).toMatch(UUID_RE);
-    expect(farewell.session_id).toBeTruthy();
+      const initialEvents = await waitForWorkspaceEvents(
+        request,
+        workspaceId,
+        (event) =>
+          event.agent_id === agent.id &&
+          (event.type === 'session.idle' || event.type === 'session.completed'),
+      );
 
-    // --- both agents appear in list ---
-    const listRes = await request.get(`/api/v1/workspaces/${workspaceId}/agents`);
-    expect(listRes.status()).toBe(200);
-    const list = await listRes.json();
-    expect(list.some((a: any) => a.id === greeter.id)).toBe(true);
-    expect(list.some((a: any) => a.id === farewell.id)).toBe(true);
+      expect(initialEvents.event.workspace_id).toBe(workspaceId);
+      expect(initialEvents.event.source_type).toBe('agent');
+      expect(initialEvents.event.sandbox_id).toBe(agent.sandbox_id);
+      expect(initialEvents.event.worker_id).toMatch(UUID_RE);
+      expect(new Date(initialEvents.event.received_at).toString()).not.toBe('Invalid Date');
 
-    // --- wait for initial replies ---
-    const greeterReply = await waitForTextReply(request, workspaceId, greeter.id);
-    expect(greeterReply.text.trim().length).toBeGreaterThan(0);
-    console.log(`[Greeter] initial: "${greeterReply.text.trim()}"`);
+      const firstPage = await listWorkspaceEvents(request, workspaceId, 0, 2);
+      const secondPage = await listWorkspaceEvents(request, workspaceId, 2, 2);
+      expect(firstPage.length).toBeLessThanOrEqual(2);
+      if (firstPage.length > 0 && secondPage.length > 0) {
+        expect(
+          new Date(firstPage[firstPage.length - 1].received_at).getTime(),
+        ).toBeLessThanOrEqual(new Date(secondPage[0].received_at).getTime());
+      }
 
-    const farewellReply = await waitForTextReply(request, workspaceId, farewell.id);
-    expect(farewellReply.text.trim().length).toBeGreaterThan(0);
-    console.log(`[Farewell] initial: "${farewellReply.text.trim()}"`);
+      const sseEvent = await readFirstSseEvent(workspaceId, 0);
+      expect(sseEvent.workspace_id).toBe(workspaceId);
+      expect(sseEvent.agent_id).toBe(agent.id);
+      expect(sseEvent.sandbox_id).toBe(agent.sandbox_id);
+      expect(sseEvent.worker_id).toMatch(UUID_RE);
 
-    // --- send follow-up to Greeter only and wait for reply ---
-    const msgRes = await request.post(`/api/v1/workspaces/${workspaceId}/agents/${greeter.id}/messages`, {
-      data: { prompt: 'Call me operator for now.' },
-    });
-    expect(msgRes.status()).toBe(202);
+      const messageRes = await request.post(`/api/v1/workspaces/${workspaceId}/agents/${agent.id}/messages`, {
+        data: { prompt: 'Now greet the operator in one short sentence.' },
+      });
+      expect(messageRes.status()).toBe(202);
 
-    const followUp = await waitForTextReply(request, workspaceId, greeter.id, greeterReply.since);
-    expect(followUp.text.trim().length).toBeGreaterThan(0);
-    console.log(`[Greeter] follow-up: "${followUp.text.trim()}"`);
+      const followUp = await waitForWorkspaceEvents(
+        request,
+        workspaceId,
+        (event) =>
+          event.agent_id === agent.id &&
+          (event.type === 'session.idle' || event.type === 'session.completed'),
+        initialEvents.cursor,
+      );
+      expect(followUp.cursor).toBeGreaterThan(initialEvents.cursor);
 
-    // --- delete agents ---
-    expect((await request.delete(`/api/v1/workspaces/${workspaceId}/agents/${greeter.id}`)).status()).toBe(204);
-    expect((await request.delete(`/api/v1/workspaces/${workspaceId}/agents/${farewell.id}`)).status()).toBe(204);
-    expect((await request.get(`/api/v1/workspaces/${workspaceId}/agents/${greeter.id}`)).status()).toBe(404);
+      const followUpSlice = await listWorkspaceEvents(
+        request,
+        workspaceId,
+        initialEvents.cursor,
+        followUp.cursor - initialEvents.cursor,
+      );
+      expect(followUpSlice.length).toBeGreaterThan(0);
+      expect(followUpSlice.every((event) => new Date(event.received_at).toString() !== 'Invalid Date')).toBe(true);
 
-    // --- delete sandboxes ---
-    expect((await request.delete(`/api/v1/workspaces/${workspaceId}/sandboxes/${greeter.sandbox_id}`)).status()).toBe(204);
-    expect((await request.delete(`/api/v1/workspaces/${workspaceId}/sandboxes/${farewell.sandbox_id}`)).status()).toBe(204);
-
-    // --- teardown ---
-    await request.delete(`/api/v1/workspaces/${workspaceId}`);
+      expect((await request.delete(`/api/v1/workspaces/${workspaceId}/agents/${agent.id}`)).status()).toBe(204);
+      expect((await request.get(`/api/v1/workspaces/${workspaceId}/agents/${agent.id}`)).status()).toBe(404);
+    } finally {
+      await deleteWorkspaceWithChildren(request, workspaceId);
+    }
   });
-
 });

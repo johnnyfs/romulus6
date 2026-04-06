@@ -49,6 +49,7 @@ class CreateSessionRequest(BaseModel):
     workspace_name: str | None = None
     graph_tools: bool = False
     workspace_id: str | None = None
+    sandbox_id: str | None = None
 
 class CreateSessionResponse(BaseModel):
     session: Session

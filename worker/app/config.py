@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -9,6 +10,12 @@ class Settings(BaseSettings):
     port: int = 8080
     log_level: str = "INFO"
     romulus_backend_url: str = "http://romulus-backend:8000/api/v1"
+    registration_key: str | None = None
+    pod_name: str | None = None
+    pod_ip: str | None = None
+    advertise_url: str | None = None
+    heartbeat_interval_seconds: float = 5.0
+    register_retry_seconds: float = 2.0
 
     model_config = SettingsConfigDict(env_prefix="WORKER_")
 

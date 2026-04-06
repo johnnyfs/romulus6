@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   ANTHROPIC_MODELS,
@@ -9,11 +9,10 @@ import {
   type AgentEvent,
   createAgent,
   deleteAgent,
-  getAgentEvents,
   listAgents,
   sendMessage,
-  streamAgentEvents,
 } from '../api/agents'
+import { listWorkspaceEvents, streamWorkspaceEvents } from '../api/workspaceEvents'
 import { getWorkspace, type Workspace } from '../api/workspaces'
 import AgentCard from '../components/AgentCard'
 import GraphPanel from '../components/GraphPanel'
@@ -159,8 +158,9 @@ export default function WorkspaceDetailPage() {
     }
   })
   const feedBottomRef = useRef<HTMLDivElement>(null)
-  const sseControllers = useRef<Map<string, AbortController>>(new Map())
+  const workspaceStreamController = useRef<AbortController | null>(null)
   const seenEventIds = useRef<Set<string>>(new Set())
+  const eventCursor = useRef(0)
   const [showDeadMessages, setShowDeadMessages] = useState<boolean>(() => {
     try {
       const stored = localStorage.getItem(`show-dead-messages-${id}`)
@@ -187,73 +187,71 @@ export default function WorkspaceDetailPage() {
 
   // ── SSE connection management ─────────────────────────────────────────────
 
-  const startSSE = useCallback(
-    (agentId: string) => {
-      if (!id || sseControllers.current.has(agentId)) return
-      const ctrl = new AbortController()
-      sseControllers.current.set(agentId, ctrl)
-
-      streamAgentEvents(
-        id,
-        agentId,
-        0,
-        (event: AgentEvent) => {
-          if (!event.type.startsWith('session.')) {
-            if (!seenEventIds.current.has(event.id)) {
-              seenEventIds.current.add(event.id)
-              setEventMap((prev) => ({
-                ...prev,
-                [agentId]: [...(prev[agentId] ?? []), event],
-              }))
-            }
-          }
-          if (event.type === 'session.busy') {
-            setAgentBusy((prev) => ({ ...prev, [agentId]: true }))
-          } else if (event.type === 'session.idle') {
-            setAgentBusy((prev) => ({ ...prev, [agentId]: false }))
-          } else if (
-            event.type === 'session.completed' ||
-            event.type === 'session.error' ||
-            event.type === 'session.interrupted'
-          ) {
-            setAgentBusy((prev) => ({ ...prev, [agentId]: false }))
-            setAgentTerminal((prev) => ({ ...prev, [agentId]: true }))
-          }
-        },
-        ctrl.signal,
-      ).finally(() => {
-        sseControllers.current.delete(agentId)
-      })
-    },
-    [id],
-  )
-
   useEffect(() => {
-    if (!id || agents.length === 0) return
-    for (const agent of agents) {
-      if (TERMINAL_STATUSES.includes(agent.status)) {
-        if (!eventMap[agent.id]) {
-          getAgentEvents(id, agent.id, 0).then((evts) => {
-            const filtered = evts.filter((e) => !e.type.startsWith('session.'))
-            for (const e of filtered) seenEventIds.current.add(e.id)
-            setEventMap((prev) => ({
-              ...prev,
-              [agent.id]: filtered,
-            }))
-            setAgentTerminal((prev) => ({ ...prev, [agent.id]: true }))
-          })
+    if (!id) return
+
+    const applyEvent = (event: AgentEvent) => {
+      const agentId = event.agent_id ?? event.source_id ?? 'unknown'
+      eventCursor.current += 1
+      if (!event.type.startsWith('session.')) {
+        if (!seenEventIds.current.has(event.id)) {
+          seenEventIds.current.add(event.id)
+          setEventMap((prev) => ({
+            ...prev,
+            [agentId]: [...(prev[agentId] ?? []), event],
+          }))
         }
-      } else {
-        startSSE(agent.id)
+      }
+      if (event.type === 'session.busy') {
+        setAgentBusy((prev) => ({ ...prev, [agentId]: true }))
+      } else if (event.type === 'session.idle') {
+        setAgentBusy((prev) => ({ ...prev, [agentId]: false }))
+      } else if (
+        event.type === 'session.completed' ||
+        event.type === 'session.error' ||
+        event.type === 'session.interrupted'
+      ) {
+        setAgentBusy((prev) => ({ ...prev, [agentId]: false }))
+        setAgentTerminal((prev) => ({ ...prev, [agentId]: true }))
       }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agents, id])
+
+    const ctrl = new AbortController()
+    workspaceStreamController.current = ctrl
+    ;(async () => {
+      const events = await listWorkspaceEvents(id, 0, 1000)
+      const nextMap: Record<string, AgentEvent[]> = {}
+      const nextTerminal: Record<string, boolean> = {}
+      const nextBusy: Record<string, boolean> = {}
+      eventCursor.current = 0
+      for (const event of events) {
+        eventCursor.current += 1
+        const agentId = event.agent_id ?? event.source_id ?? 'unknown'
+        if (!event.type.startsWith('session.')) {
+          seenEventIds.current.add(event.id)
+          nextMap[agentId] = [...(nextMap[agentId] ?? []), event]
+        }
+        if (event.type === 'session.busy') nextBusy[agentId] = true
+        if (event.type === 'session.idle') nextBusy[agentId] = false
+        if (
+          event.type === 'session.completed' ||
+          event.type === 'session.error' ||
+          event.type === 'session.interrupted'
+        ) {
+          nextBusy[agentId] = false
+          nextTerminal[agentId] = true
+        }
+      }
+      setEventMap(nextMap)
+      setAgentBusy((prev) => ({ ...prev, ...nextBusy }))
+      setAgentTerminal((prev) => ({ ...prev, ...nextTerminal }))
+      await streamWorkspaceEvents(id, eventCursor.current, applyEvent, ctrl.signal)
+    })().catch(() => {})
+    return () => ctrl.abort()
+  }, [id])
 
   useEffect(() => {
-    return () => {
-      for (const ctrl of sseControllers.current.values()) ctrl.abort()
-    }
+    return () => workspaceStreamController.current?.abort()
   }, [])
 
   useEffect(() => {
@@ -413,7 +411,6 @@ export default function WorkspaceDetailPage() {
       setFormPrompt('')
       setFormName('')
       setFormGraphTools(false)
-      startSSE(agent.id)
     } finally {
       setCreating(false)
     }
@@ -432,7 +429,6 @@ export default function WorkspaceDetailPage() {
         ])
         await sendMessage(id, targetAgentId, chatInput.trim())
         setAgentTerminal((prev) => ({ ...prev, [targetAgentId]: false }))
-        startSSE(targetAgentId)
       }
       setChatInput('')
     } finally {
@@ -558,8 +554,6 @@ export default function WorkspaceDetailPage() {
                 onClick={() => setSelectedAgentId(agent.id)}
                 onDelete={async () => {
                   if (!id) return
-                  sseControllers.current.get(agent.id)?.abort()
-                  sseControllers.current.delete(agent.id)
                   await deleteAgent(id, agent.id)
                   setAgents((prev) => prev.filter((a) => a.id !== agent.id))
                   setEventMap((prev) => {
@@ -597,8 +591,6 @@ export default function WorkspaceDetailPage() {
                     onClick={() => setSelectedAgentId(agent.id)}
                     onDelete={async () => {
                       if (!id) return
-                      sseControllers.current.get(agent.id)?.abort()
-                      sseControllers.current.delete(agent.id)
                       await deleteAgent(id, agent.id)
                       setAgents((prev) => prev.filter((a) => a.id !== agent.id))
                       setEventMap((prev) => {

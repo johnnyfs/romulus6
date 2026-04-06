@@ -28,8 +28,12 @@ export interface AgentEvent {
   session_id: string
   type: string
   timestamp: string
+  received_at?: string
   data: Record<string, unknown>
   source_name?: string | null
+  agent_id?: string | null
+  source_id?: string | null
+  source_type?: string | null
 }
 
 export interface CreateOpenCodeAgentRequest {

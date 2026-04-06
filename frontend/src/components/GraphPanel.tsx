@@ -4,7 +4,6 @@ import {
   type GraphDetail,
   type AgentConfig,
   type CommandConfig,
-  type GraphNode,
   type NodeType,
   addEdge,
   addNode,
@@ -16,7 +15,7 @@ import {
   listGraphs,
   patchNode,
 } from '../api/graphs'
-import { NODE_W, NODE_H, H_GAP, LAYER_H, PADDING_TOP, CANVAS_WIDTH, computeLayout } from './graphLayout'
+import { NODE_W, NODE_H, CANVAS_WIDTH, computeLayout, type Pos } from './graphLayout'
 import RunsView from './RunsView'
 
 const MODEL_OPTIONS = [
@@ -123,7 +122,12 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
   }, [positions])
 
   const selectedNodeEdges = useMemo(() => {
-    if (!detail || !selectedNodeId) return { incoming: [] as typeof detail.edges, outgoing: [] as typeof detail.edges }
+    if (!detail || !selectedNodeId) {
+      return {
+        incoming: [] as GraphDetail['edges'],
+        outgoing: [] as GraphDetail['edges'],
+      }
+    }
     return {
       incoming: detail.edges.filter((e) => e.to_node_id === selectedNodeId),
       outgoing: detail.edges.filter((e) => e.from_node_id === selectedNodeId),
@@ -357,6 +361,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
   // ── Render ────────────────────────────────────────────────────────────────
 
   const selectedNode = detail?.nodes.find((n) => n.id === selectedNodeId) ?? null
+  const detailNodes = detail?.nodes ?? []
 
   return (
     <div style={width !== undefined ? { ...s.panel, width } : s.panel}>
@@ -744,7 +749,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
                 value={edge.from_node_id}
                 disabled
               >
-                {detail!.nodes.map((n) => (
+                {detailNodes.map((n) => (
                   <option key={n.id} value={n.id}>{n.name || n.node_type}</option>
                 ))}
               </select>
@@ -765,7 +770,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
               onChange={(e) => setNewDepFrom(e.target.value)}
             >
               <option value="">add dependency...</option>
-              {detail!.nodes.filter((n) => n.id !== selectedNodeId).map((n) => (
+              {detailNodes.filter((n) => n.id !== selectedNodeId).map((n) => (
                 <option key={n.id} value={n.id}>{n.name || n.node_type}</option>
               ))}
             </select>
@@ -795,7 +800,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
                 value={edge.to_node_id}
                 disabled
               >
-                {detail!.nodes.map((n) => (
+                {detailNodes.map((n) => (
                   <option key={n.id} value={n.id}>{n.name || n.node_type}</option>
                 ))}
               </select>
@@ -816,7 +821,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
               onChange={(e) => setNewDeptTo(e.target.value)}
             >
               <option value="">add dependent...</option>
-              {detail!.nodes.filter((n) => n.id !== selectedNodeId).map((n) => (
+              {detailNodes.filter((n) => n.id !== selectedNodeId).map((n) => (
                 <option key={n.id} value={n.id}>{n.name || n.node_type}</option>
               ))}
             </select>
