@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { TaskTemplate, SubgraphTemplate, SubgraphTemplateDetail, SubgraphTemplateNode, SubgraphTemplateNodeType, TaskTemplateArgType } from '../api/templates'
+import type { TaskTemplate, SubgraphTemplate, SubgraphTemplateDetail, SubgraphTemplateNodeType } from '../api/templates'
 import {
   addSubgraphTemplateEdge,
   addSubgraphTemplateNode,
@@ -11,7 +11,6 @@ import {
   listSubgraphTemplates,
   listTaskTemplates,
   patchSubgraphTemplateNode,
-  updateSubgraphTemplate,
 } from '../api/templates'
 
 const NODE_W = 130
