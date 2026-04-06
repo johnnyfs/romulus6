@@ -15,7 +15,8 @@ RUN uv sync --no-dev
 
 COPY app/ app/
 
-RUN mkdir -p /data/.local/share/opencode /workspaces
+RUN mkdir -p /data/.local/share/opencode /workspaces/.opencode/tools
+COPY tools/ /workspaces/.opencode/tools/
 ENV XDG_DATA_HOME=/data/.local/share
 ENV HOME=/data
 ENV WORKER_WORKSPACE_ROOT=/workspaces

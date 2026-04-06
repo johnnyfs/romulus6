@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 async function createWorkspace(request: any): Promise<string> {
-  const res = await request.post('/api/v1/workspaces', { data: { name: 'Graph Test WS' } });
+  const res = await request.post('/api/v1/workspaces', { data: { name: `Graph Test WS ${crypto.randomUUID()}` } });
   expect(res.status()).toBe(201);
   return (await res.json()).id;
 }
@@ -42,7 +42,7 @@ test.describe('Graph API', () => {
       const res = await request.post(`/api/v1/workspaces/${wid}/graphs`, {
         data: {
           name: 'graph with nodes',
-          nodes: [{ node_type: 'nop' }, { node_type: 'nop' }],
+          nodes: [{ node_type: 'command', command_config: { command: 'echo ok' } }, { node_type: 'command', command_config: { command: 'echo ok' } }],
           edges: [{ from_index: 0, to_index: 1 }],
         },
       });
@@ -50,7 +50,7 @@ test.describe('Graph API', () => {
       const body = await res.json();
       expect(body.nodes).toHaveLength(2);
       expect(body.edges).toHaveLength(1);
-      expect(body.nodes[0].node_type).toBe('nop');
+      expect(body.nodes[0].node_type).toBe('command');
       expect(body.edges[0].from_node_id).toBe(body.nodes[0].id);
       expect(body.edges[0].to_node_id).toBe(body.nodes[1].id);
 
@@ -86,7 +86,7 @@ test.describe('Graph API', () => {
       const createRes = await request.post(`/api/v1/workspaces/${wid}/graphs`, {
         data: {
           name: 'detail graph',
-          nodes: [{ node_type: 'nop' }],
+          nodes: [{ node_type: 'command', command_config: { command: 'echo ok' } }],
           edges: [],
         },
       });
@@ -111,7 +111,7 @@ test.describe('Graph API', () => {
       const createRes = await request.post(`/api/v1/workspaces/${wid}/graphs`, {
         data: {
           name: 'original',
-          nodes: [{ node_type: 'nop' }, { node_type: 'nop' }],
+          nodes: [{ node_type: 'command', command_config: { command: 'echo ok' } }, { node_type: 'command', command_config: { command: 'echo ok' } }],
           edges: [{ from_index: 0, to_index: 1 }],
         },
       });
@@ -121,7 +121,7 @@ test.describe('Graph API', () => {
       const putRes = await request.put(`/api/v1/workspaces/${wid}/graphs/${original.id}`, {
         data: {
           name: 'updated',
-          nodes: [{ node_type: 'nop' }],
+          nodes: [{ node_type: 'command', command_config: { command: 'echo ok' } }],
           edges: [],
         },
       });
@@ -170,13 +170,13 @@ test.describe('Graph API', () => {
       const graphId = (await createRes.json()).id;
 
       const addRes = await request.post(`/api/v1/workspaces/${wid}/graphs/${graphId}/nodes`, {
-        data: { node_type: 'nop' },
+        data: { node_type: 'command', command_config: { command: 'echo ok' } },
       });
       expect(addRes.status()).toBe(201);
       const node = await addRes.json();
       expect(node.id).toMatch(UUID_RE);
       expect(node.graph_id).toBe(graphId);
-      expect(node.node_type).toBe('nop');
+      expect(node.node_type).toBe('command');
 
       await request.delete(`/api/v1/workspaces/${wid}/graphs/${graphId}`);
     } finally {
@@ -190,7 +190,7 @@ test.describe('Graph API', () => {
       const createRes = await request.post(`/api/v1/workspaces/${wid}/graphs`, {
         data: {
           name: 'node delete test',
-          nodes: [{ node_type: 'nop' }, { node_type: 'nop' }],
+          nodes: [{ node_type: 'command', command_config: { command: 'echo ok' } }, { node_type: 'command', command_config: { command: 'echo ok' } }],
           edges: [{ from_index: 0, to_index: 1 }],
         },
       });
@@ -222,7 +222,7 @@ test.describe('Graph API', () => {
       const createRes = await request.post(`/api/v1/workspaces/${wid}/graphs`, {
         data: {
           name: 'edge test',
-          nodes: [{ node_type: 'nop' }, { node_type: 'nop' }],
+          nodes: [{ node_type: 'command', command_config: { command: 'echo ok' } }, { node_type: 'command', command_config: { command: 'echo ok' } }],
           edges: [],
         },
       });
@@ -250,7 +250,7 @@ test.describe('Graph API', () => {
       const createRes = await request.post(`/api/v1/workspaces/${wid}/graphs`, {
         data: {
           name: 'edge delete test',
-          nodes: [{ node_type: 'nop' }, { node_type: 'nop' }],
+          nodes: [{ node_type: 'command', command_config: { command: 'echo ok' } }, { node_type: 'command', command_config: { command: 'echo ok' } }],
           edges: [{ from_index: 0, to_index: 1 }],
         },
       });
@@ -278,7 +278,7 @@ test.describe('Graph API', () => {
       const createRes = await request.post(`/api/v1/workspaces/${wid}/graphs`, {
         data: {
           name: 'edge 404 test',
-          nodes: [{ node_type: 'nop' }],
+          nodes: [{ node_type: 'command', command_config: { command: 'echo ok' } }],
           edges: [],
         },
       });
@@ -306,7 +306,7 @@ test.describe('Graph API', () => {
       const res = await request.post(`/api/v1/workspaces/${wid}/graphs`, {
         data: {
           name: 'cyclic',
-          nodes: [{ node_type: 'nop' }, { node_type: 'nop' }, { node_type: 'nop' }],
+          nodes: [{ node_type: 'command', command_config: { command: 'echo ok' } }, { node_type: 'command', command_config: { command: 'echo ok' } }, { node_type: 'command', command_config: { command: 'echo ok' } }],
           edges: [
             { from_index: 0, to_index: 1 },
             { from_index: 1, to_index: 2 },
@@ -328,7 +328,7 @@ test.describe('Graph API', () => {
       const res = await request.post(`/api/v1/workspaces/${wid}/graphs`, {
         data: {
           name: 'self-loop',
-          nodes: [{ node_type: 'nop' }],
+          nodes: [{ node_type: 'command', command_config: { command: 'echo ok' } }],
           edges: [{ from_index: 0, to_index: 0 }],
         },
       });
@@ -349,7 +349,7 @@ test.describe('Graph API', () => {
       const putRes = await request.put(`/api/v1/workspaces/${wid}/graphs/${graphId}`, {
         data: {
           name: 'now cyclic',
-          nodes: [{ node_type: 'nop' }, { node_type: 'nop' }],
+          nodes: [{ node_type: 'command', command_config: { command: 'echo ok' } }, { node_type: 'command', command_config: { command: 'echo ok' } }],
           edges: [
             { from_index: 0, to_index: 1 },
             { from_index: 1, to_index: 0 },
@@ -370,7 +370,7 @@ test.describe('Graph API', () => {
       const createRes = await request.post(`/api/v1/workspaces/${wid}/graphs`, {
         data: {
           name: 'cycle via edge add',
-          nodes: [{ node_type: 'nop' }, { node_type: 'nop' }],
+          nodes: [{ node_type: 'command', command_config: { command: 'echo ok' } }, { node_type: 'command', command_config: { command: 'echo ok' } }],
           edges: [{ from_index: 0, to_index: 1 }],
         },
       });
@@ -398,10 +398,10 @@ test.describe('Graph API', () => {
         data: {
           name: 'diamond',
           nodes: [
-            { node_type: 'nop' },
-            { node_type: 'nop' },
-            { node_type: 'nop' },
-            { node_type: 'nop' },
+            { node_type: 'command', command_config: { command: 'echo ok' } },
+            { node_type: 'command', command_config: { command: 'echo ok' } },
+            { node_type: 'command', command_config: { command: 'echo ok' } },
+            { node_type: 'command', command_config: { command: 'echo ok' } },
           ],
           edges: [
             { from_index: 0, to_index: 1 },
@@ -574,19 +574,100 @@ test.describe('Graph API', () => {
     }
   });
 
-  test('nop nodes have null agent_config', async ({ request }) => {
+  // --- Command node type ---
+
+  test('POST /graphs creates a graph with a command node', async ({ request }) => {
+    const wid = await createWorkspace(request);
+    try {
+      const commandConfig = { command: 'echo hello\nls -la' };
+      const res = await request.post(`/api/v1/workspaces/${wid}/graphs`, {
+        data: {
+          name: 'command graph',
+          nodes: [{ node_type: 'command', name: 'my-cmd', command_config: commandConfig }],
+          edges: [],
+        },
+      });
+      expect(res.status()).toBe(201);
+      const body = await res.json();
+      expect(body.nodes).toHaveLength(1);
+      expect(body.nodes[0].node_type).toBe('command');
+      expect(body.nodes[0].name).toBe('my-cmd');
+      expect(body.nodes[0].command_config).toMatchObject(commandConfig);
+      expect(body.nodes[0].agent_config).toBeNull();
+
+      await request.delete(`/api/v1/workspaces/${wid}/graphs/${body.id}`);
+    } finally {
+      await deleteWorkspace(request, wid);
+    }
+  });
+
+  test('POST /nodes adds a command node to an existing graph', async ({ request }) => {
+    const wid = await createWorkspace(request);
+    try {
+      const createRes = await request.post(`/api/v1/workspaces/${wid}/graphs`, {
+        data: { name: 'add-cmd-node' },
+      });
+      const graph = await createRes.json();
+
+      const commandConfig = { command: 'whoami' };
+      const nodeRes = await request.post(
+        `/api/v1/workspaces/${wid}/graphs/${graph.id}/nodes`,
+        { data: { node_type: 'command', name: 'c1', command_config: commandConfig } },
+      );
+      expect(nodeRes.status()).toBe(201);
+      const node = await nodeRes.json();
+      expect(node.node_type).toBe('command');
+      expect(node.command_config).toMatchObject(commandConfig);
+
+      await request.delete(`/api/v1/workspaces/${wid}/graphs/${graph.id}`);
+    } finally {
+      await deleteWorkspace(request, wid);
+    }
+  });
+
+  test('PATCH /nodes updates command config on a node', async ({ request }) => {
+    const wid = await createWorkspace(request);
+    try {
+      const commandConfig = { command: 'echo original' };
+      const createRes = await request.post(`/api/v1/workspaces/${wid}/graphs`, {
+        data: {
+          name: 'patch-cmd',
+          nodes: [{ node_type: 'command', name: 'c1', command_config: commandConfig }],
+          edges: [],
+        },
+      });
+      const graph = await createRes.json();
+      const nodeId = graph.nodes[0].id;
+
+      const updatedConfig = { command: 'echo updated\npwd' };
+      const patchRes = await request.patch(
+        `/api/v1/workspaces/${wid}/graphs/${graph.id}/nodes/${nodeId}`,
+        { data: { command_config: updatedConfig } },
+      );
+      expect(patchRes.status()).toBe(200);
+      const patched = await patchRes.json();
+      expect(patched.command_config).toMatchObject(updatedConfig);
+
+      await request.delete(`/api/v1/workspaces/${wid}/graphs/${graph.id}`);
+    } finally {
+      await deleteWorkspace(request, wid);
+    }
+  });
+
+  test('command nodes have null agent_config', async ({ request }) => {
     const wid = await createWorkspace(request);
     try {
       const res = await request.post(`/api/v1/workspaces/${wid}/graphs`, {
         data: {
-          name: 'nop-null-config',
-          nodes: [{ node_type: 'nop', name: 'n1' }],
+          name: 'cmd-null-agent',
+          nodes: [{ node_type: 'command', name: 'c1', command_config: { command: 'ls' } }],
           edges: [],
         },
       });
       expect(res.status()).toBe(201);
       const body = await res.json();
       expect(body.nodes[0].agent_config).toBeNull();
+      expect(body.nodes[0].command_config).toMatchObject({ command: 'ls' });
 
       await request.delete(`/api/v1/workspaces/${wid}/graphs/${body.id}`);
     } finally {

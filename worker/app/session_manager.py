@@ -22,7 +22,15 @@ class SessionManager:
         self._runners: dict[str, OpenCodeRunner] = {}
         self._notify: dict[str, asyncio.Event] = {}
 
-    async def create_session(self, prompt: str, agent_type: str, model: str, workspace_name: str | None = None) -> Session:
+    async def create_session(
+        self,
+        prompt: str,
+        agent_type: str,
+        model: str,
+        workspace_name: str | None = None,
+        graph_tools: bool = False,
+        workspace_id: str | None = None,
+    ) -> Session:
         session_id = str(uuid.uuid4())
         workspace_name = workspace_name or session_id
         workspace_dir = os.path.join(settings.workspace_root, workspace_name)

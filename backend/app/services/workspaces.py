@@ -40,25 +40,24 @@ def delete_workspace(session: Session, id: uuid.UUID) -> bool:
         session.delete(event)
     session.flush()
 
+    # Delete graph runs before agents and sandboxes:
+    # graphrunnode.agent_id FK → agent (NO ACTION),
+    # graphrun.sandbox_id FK → sandbox (NO ACTION).
+    for run in session.exec(select(GraphRun).where(GraphRun.workspace_id == id)).all():
+        session.delete(run)
+    session.flush()
+
     # Hard-delete agents (they FK → sandbox).
     for agent in session.exec(select(Agent).where(Agent.workspace_id == id)).all():
         session.delete(agent)
     session.flush()
 
     # Tear down k8s workers and hard-delete sandboxes.
-    # We call worker_svc directly instead of sandbox_svc.delete_sandbox so that sandboxes
-    # are hard-deleted here (soft-deleting them would leave FK refs that block workspace deletion).
     for sandbox in session.exec(select(Sandbox).where(Sandbox.workspace_id == id)).all():
         if sandbox.worker_id is not None:
             worker_svc.delete_worker(session, sandbox.worker_id)
         session.delete(sandbox)
         session.commit()
-
-    # Delete graph runs before graphs: GraphRunNode.source_node_id → GraphNode has no DB
-    # cascade, so nodes cannot be deleted while run-node rows still reference them.
-    for run in session.exec(select(GraphRun).where(GraphRun.workspace_id == id)).all():
-        session.delete(run)
-    session.flush()
 
     # Hard-delete graphs; ORM cascade (all, delete-orphan) handles nodes + edges.
     for graph in session.exec(select(Graph).where(Graph.workspace_id == id)).all():

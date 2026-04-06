@@ -8,7 +8,7 @@ from app import k8s
 from app.models.worker import Worker, WorkerStatus
 
 
-def create_worker(session: Session) -> Worker:
+def create_worker(session: Session, workspace_id: uuid.UUID | None = None) -> Worker:
     worker = Worker(status=WorkerStatus.pending)
     session.add(worker)
     session.commit()
@@ -22,7 +22,7 @@ def create_worker(session: Session) -> Worker:
 
         apps.create_namespaced_deployment(
             namespace=k8s.K8S_NAMESPACE,
-            body=k8s.build_deployment(worker_id_str),
+            body=k8s.build_deployment(worker_id_str, workspace_id=str(workspace_id) if workspace_id else None),
         )
         worker.deployment_name = k8s.deployment_name(worker_id_str)
 

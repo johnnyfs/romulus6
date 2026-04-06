@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import uuid
 from typing import Annotated, Any, Optional
@@ -7,10 +8,12 @@ from pydantic import BaseModel
 from sqlmodel import Session
 
 from app.database import get_session
-from app.models.agent import AgentConfig
+from app.models.agent import AgentConfig, CommandConfig
 from app.models.graph import Graph, NodeType
+from app.models.run import GraphRun
 from app.models.workspace import Workspace
 from app.services import graphs as svc
+from app.services import runs as run_svc
 from app.services.graphs import EdgeInput, NodeInput
 
 router = APIRouter(
@@ -24,9 +27,10 @@ SessionDep = Annotated[Session, Depends(get_session)]
 # --- Request schemas ---
 
 class NodeInputSchema(BaseModel):
-    node_type: NodeType = NodeType.nop
+    node_type: NodeType
     name: Optional[str] = None
     agent_config: Optional[AgentConfig] = None
+    command_config: Optional[CommandConfig] = None
 
 
 class EdgeInputSchema(BaseModel):
@@ -41,15 +45,17 @@ class CreateGraphRequest(BaseModel):
 
 
 class AddNodeRequest(BaseModel):
-    node_type: NodeType = NodeType.nop
+    node_type: NodeType
     name: Optional[str] = None
     agent_config: Optional[AgentConfig] = None
+    command_config: Optional[CommandConfig] = None
 
 
 class PatchNodeRequest(BaseModel):
     name: Optional[str] = None
     node_type: Optional[NodeType] = None
     agent_config: Optional[AgentConfig] = None
+    command_config: Optional[CommandConfig] = None
 
 
 class AddEdgeRequest(BaseModel):
@@ -65,6 +71,7 @@ class GraphNodeResponse(BaseModel):
     node_type: NodeType
     name: Optional[str] = None
     agent_config: Optional[AgentConfig] = None
+    command_config: Optional[CommandConfig] = None
     created_at: datetime.datetime
 
     model_config = {"from_attributes": True}
@@ -100,6 +107,9 @@ class GraphRunNodeResponse(BaseModel):
     name: Optional[str] = None
     state: str
     agent_config: Optional[AgentConfig] = None
+    command_config: Optional[CommandConfig] = None
+    agent_id: Optional[uuid.UUID] = None
+    session_id: Optional[str] = None
     created_at: datetime.datetime
 
     model_config = {"from_attributes": True}
@@ -119,6 +129,8 @@ class GraphRunResponse(BaseModel):
     id: uuid.UUID
     graph_id: uuid.UUID
     workspace_id: uuid.UUID
+    state: str = "pending"
+    sandbox_id: Optional[uuid.UUID] = None
     created_at: datetime.datetime
     run_nodes: list[GraphRunNodeResponse]
     run_edges: list[GraphRunEdgeResponse]
@@ -151,7 +163,18 @@ def _require_graph(
 def _agent_config_from(obj: Any) -> Optional[AgentConfig]:
     if obj.agent_type is None:
         return None
-    return AgentConfig(agent_type=obj.agent_type, model=obj.model, prompt=obj.prompt)
+    return AgentConfig(
+        agent_type=obj.agent_type,
+        model=obj.model,
+        prompt=obj.prompt,
+        graph_tools=getattr(obj, "graph_tools", False),
+    )
+
+
+def _command_config_from(obj: Any) -> Optional[CommandConfig]:
+    if obj.command is None:
+        return None
+    return CommandConfig(command=obj.command)
 
 
 def _node_response(n: Any) -> GraphNodeResponse:
@@ -161,6 +184,7 @@ def _node_response(n: Any) -> GraphNodeResponse:
         node_type=n.node_type,
         name=n.name,
         agent_config=_agent_config_from(n),
+        command_config=_command_config_from(n),
         created_at=n.created_at,
     )
 
@@ -174,6 +198,9 @@ def _run_node_response(rn: Any) -> GraphRunNodeResponse:
         name=rn.name,
         state=rn.state,
         agent_config=_agent_config_from(rn),
+        command_config=_command_config_from(rn),
+        agent_id=rn.agent_id,
+        session_id=rn.session_id,
         created_at=rn.created_at,
     )
 
@@ -190,14 +217,30 @@ def _to_detail(graph: Any) -> GraphDetailResponse:
     )
 
 
+def _run_response(run: Any) -> GraphRunResponse:
+    return GraphRunResponse(
+        id=run.id,
+        graph_id=run.graph_id,
+        workspace_id=run.workspace_id,
+        state=run.state,
+        sandbox_id=run.sandbox_id,
+        created_at=run.created_at,
+        run_nodes=[_run_node_response(rn) for rn in run.run_nodes],
+        run_edges=[GraphRunEdgeResponse.model_validate(re) for re in run.run_edges],
+    )
+
+
 def _node_input(n: NodeInputSchema) -> NodeInput:
     ac = n.agent_config
+    cc = n.command_config
     return NodeInput(
         node_type=n.node_type,
         name=n.name,
         agent_type=ac.agent_type if ac else None,
         model=ac.model.value if ac else None,
         prompt=ac.prompt if ac else None,
+        command=cc.command if cc else None,
+        graph_tools=ac.graph_tools if ac else False,
     )
 
 
@@ -278,6 +321,7 @@ def add_node(
     _require_workspace(workspace_id, session)
     graph = _require_graph(workspace_id, graph_id, session)
     ac = body.agent_config
+    cc = body.command_config
     node = svc.add_node(
         session,
         graph=graph,
@@ -286,6 +330,8 @@ def add_node(
         agent_type=ac.agent_type if ac else None,
         model=ac.model.value if ac else None,
         prompt=ac.prompt if ac else None,
+        command=cc.command if cc else None,
+        graph_tools=ac.graph_tools if ac else False,
     )
     return _node_response(node)
 
@@ -320,6 +366,7 @@ def patch_node(
     _require_workspace(workspace_id, session)
     graph = _require_graph(workspace_id, graph_id, session)
     ac = body.agent_config
+    cc = body.command_config
     node = svc.patch_node(
         session,
         graph=graph,
@@ -329,6 +376,8 @@ def patch_node(
         agent_type=ac.agent_type if ac else None,
         model=ac.model.value if ac else None,
         prompt=ac.prompt if ac else None,
+        command=cc.command if cc else None,
+        graph_tools=ac.graph_tools if ac else None,
     )
     if node is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Node not found")
@@ -384,7 +433,7 @@ def delete_edge(
     response_model=GraphRunResponse,
     status_code=status.HTTP_201_CREATED,
 )
-def create_run(
+async def create_run(
     workspace_id: uuid.UUID,
     graph_id: uuid.UUID,
     session: SessionDep,
@@ -392,11 +441,38 @@ def create_run(
     _require_workspace(workspace_id, session)
     graph = _require_graph(workspace_id, graph_id, session)
     run = svc.create_run(session, graph=graph)
-    return GraphRunResponse(
-        id=run.id,
-        graph_id=run.graph_id,
-        workspace_id=run.workspace_id,
-        created_at=run.created_at,
-        run_nodes=[_run_node_response(rn) for rn in run.run_nodes],
-        run_edges=[GraphRunEdgeResponse.model_validate(re) for re in run.run_edges],
-    )
+    asyncio.create_task(run_svc.execute_run(run.id, workspace_id))
+    return _run_response(run)
+
+
+@router.get(
+    "/{graph_id}/runs",
+    response_model=list[GraphRunResponse],
+)
+def list_runs(
+    workspace_id: uuid.UUID,
+    graph_id: uuid.UUID,
+    session: SessionDep,
+) -> Any:
+    _require_workspace(workspace_id, session)
+    _require_graph(workspace_id, graph_id, session)
+    runs = svc.list_runs(session, workspace_id, graph_id)
+    return [_run_response(r) for r in runs]
+
+
+@router.get(
+    "/{graph_id}/runs/{run_id}",
+    response_model=GraphRunResponse,
+)
+def get_run(
+    workspace_id: uuid.UUID,
+    graph_id: uuid.UUID,
+    run_id: uuid.UUID,
+    session: SessionDep,
+) -> Any:
+    _require_workspace(workspace_id, session)
+    _require_graph(workspace_id, graph_id, session)
+    run = session.get(GraphRun, run_id)
+    if run is None or run.graph_id != graph_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    return _run_response(run)

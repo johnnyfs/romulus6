@@ -5,14 +5,19 @@ interface Props {
   agent: Agent
   selected: boolean
   isRunning?: boolean
+  isRunAgent?: boolean
   onClick: () => void
   onDelete: () => void
 }
 
-export default function AgentCard({ agent, selected, isRunning, onClick, onDelete }: Props) {
+export default function AgentCard({ agent, selected, isRunning, isRunAgent, onClick, onDelete }: Props) {
   const displayName = agent.name ?? agent.model.split('/')[1]
   const modelShort = agent.model.split('/')[1]
-  const label = agent.name ? `${agent.name}  ${modelShort}` : displayName
+  // For run agents, extract the node name from "run-<uuid>-<nodename>"
+  const runNodeName = isRunAgent && agent.name
+    ? agent.name.replace(/^run-[0-9a-f-]+-/, '')
+    : null
+  const label = runNodeName ?? (agent.name ? `${agent.name}  ${modelShort}` : displayName)
 
   const running = isRunning ?? !TERMINAL_STATUSES.includes(agent.status)
 
@@ -22,6 +27,7 @@ export default function AgentCard({ agent, selected, isRunning, onClick, onDelet
         ...styles.row,
         background: selected ? 'var(--surface-2)' : 'transparent',
         borderLeft: selected ? '2px solid var(--accent)' : '2px solid transparent',
+        ...(isRunAgent ? { paddingLeft: '18px', fontSize: '12px' } : {}),
       }}
       onClick={onClick}
     >

@@ -90,7 +90,7 @@ def allocate_node_port() -> int:
 
 # ── K8s manifest builders ─────────────────────────────────────────────────────
 
-def build_deployment(worker_id: str) -> dict:
+def build_deployment(worker_id: str, workspace_id: str | None = None) -> dict:
     name = deployment_name(worker_id)
     return {
         "apiVersion": "apps/v1",
@@ -122,7 +122,9 @@ def build_deployment(worker_id: str) -> dict:
                             "env": [
                                 {"name": "XDG_DATA_HOME", "value": "/data/.local/share"},
                                 {"name": "HOME", "value": "/data"},
-                            ],
+                            ] + ([
+                                {"name": "ROMULUS_WORKSPACE_ID", "value": workspace_id},
+                            ] if workspace_id else []),
                             "volumeMounts": [
                                 {"name": "workspaces", "mountPath": "/workspaces"},
                                 {"name": "opencode-data", "mountPath": "/data/.local/share"},

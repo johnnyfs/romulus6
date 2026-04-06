@@ -46,6 +46,14 @@ class AgentConfig(BaseModel):
     agent_type: Literal["opencode"] = "opencode"
     model: AnthropicModel | OpenAIModel
     prompt: str
+    graph_tools: bool = False
+
+    model_config = {"from_attributes": True}
+
+
+class CommandConfig(BaseModel):
+    """Configuration for command nodes (bash commands executed in a sandbox)."""
+    command: str
 
     model_config = {"from_attributes": True}
 
@@ -70,6 +78,8 @@ class Agent(RomulusBase, table=True):
     status: AgentStatus = Field(default=AgentStatus.starting)
     name: str
     prompt: str
+    graph_tools: bool = Field(default=False)
+    graph_run_id: Optional[uuid.UUID] = Field(default=None, index=True)
 
     workspace: Optional["Workspace"] = Relationship(back_populates="agents")
     sandbox: Optional["Sandbox"] = Relationship(back_populates="agents")

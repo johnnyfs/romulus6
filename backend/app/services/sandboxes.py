@@ -31,7 +31,7 @@ def create_sandbox(
     session.commit()
     session.refresh(sandbox)
 
-    worker = worker_svc.create_worker(session)
+    worker = worker_svc.create_worker(session, workspace_id=workspace_id)
 
     sandbox.worker_id = worker.id
     sandbox.updated_at = datetime.datetime.utcnow()

@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8080
     log_level: str = "INFO"
+    romulus_backend_url: str = "http://romulus-backend:8000/api/v1"
 
     model_config = SettingsConfigDict(env_prefix="WORKER_")
 

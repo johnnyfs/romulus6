@@ -1,11 +1,16 @@
 const BASE = '/api'
 
-export type NodeType = 'nop' | 'agent'
+export type NodeType = 'agent' | 'command'
 
 export interface AgentConfig {
   agent_type: string
   model: string
   prompt: string
+  graph_tools?: boolean
+}
+
+export interface CommandConfig {
+  command: string
 }
 
 export interface GraphNode {
@@ -14,6 +19,7 @@ export interface GraphNode {
   node_type: NodeType
   name: string | null
   agent_config: AgentConfig | null
+  command_config: CommandConfig | null
   created_at: string
 }
 
@@ -38,6 +44,40 @@ export interface GraphDetail extends Graph {
   edges: GraphEdge[]
 }
 
+export type RunNodeState = 'pending' | 'running' | 'completed' | 'error'
+export type RunState = 'pending' | 'running' | 'completed' | 'error'
+
+export interface GraphRunNode {
+  id: string
+  run_id: string
+  source_node_id: string
+  node_type: NodeType
+  name: string | null
+  state: RunNodeState
+  agent_config: AgentConfig | null
+  command_config: CommandConfig | null
+  created_at: string
+}
+
+export interface GraphRunEdge {
+  id: string
+  run_id: string
+  from_run_node_id: string
+  to_run_node_id: string
+  created_at: string
+}
+
+export interface GraphRun {
+  id: string
+  graph_id: string
+  workspace_id: string
+  state: RunState
+  sandbox_id: string | null
+  created_at: string
+  run_nodes: GraphRunNode[]
+  run_edges: GraphRunEdge[]
+}
+
 async function _check(res: Response): Promise<Response> {
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText)
@@ -56,7 +96,7 @@ export async function createGraph(workspaceId: string, name: string): Promise<Gr
   const res = await fetch(`${BASE}/workspaces/${workspaceId}/graphs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, nodes: [{ node_type: 'nop' }], edges: [] }),
+    body: JSON.stringify({ name, nodes: [], edges: [] }),
   })
   await _check(res)
   return res.json()
@@ -78,12 +118,13 @@ export async function getGraph(workspaceId: string, graphId: string): Promise<Gr
 export async function addNode(
   workspaceId: string,
   graphId: string,
+  nodeType: NodeType,
   name?: string,
 ): Promise<GraphNode> {
   const res = await fetch(`${BASE}/workspaces/${workspaceId}/graphs/${graphId}/nodes`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ node_type: 'nop', name: name ?? null }),
+    body: JSON.stringify({ node_type: nodeType, name: name ?? null }),
   })
   await _check(res)
   return res.json()
@@ -132,7 +173,7 @@ export async function patchNode(
   workspaceId: string,
   graphId: string,
   nodeId: string,
-  patch: { name?: string; node_type?: NodeType; agent_config?: AgentConfig },
+  patch: { name?: string; node_type?: NodeType; agent_config?: AgentConfig; command_config?: CommandConfig },
 ): Promise<GraphNode> {
   const res = await fetch(
     `${BASE}/workspaces/${workspaceId}/graphs/${graphId}/nodes/${nodeId}`,
@@ -142,6 +183,26 @@ export async function patchNode(
       body: JSON.stringify(patch),
     },
   )
+  await _check(res)
+  return res.json()
+}
+
+export async function listRuns(workspaceId: string, graphId: string): Promise<GraphRun[]> {
+  const res = await fetch(`${BASE}/workspaces/${workspaceId}/graphs/${graphId}/runs`)
+  await _check(res)
+  return res.json()
+}
+
+export async function createRun(workspaceId: string, graphId: string): Promise<GraphRun> {
+  const res = await fetch(`${BASE}/workspaces/${workspaceId}/graphs/${graphId}/runs`, {
+    method: 'POST',
+  })
+  await _check(res)
+  return res.json()
+}
+
+export async function getRun(workspaceId: string, graphId: string, runId: string): Promise<GraphRun> {
+  const res = await fetch(`${BASE}/workspaces/${workspaceId}/graphs/${graphId}/runs/${runId}`)
   await _check(res)
   return res.json()
 }

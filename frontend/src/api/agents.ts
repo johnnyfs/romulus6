@@ -18,6 +18,7 @@ export interface Agent {
   status: AgentStatus
   name: string | null
   prompt: string
+  graph_run_id: string | null
   created_at: string
   updated_at: string
 }
@@ -28,6 +29,7 @@ export interface AgentEvent {
   type: string
   timestamp: string
   data: Record<string, unknown>
+  source_name?: string | null
 }
 
 export interface CreateOpenCodeAgentRequest {
@@ -35,6 +37,7 @@ export interface CreateOpenCodeAgentRequest {
   model: string
   prompt: string
   name?: string
+  graph_tools?: boolean
 }
 
 export const ANTHROPIC_MODELS: { label: string; value: string }[] = [

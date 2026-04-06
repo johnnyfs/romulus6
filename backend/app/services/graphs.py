@@ -11,11 +11,13 @@ from app.models.run import GraphRun, GraphRunEdge, GraphRunNode
 
 @dataclass
 class NodeInput:
-    node_type: NodeType = NodeType.nop
+    node_type: NodeType
     name: Optional[str] = None
     agent_type: Optional[str] = None
     model: Optional[str] = None
     prompt: Optional[str] = None
+    command: Optional[str] = None
+    graph_tools: bool = False
 
 
 @dataclass
@@ -87,6 +89,8 @@ def create_graph(
             agent_type=node_input.agent_type,
             model=node_input.model,
             prompt=node_input.prompt,
+            command=node_input.command,
+            graph_tools=node_input.graph_tools,
         )
         session.add(node)
         db_nodes.append(node)
@@ -151,6 +155,8 @@ def update_graph(
             agent_type=node_input.agent_type,
             model=node_input.model,
             prompt=node_input.prompt,
+            command=node_input.command,
+            graph_tools=node_input.graph_tools,
         )
         session.add(node)
         db_nodes.append(node)
@@ -202,6 +208,8 @@ def add_node(
     agent_type: Optional[str] = None,
     model: Optional[str] = None,
     prompt: Optional[str] = None,
+    command: Optional[str] = None,
+    graph_tools: bool = False,
 ) -> GraphNode:
     node = GraphNode(
         graph_id=graph.id,
@@ -210,6 +218,8 @@ def add_node(
         agent_type=agent_type,
         model=model,
         prompt=prompt,
+        command=command,
+        graph_tools=graph_tools,
     )
     session.add(node)
     session.commit()
@@ -226,6 +236,8 @@ def patch_node(
     agent_type: Optional[str] = None,
     model: Optional[str] = None,
     prompt: Optional[str] = None,
+    command: Optional[str] = None,
+    graph_tools: Optional[bool] = None,
 ) -> Optional[GraphNode]:
     node = session.get(GraphNode, node_id)
     if node is None or node.graph_id != graph.id:
@@ -240,6 +252,10 @@ def patch_node(
         node.model = model
     if prompt is not None:
         node.prompt = prompt
+    if command is not None:
+        node.command = command
+    if graph_tools is not None:
+        node.graph_tools = graph_tools
     session.add(node)
     session.commit()
     session.refresh(node)
@@ -337,6 +353,8 @@ def create_run(session: Session, graph: Graph) -> GraphRun:
             agent_type=node.agent_type,
             model=node.model,
             prompt=node.prompt,
+            command=node.command,
+            graph_tools=node.graph_tools,
         )
         session.add(rn)
         run_nodes.append((node.id, rn))
@@ -355,3 +373,12 @@ def create_run(session: Session, graph: Graph) -> GraphRun:
     session.commit()
     session.refresh(run)
     return run
+
+
+def list_runs(session: Session, workspace_id: uuid.UUID, graph_id: uuid.UUID) -> list[GraphRun]:
+    statement = (
+        select(GraphRun)
+        .where(GraphRun.workspace_id == workspace_id, GraphRun.graph_id == graph_id)
+        .order_by(GraphRun.created_at.desc())
+    )
+    return list(session.exec(statement).all())

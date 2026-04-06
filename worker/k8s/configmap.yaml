@@ -6,5 +6,7 @@ metadata:
 data:
   WORKER_DEFAULT_MODEL: "anthropic/claude-sonnet-4-5"
   WORKER_WORKSPACE_ROOT: "/workspaces"
+  WORKER_ROMULUS_BACKEND_URL: "http://romulus-backend:8000/api/v1"
+  ROMULUS_BACKEND_URL: "http://romulus-backend:8000/api/v1"
   WORKER_LOG_LEVEL: "DEBUG"
   WORKER_PORT: "8080"

@@ -144,6 +144,7 @@ export default function WorkspaceDetailPage() {
   const [formModel, setFormModel] = useState(DEFAULT_MODEL)
   const [formPrompt, setFormPrompt] = useState('')
   const [formName, setFormName] = useState('')
+  const [formGraphTools, setFormGraphTools] = useState(false)
   const [creating, setCreating] = useState(false)
   const [chatInput, setChatInput] = useState('')
   const [targetAgentId, setTargetAgentId] = useState<string>('new')
@@ -160,6 +161,15 @@ export default function WorkspaceDetailPage() {
   const feedBottomRef = useRef<HTMLDivElement>(null)
   const sseControllers = useRef<Map<string, AbortController>>(new Map())
   const seenEventIds = useRef<Set<string>>(new Set())
+  const [showDeadMessages, setShowDeadMessages] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem(`show-dead-messages-${id}`)
+      return stored !== null ? JSON.parse(stored) : true
+    } catch {
+      return true
+    }
+  })
+  const [collapsedRuns, setCollapsedRuns] = useState<Set<string>>(new Set())
   const [graphWidth, setGraphWidth] = useState(340)
   const isDragging = useRef(false)
   const dragStartX = useRef(0)
@@ -251,10 +261,27 @@ export default function WorkspaceDetailPage() {
   }, [id, userMessages])
 
   useEffect(() => {
+    if (id) localStorage.setItem(`show-dead-messages-${id}`, JSON.stringify(showDeadMessages))
+  }, [id, showDeadMessages])
+
+  useEffect(() => {
     feedBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [eventMap, userMessages])
 
   // ── Feed building ─────────────────────────────────────────────────────────
+
+  // Dead agent IDs for filter (must be before `feed` which depends on it)
+  const deadAgentIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const agent of agents) {
+      if (TERMINAL_STATUSES.includes(agent.status)) ids.add(agent.id)
+    }
+    // Agents that were deleted but still have events
+    for (const sourceId of Object.keys(eventMap)) {
+      if (!agents.find((a) => a.id === sourceId)) ids.add(sourceId)
+    }
+    return ids
+  }, [agents, eventMap])
 
   const feed = useMemo((): FeedItem[] => {
     const allRaw: { event: AgentEvent; agentId: string }[] = []
@@ -280,6 +307,7 @@ export default function WorkspaceDetailPage() {
     const activityIdx: Record<string, number> = {}
 
     for (const { event, agentId } of allRaw) {
+      if (!showDeadMessages && deadAgentIds.has(agentId)) continue
       if (event.type === 'text.delta') {
         const key = String(event.data.message_id ?? event.data.session_id ?? agentId)
         const chunk = String(event.data.delta ?? '')
@@ -333,7 +361,7 @@ export default function WorkspaceDetailPage() {
     }
 
     return items
-  }, [eventMap, userMessages])
+  }, [eventMap, userMessages, showDeadMessages, deadAgentIds])
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -342,6 +370,20 @@ export default function WorkspaceDetailPage() {
     if (!a) return 'agent'
     return a.name ?? `${a.agent_type}/${a.model.split('/')[1]}`
   }
+
+  // Partition agents into ad-hoc and run-grouped
+  const adHocAgents = useMemo(() => agents.filter((a) => !a.graph_run_id), [agents])
+  const runAgentGroups = useMemo(() => {
+    const groups = new Map<string, Agent[]>()
+    for (const a of agents) {
+      if (!a.graph_run_id) continue
+      const list = groups.get(a.graph_run_id) ?? []
+      list.push(a)
+      groups.set(a.graph_run_id, list)
+    }
+    return groups
+  }, [agents])
+
 
   function toggleBlock(blockId: string) {
     setExpandedBlocks((prev) => {
@@ -354,7 +396,7 @@ export default function WorkspaceDetailPage() {
 
   // ── Actions ───────────────────────────────────────────────────────────────
 
-  async function handleCreateAgent(prompt: string, model: string, name: string) {
+  async function handleCreateAgent(prompt: string, model: string, name: string, graphTools: boolean = false) {
     if (!id || !prompt.trim()) return
     setCreating(true)
     try {
@@ -363,12 +405,14 @@ export default function WorkspaceDetailPage() {
         model,
         prompt: prompt.trim(),
         name: name.trim() || undefined,
+        graph_tools: graphTools || undefined,
       })
       setAgents((prev) => [...prev, agent])
       setSelectedAgentId(agent.id)
       setShowForm(false)
       setFormPrompt('')
       setFormName('')
+      setFormGraphTools(false)
       startSSE(agent.id)
     } finally {
       setCreating(false)
@@ -483,10 +527,21 @@ export default function WorkspaceDetailPage() {
                   rows={4}
                 />
               </div>
+              <div style={styles.formRow}>
+                <label style={styles.label}>
+                  <input
+                    type="checkbox"
+                    checked={formGraphTools}
+                    onChange={(e) => setFormGraphTools(e.target.checked)}
+                    style={{ marginRight: 6 }}
+                  />
+                  Graph Editor
+                </label>
+              </div>
               <button
                 style={{ ...styles.submitBtn, opacity: creating || !formPrompt.trim() ? 0.4 : 1 }}
                 disabled={creating || !formPrompt.trim()}
-                onClick={() => handleCreateAgent(formPrompt, formModel, formName)}
+                onClick={() => handleCreateAgent(formPrompt, formModel, formName, formGraphTools)}
               >
                 {creating ? 'Dispatching…' : 'Dispatch'}
               </button>
@@ -494,7 +549,7 @@ export default function WorkspaceDetailPage() {
           )}
 
           <div style={styles.agentList}>
-            {agents.map((agent) => (
+            {adHocAgents.map((agent) => (
               <AgentCard
                 key={agent.id}
                 agent={agent}
@@ -517,11 +572,63 @@ export default function WorkspaceDetailPage() {
                 }}
               />
             ))}
+
+            {Array.from(runAgentGroups.entries()).map(([runId, runAgents]) => (
+              <div key={runId}>
+                <button
+                  style={styles.runGroupHeader}
+                  onClick={() => setCollapsedRuns((prev) => {
+                    const next = new Set(prev)
+                    if (next.has(runId)) next.delete(runId)
+                    else next.add(runId)
+                    return next
+                  })}
+                >
+                  <span>{collapsedRuns.has(runId) ? '›' : '∨'}</span>
+                  <span style={styles.runGroupLabel}>Run {runId.slice(0, 8)}</span>
+                </button>
+                {!collapsedRuns.has(runId) && runAgents.map((agent) => (
+                  <AgentCard
+                    key={agent.id}
+                    agent={agent}
+                    selected={selectedAgentId === agent.id}
+                    isRunning={!agentTerminal[agent.id]}
+                    isRunAgent
+                    onClick={() => setSelectedAgentId(agent.id)}
+                    onDelete={async () => {
+                      if (!id) return
+                      sseControllers.current.get(agent.id)?.abort()
+                      sseControllers.current.delete(agent.id)
+                      await deleteAgent(id, agent.id)
+                      setAgents((prev) => prev.filter((a) => a.id !== agent.id))
+                      setEventMap((prev) => {
+                        const next = { ...prev }
+                        delete next[agent.id]
+                        return next
+                      })
+                      setUserMessages((prev) => prev.filter((m) => m.agentId !== agent.id))
+                      if (selectedAgentId === agent.id) setSelectedAgentId(null)
+                    }}
+                  />
+                ))}
+              </div>
+            ))}
           </div>
         </div>
 
         {/* Main feed */}
         <div style={styles.main}>
+          <div style={styles.filterBar}>
+            <label style={styles.filterLabel}>
+              <input
+                type="checkbox"
+                checked={showDeadMessages}
+                onChange={(e) => setShowDeadMessages(e.target.checked)}
+                style={{ marginRight: 6 }}
+              />
+              Show completed agent messages
+            </label>
+          </div>
           <div style={styles.feed}>
             {feed.length === 0 && (
               <div style={styles.empty}>
@@ -755,6 +862,24 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 500,
   },
   agentList: { flex: 1, display: 'flex', flexDirection: 'column', gap: '2px' },
+  runGroupHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '4px 6px',
+    marginTop: '8px',
+    background: 'none',
+    border: 'none',
+    cursor: 'pointer',
+    color: 'var(--text-muted)',
+    fontSize: '11px',
+    fontWeight: 600,
+    textTransform: 'uppercase',
+    letterSpacing: '0.06em',
+    width: '100%',
+    textAlign: 'left',
+  },
+  runGroupLabel: { flex: 1 },
 
   // Main
   main: {
@@ -763,6 +888,21 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     overflow: 'hidden',
     background: 'var(--bg)',
+  },
+  filterBar: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    padding: '6px 20px',
+    borderBottom: '1px solid var(--border)',
+    flexShrink: 0,
+  },
+  filterLabel: {
+    display: 'flex',
+    alignItems: 'center',
+    fontSize: '12px',
+    color: 'var(--text-muted)',
+    cursor: 'pointer',
   },
   feed: {
     flex: 1,
