@@ -26,40 +26,55 @@ async function api(path: string, init?: RequestInit) {{
 
 TOOL_CREATE = TOOL_PREAMBLE + """
 export default tool({{
-  description: "Create a graph, node, or edge in the Romulus workspace.",
+  description: "Create a graph, node, edge, task_template, subgraph_template, subgraph_template_node, or subgraph_template_edge in the Romulus workspace.",
   args: {{
-    entity: tool.schema.enum(["graph", "node", "edge"]).describe("Type of entity to create"),
+    entity: tool.schema.enum(["graph", "node", "edge", "task_template", "subgraph_template", "subgraph_template_node", "subgraph_template_edge"]).describe("Type of entity to create"),
     params: tool.schema.record(tool.schema.string(), tool.schema.any()).describe(
       "For graph: {{name, nodes?, edges?}}. " +
       "For node: {{graph_id, node_type, name?, agent_config?, command_config?}}. " +
-      "For edge: {{graph_id, from_node_id, to_node_id}}"
+      "For edge: {{graph_id, from_node_id, to_node_id}}. " +
+      "For task_template: {{name, task_type, agent_type?, model?, prompt?, command?, graph_tools?, arguments?}}. " +
+      "For subgraph_template: {{name, nodes?, edges?, arguments?}}. " +
+      "For subgraph_template_node: {{subgraph_template_id, node_type, name?, task_template_id?, ref_subgraph_template_id?, argument_bindings?}}. " +
+      "For subgraph_template_edge: {{subgraph_template_id, from_node_id, to_node_id}}"
     ),
   }},
   async execute(args) {{
     const {{ entity, params }} = args
     if (entity === "graph") {{
-      const result = await api("/graphs", {{
-        method: "POST",
-        body: JSON.stringify(params),
-      }})
+      const result = await api("/graphs", {{ method: "POST", body: JSON.stringify(params) }})
       return JSON.stringify(result, null, 2)
     }}
     if (entity === "node") {{
       const {{ graph_id, ...rest }} = params
       if (!graph_id) throw new Error("graph_id is required for node creation")
-      const result = await api(`/graphs/${{graph_id}}/nodes`, {{
-        method: "POST",
-        body: JSON.stringify(rest),
-      }})
+      const result = await api(`/graphs/${{graph_id}}/nodes`, {{ method: "POST", body: JSON.stringify(rest) }})
       return JSON.stringify(result, null, 2)
     }}
     if (entity === "edge") {{
       const {{ graph_id, ...rest }} = params
       if (!graph_id) throw new Error("graph_id is required for edge creation")
-      const result = await api(`/graphs/${{graph_id}}/edges`, {{
-        method: "POST",
-        body: JSON.stringify(rest),
-      }})
+      const result = await api(`/graphs/${{graph_id}}/edges`, {{ method: "POST", body: JSON.stringify(rest) }})
+      return JSON.stringify(result, null, 2)
+    }}
+    if (entity === "task_template") {{
+      const result = await api("/task-templates", {{ method: "POST", body: JSON.stringify(params) }})
+      return JSON.stringify(result, null, 2)
+    }}
+    if (entity === "subgraph_template") {{
+      const result = await api("/subgraph-templates", {{ method: "POST", body: JSON.stringify(params) }})
+      return JSON.stringify(result, null, 2)
+    }}
+    if (entity === "subgraph_template_node") {{
+      const {{ subgraph_template_id, ...rest }} = params
+      if (!subgraph_template_id) throw new Error("subgraph_template_id is required")
+      const result = await api(`/subgraph-templates/${{subgraph_template_id}}/nodes`, {{ method: "POST", body: JSON.stringify(rest) }})
+      return JSON.stringify(result, null, 2)
+    }}
+    if (entity === "subgraph_template_edge") {{
+      const {{ subgraph_template_id, ...rest }} = params
+      if (!subgraph_template_id) throw new Error("subgraph_template_id is required")
+      const result = await api(`/subgraph-templates/${{subgraph_template_id}}/edges`, {{ method: "POST", body: JSON.stringify(rest) }})
       return JSON.stringify(result, null, 2)
     }}
     throw new Error(`Unknown entity: ${{entity}}`)
@@ -69,40 +84,45 @@ export default tool({{
 
 TOOL_GET = TOOL_PREAMBLE + """
 export default tool({{
-  description: "Get a graph, node, or edge. Omit id to list all graphs.",
+  description: "Get a graph, node, edge, task_template, subgraph_template, subgraph_template_node, or subgraph_template_edge. Omit id to list all.",
   args: {{
-    entity: tool.schema.enum(["graph", "node", "edge"]).describe("Type of entity to get"),
-    id: tool.schema.string().optional().describe("UUID of the entity. Omit to list all graphs."),
+    entity: tool.schema.enum(["graph", "node", "edge", "task_template", "subgraph_template", "subgraph_template_node", "subgraph_template_edge"]).describe("Type of entity to get"),
+    id: tool.schema.string().optional().describe("UUID of the entity. Omit to list all."),
     graph_id: tool.schema.string().optional().describe("Parent graph UUID (required for node/edge)"),
+    subgraph_template_id: tool.schema.string().optional().describe("Parent subgraph template UUID (required for subgraph_template_node/edge)"),
   }},
   async execute(args) {{
-    const {{ entity, id, graph_id }} = args
+    const {{ entity, id, graph_id, subgraph_template_id }} = args
     if (entity === "graph") {{
-      if (id) {{
-        const result = await api(`/graphs/${{id}}`)
-        return JSON.stringify(result, null, 2)
-      }}
-      const result = await api("/graphs")
-      return JSON.stringify(result, null, 2)
+      if (id) return JSON.stringify(await api(`/graphs/${{id}}`), null, 2)
+      return JSON.stringify(await api("/graphs"), null, 2)
     }}
     if (entity === "node" || entity === "edge") {{
       const gid = graph_id
       if (!gid) throw new Error("graph_id is required for node/edge lookup")
       const graph = await api(`/graphs/${{gid}}`)
       if (entity === "node") {{
-        if (id) {{
-          const node = graph.nodes?.find((n: any) => n.id === id)
-          if (!node) throw new Error(`Node ${{id}} not found in graph ${{gid}}`)
-          return JSON.stringify(node, null, 2)
-        }}
+        if (id) {{ const node = graph.nodes?.find((n: any) => n.id === id); if (!node) throw new Error(`Node ${{id}} not found`); return JSON.stringify(node, null, 2) }}
         return JSON.stringify(graph.nodes ?? [], null, 2)
       }}
-      if (id) {{
-        const edge = graph.edges?.find((e: any) => e.id === id)
-        if (!edge) throw new Error(`Edge ${{id}} not found in graph ${{gid}}`)
-        return JSON.stringify(edge, null, 2)
-      }}
+      if (id) {{ const edge = graph.edges?.find((e: any) => e.id === id); if (!edge) throw new Error(`Edge ${{id}} not found`); return JSON.stringify(edge, null, 2) }}
       return JSON.stringify(graph.edges ?? [], null, 2)
+    }}
+    if (entity === "task_template") {{
+      if (id) return JSON.stringify(await api(`/task-templates/${{id}}`), null, 2)
+      return JSON.stringify(await api("/task-templates"), null, 2)
+    }}
+    if (entity === "subgraph_template") {{
+      if (id) return JSON.stringify(await api(`/subgraph-templates/${{id}}`), null, 2)
+      return JSON.stringify(await api("/subgraph-templates"), null, 2)
+    }}
+    if (entity === "subgraph_template_node" || entity === "subgraph_template_edge") {{
+      const stid = subgraph_template_id
+      if (!stid) throw new Error("subgraph_template_id is required")
+      const tmpl = await api(`/subgraph-templates/${{stid}}`)
+      const items = entity === "subgraph_template_node" ? tmpl.nodes : tmpl.edges
+      if (id) {{ const item = items?.find((x: any) => x.id === id); if (!item) throw new Error(`${{entity}} ${{id}} not found`); return JSON.stringify(item, null, 2) }}
+      return JSON.stringify(items ?? [], null, 2)
     }}
     throw new Error(`Unknown entity: ${{entity}}`)
   }},
@@ -111,28 +131,22 @@ export default tool({{
 
 TOOL_DELETE = TOOL_PREAMBLE + """
 export default tool({{
-  description: "Delete a graph, node, or edge.",
+  description: "Delete a graph, node, edge, task_template, subgraph_template, subgraph_template_node, or subgraph_template_edge.",
   args: {{
-    entity: tool.schema.enum(["graph", "node", "edge"]).describe("Type of entity to delete"),
+    entity: tool.schema.enum(["graph", "node", "edge", "task_template", "subgraph_template", "subgraph_template_node", "subgraph_template_edge"]).describe("Type of entity to delete"),
     id: tool.schema.string().describe("UUID of the entity to delete"),
     graph_id: tool.schema.string().optional().describe("Parent graph UUID (required for node/edge)"),
+    subgraph_template_id: tool.schema.string().optional().describe("Parent subgraph template UUID (required for subgraph_template_node/edge)"),
   }},
   async execute(args) {{
-    const {{ entity, id, graph_id }} = args
-    if (entity === "graph") {{
-      await api(`/graphs/${{id}}`, {{ method: "DELETE" }})
-      return `Graph ${{id}} deleted.`
-    }}
-    if (entity === "node") {{
-      if (!graph_id) throw new Error("graph_id is required for node deletion")
-      await api(`/graphs/${{graph_id}}/nodes/${{id}}`, {{ method: "DELETE" }})
-      return `Node ${{id}} deleted.`
-    }}
-    if (entity === "edge") {{
-      if (!graph_id) throw new Error("graph_id is required for edge deletion")
-      await api(`/graphs/${{graph_id}}/edges/${{id}}`, {{ method: "DELETE" }})
-      return `Edge ${{id}} deleted.`
-    }}
+    const {{ entity, id, graph_id, subgraph_template_id }} = args
+    if (entity === "graph") {{ await api(`/graphs/${{id}}`, {{ method: "DELETE" }}); return `Graph ${{id}} deleted.` }}
+    if (entity === "node") {{ if (!graph_id) throw new Error("graph_id required"); await api(`/graphs/${{graph_id}}/nodes/${{id}}`, {{ method: "DELETE" }}); return `Node ${{id}} deleted.` }}
+    if (entity === "edge") {{ if (!graph_id) throw new Error("graph_id required"); await api(`/graphs/${{graph_id}}/edges/${{id}}`, {{ method: "DELETE" }}); return `Edge ${{id}} deleted.` }}
+    if (entity === "task_template") {{ await api(`/task-templates/${{id}}`, {{ method: "DELETE" }}); return `Task template ${{id}} deleted.` }}
+    if (entity === "subgraph_template") {{ await api(`/subgraph-templates/${{id}}`, {{ method: "DELETE" }}); return `Subgraph template ${{id}} deleted.` }}
+    if (entity === "subgraph_template_node") {{ if (!subgraph_template_id) throw new Error("subgraph_template_id required"); await api(`/subgraph-templates/${{subgraph_template_id}}/nodes/${{id}}`, {{ method: "DELETE" }}); return `Node ${{id}} deleted.` }}
+    if (entity === "subgraph_template_edge") {{ if (!subgraph_template_id) throw new Error("subgraph_template_id required"); await api(`/subgraph-templates/${{subgraph_template_id}}/edges/${{id}}`, {{ method: "DELETE" }}); return `Edge ${{id}} deleted.` }}
     throw new Error(`Unknown entity: ${{entity}}`)
   }},
 }})
@@ -140,33 +154,21 @@ export default tool({{
 
 TOOL_EDIT = TOOL_PREAMBLE + """
 export default tool({{
-  description: "Edit a graph or node. Edges cannot be edited (delete and recreate instead).",
+  description: "Edit a graph, node, task_template, subgraph_template, or subgraph_template_node. Edges cannot be edited (delete and recreate instead).",
   args: {{
-    entity: tool.schema.enum(["graph", "node"]).describe("Type of entity to edit"),
+    entity: tool.schema.enum(["graph", "node", "task_template", "subgraph_template", "subgraph_template_node"]).describe("Type of entity to edit"),
     id: tool.schema.string().describe("UUID of the entity to edit"),
-    params: tool.schema.record(tool.schema.string(), tool.schema.any()).describe(
-      "For graph: {{name, nodes, edges}} (full replacement). " +
-      "For node: partial update fields {{name?, node_type?, agent_config?, command_config?}}"
-    ),
+    params: tool.schema.record(tool.schema.string(), tool.schema.any()).describe("Update fields"),
     graph_id: tool.schema.string().optional().describe("Parent graph UUID (required for node)"),
+    subgraph_template_id: tool.schema.string().optional().describe("Parent subgraph template UUID (required for subgraph_template_node)"),
   }},
   async execute(args) {{
-    const {{ entity, id, params, graph_id }} = args
-    if (entity === "graph") {{
-      const result = await api(`/graphs/${{id}}`, {{
-        method: "PUT",
-        body: JSON.stringify(params),
-      }})
-      return JSON.stringify(result, null, 2)
-    }}
-    if (entity === "node") {{
-      if (!graph_id) throw new Error("graph_id is required for node editing")
-      const result = await api(`/graphs/${{graph_id}}/nodes/${{id}}`, {{
-        method: "PATCH",
-        body: JSON.stringify(params),
-      }})
-      return JSON.stringify(result, null, 2)
-    }}
+    const {{ entity, id, params, graph_id, subgraph_template_id }} = args
+    if (entity === "graph") return JSON.stringify(await api(`/graphs/${{id}}`, {{ method: "PUT", body: JSON.stringify(params) }}), null, 2)
+    if (entity === "node") {{ if (!graph_id) throw new Error("graph_id required"); return JSON.stringify(await api(`/graphs/${{graph_id}}/nodes/${{id}}`, {{ method: "PATCH", body: JSON.stringify(params) }}), null, 2) }}
+    if (entity === "task_template") return JSON.stringify(await api(`/task-templates/${{id}}`, {{ method: "PUT", body: JSON.stringify(params) }}), null, 2)
+    if (entity === "subgraph_template") return JSON.stringify(await api(`/subgraph-templates/${{id}}`, {{ method: "PUT", body: JSON.stringify(params) }}), null, 2)
+    if (entity === "subgraph_template_node") {{ if (!subgraph_template_id) throw new Error("subgraph_template_id required"); return JSON.stringify(await api(`/subgraph-templates/${{subgraph_template_id}}/nodes/${{id}}`, {{ method: "PATCH", body: JSON.stringify(params) }}), null, 2) }}
     throw new Error(`Unknown entity: ${{entity}}. Edges cannot be edited; delete and recreate instead.`)
   }},
 }})
@@ -181,75 +183,67 @@ const SCHEMAS: Record<string, object> = {{
     description: "A directed acyclic graph (DAG) containing nodes and edges within a workspace.",
     create_params: {{
       name: {{ type: "string", required: true, description: "Unique name within the workspace" }},
-      nodes: {{
-        type: "array",
-        required: false,
-        description: "Nodes to create with the graph",
-        items: {{
-          node_type: {{ type: "string", enum: ["agent", "command"] }},
-          name: {{ type: "string", required: false }},
-          agent_config: {{
-            type: "object",
-            required: false,
-            description: "Required when node_type=agent",
-            fields: {{
-              agent_type: {{ type: "string", enum: ["opencode"], default: "opencode" }},
-              model: {{
-                type: "string",
-                enum: [
-                  "anthropic/claude-sonnet-4-6", "anthropic/claude-opus-4-6", "anthropic/claude-haiku-4-5",
-                  "openai/gpt-4o", "openai/gpt-4o-mini", "openai/o3-mini"
-                ],
-              }},
-              prompt: {{ type: "string", required: true }},
-              graph_tools: {{ type: "boolean", default: false, description: "Enable graph management tools for this agent" }},
-            }},
-          }},
-          command_config: {{
-            type: "object",
-            required: false,
-            description: "Required when node_type=command",
-            fields: {{ command: {{ type: "string", required: true }} }},
-          }},
-        }},
-      }},
-      edges: {{
-        type: "array",
-        required: false,
-        description: "Edges connecting nodes by index",
-        items: {{ from_index: {{ type: "integer" }}, to_index: {{ type: "integer" }} }},
-      }},
+      nodes: {{ type: "array", required: false, items: {{ node_type: {{ type: "string", enum: ["agent", "command"] }}, name: {{ type: "string", required: false }}, agent_config: {{ type: "object", required: false }}, command_config: {{ type: "object", required: false }} }} }},
+      edges: {{ type: "array", required: false, items: {{ from_index: {{ type: "integer" }}, to_index: {{ type: "integer" }} }} }},
     }},
     constraints: ["Graph names must be unique within a workspace", "Must be a DAG (no cycles)"],
   }},
   node: {{
     entity: "node",
     description: "A node in a graph. Can be an agent dispatch or a command execution.",
-    create_params: {{
-      graph_id: {{ type: "string (UUID)", required: true, description: "Parent graph" }},
-      node_type: {{ type: "string", enum: ["agent", "command"], required: true }},
-      name: {{ type: "string", required: false }},
-      agent_config: {{ type: "object", required: false, description: "Required for agent nodes. See graph describe for fields." }},
-      command_config: {{ type: "object", required: false, description: "Required for command nodes. Fields: {{command: string}}" }},
-    }},
+    create_params: {{ graph_id: {{ type: "string (UUID)", required: true }}, node_type: {{ type: "string", enum: ["agent", "command"], required: true }}, name: {{ type: "string", required: false }}, agent_config: {{ type: "object", required: false }}, command_config: {{ type: "object", required: false }} }},
     constraints: ["Node names must be unique within a graph"],
   }},
   edge: {{
     entity: "edge",
     description: "A directed edge connecting two nodes in the same graph.",
-    create_params: {{
-      graph_id: {{ type: "string (UUID)", required: true, description: "Parent graph" }},
-      from_node_id: {{ type: "string (UUID)", required: true, description: "Source node" }},
-      to_node_id: {{ type: "string (UUID)", required: true, description: "Target node" }},
-    }},
+    create_params: {{ graph_id: {{ type: "string (UUID)", required: true }}, from_node_id: {{ type: "string (UUID)", required: true }}, to_node_id: {{ type: "string (UUID)", required: true }} }},
     constraints: ["Both nodes must belong to the same graph", "Must not create a cycle"],
+  }},
+  task_template: {{
+    entity: "task_template",
+    description: "A reusable, parameterized task definition. Supports {{ argument }} substitution in text fields.",
+    create_params: {{
+      name: {{ type: "string", required: true }},
+      task_type: {{ type: "string", enum: ["agent", "command"], required: true }},
+      agent_type: {{ type: "string", required: false }},
+      model: {{ type: "string", required: false, description: "Model ID or {{ arg }} placeholder" }},
+      prompt: {{ type: "string", required: false }},
+      command: {{ type: "string", required: false }},
+      graph_tools: {{ type: "boolean", default: false }},
+      arguments: {{ type: "array", required: false, items: {{ name: {{ type: "string" }}, arg_type: {{ type: "string", enum: ["string", "model_type"] }}, default_value: {{ type: "string", required: false }}, model_constraint: {{ type: "array of strings", required: false }} }} }},
+    }},
+    constraints: ["Template names must be unique within a workspace"],
+  }},
+  subgraph_template: {{
+    entity: "subgraph_template",
+    description: "A reusable, parameterized graph template. Nodes reference task_templates or other subgraph_templates.",
+    create_params: {{
+      name: {{ type: "string", required: true }},
+      nodes: {{ type: "array", required: false, items: {{ node_type: {{ type: "string", enum: ["task_template", "subgraph_template"] }}, name: {{ type: "string", required: false }}, task_template_id: {{ type: "string (UUID)", required: false }}, ref_subgraph_template_id: {{ type: "string (UUID)", required: false }}, argument_bindings: {{ type: "object", required: false }} }} }},
+      edges: {{ type: "array", required: false, items: {{ from_index: {{ type: "integer" }}, to_index: {{ type: "integer" }} }} }},
+      arguments: {{ type: "array", required: false }},
+    }},
+    constraints: ["Names must be unique within a workspace", "Must be a DAG (no edge cycles)", "No recursive subgraph template references"],
+  }},
+  subgraph_template_node: {{
+    entity: "subgraph_template_node",
+    description: "A node in a subgraph template. References either a task_template or another subgraph_template.",
+    create_params: {{ subgraph_template_id: {{ type: "string (UUID)", required: true }}, node_type: {{ type: "string", enum: ["task_template", "subgraph_template"], required: true }}, name: {{ type: "string", required: false }}, task_template_id: {{ type: "string (UUID)", required: false }}, ref_subgraph_template_id: {{ type: "string (UUID)", required: false }}, argument_bindings: {{ type: "object", required: false }} }},
+    constraints: ["Node names must be unique within the subgraph template", "Cannot create recursive subgraph references"],
+  }},
+  subgraph_template_edge: {{
+    entity: "subgraph_template_edge",
+    description: "A directed edge connecting two nodes in a subgraph template.",
+    create_params: {{ subgraph_template_id: {{ type: "string (UUID)", required: true }}, from_node_id: {{ type: "string (UUID)", required: true }}, to_node_id: {{ type: "string (UUID)", required: true }} }},
+    constraints: ["Both nodes must belong to the same subgraph template", "Must not create a cycle"],
   }},
 }}
 
 export default tool({{
-  description: "Describe the schema of a graph entity (graph, node, or edge). Returns field definitions, types, and constraints.",
+  description: "Describe the schema of a Romulus entity. Returns field definitions, types, and constraints.",
   args: {{
-    entity: tool.schema.enum(["graph", "node", "edge"]).describe("Entity type to describe"),
+    entity: tool.schema.enum(["graph", "node", "edge", "task_template", "subgraph_template", "subgraph_template_node", "subgraph_template_edge"]).describe("Entity type to describe"),
   }},
   async execute(args) {{
     const schema = SCHEMAS[args.entity]

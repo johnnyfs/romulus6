@@ -17,6 +17,7 @@ import {
 } from '../api/graphs'
 import { NODE_W, NODE_H, CANVAS_WIDTH, computeLayout, type Pos } from './graphLayout'
 import RunsView from './RunsView'
+import TemplatesView from './TemplatesView'
 
 const MODEL_OPTIONS = [
   { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
@@ -30,7 +31,7 @@ const MODEL_OPTIONS = [
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function GraphPanel({ workspaceId, width }: { workspaceId: string; width?: number }) {
-  const [activeTab, setActiveTab] = useState<'graph' | 'runs'>('graph')
+  const [activeTab, setActiveTab] = useState<'graph' | 'runs' | 'templates'>('graph')
   const [graphs, setGraphs] = useState<Graph[]>([])
   const [activeGraphId, setActiveGraphId] = useState<string | null>(null)
   const [detail, setDetail] = useState<GraphDetail | null>(null)
@@ -379,10 +380,18 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
         >
           Runs
         </button>
+        <button
+          style={activeTab === 'templates' ? { ...s.tab, ...s.tabActive } : s.tab}
+          onClick={() => setActiveTab('templates')}
+        >
+          Templates
+        </button>
       </div>
 
       {activeTab === 'runs' ? (
         <RunsView workspaceId={workspaceId} />
+      ) : activeTab === 'templates' ? (
+        <TemplatesView workspaceId={workspaceId} />
       ) : (
       <>
       {/* Header bar: selector + new + delete */}
