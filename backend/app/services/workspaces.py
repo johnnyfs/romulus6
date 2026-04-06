@@ -5,6 +5,8 @@ from sqlmodel import Session, select
 from app.models.agent import Agent
 from app.models.event import Event
 from app.models.graph import Graph
+from app.models.lease import WorkerLease
+from app.models.reconcile import RunReconcile
 from app.models.run import GraphRun
 from app.models.sandbox import Sandbox
 from app.models.workspace import Workspace
@@ -40,6 +42,13 @@ def delete_workspace(session: Session, id: uuid.UUID) -> bool:
         session.delete(event)
     session.flush()
 
+    # Hard-delete controller queue rows before runs they reference.
+    for reconcile in session.exec(
+        select(RunReconcile).join(GraphRun, RunReconcile.run_id == GraphRun.id).where(GraphRun.workspace_id == id)
+    ).all():
+        session.delete(reconcile)
+    session.flush()
+
     # Delete graph runs before agents and sandboxes:
     # graphrunnode.agent_id FK → agent (NO ACTION),
     # graphrun.sandbox_id FK → sandbox (NO ACTION).
@@ -52,12 +61,18 @@ def delete_workspace(session: Session, id: uuid.UUID) -> bool:
         session.delete(agent)
     session.flush()
 
-    # Tear down k8s workers and hard-delete sandboxes.
+    # Release and then hard-delete lease rows before sandboxes.
     for sandbox in session.exec(select(Sandbox).where(Sandbox.workspace_id == id)).all():
-        if sandbox.worker_id is not None:
-            worker_svc.delete_worker(session, sandbox.worker_id)
+        worker_svc.release_sandbox_lease(session, sandbox)
+    session.flush()
+    for lease in session.exec(select(WorkerLease).where(WorkerLease.workspace_id == id)).all():
+        session.delete(lease)
+    session.flush()
+
+    # Hard-delete sandboxes once lease rows are gone.
+    for sandbox in session.exec(select(Sandbox).where(Sandbox.workspace_id == id)).all():
         session.delete(sandbox)
-        session.commit()
+    session.flush()
 
     # Hard-delete graphs; ORM cascade (all, delete-orphan) handles nodes + edges.
     for graph in session.exec(select(Graph).where(Graph.workspace_id == id)).all():

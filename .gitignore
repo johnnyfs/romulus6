@@ -66,3 +66,7 @@ tests/test-results
 .mypy_cache/
 .dmypy.json
 .pyright/
+
+# Agents
+.claude/
+.codex

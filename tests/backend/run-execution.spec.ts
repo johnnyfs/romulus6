@@ -1,59 +1,43 @@
-import { test, expect, type APIRequestContext } from '@playwright/test';
+import { execFileSync } from 'node:child_process';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const RUN_TIMEOUT_MS = 300_000;
-const POLL_INTERVAL_MS = 5_000;
+import { test, expect } from '@playwright/test';
 
-async function createWorkspace(request: APIRequestContext): Promise<string> {
-  const res = await request.post('/api/v1/workspaces', { data: { name: `Run Execution Test WS ${crypto.randomUUID()}` } });
-  expect(res.status()).toBe(201);
-  return (await res.json()).id;
-}
+import {
+  UUID_RE,
+  createGraph,
+  createWorkspace,
+  deleteWorkspaceWithChildren,
+  getRun,
+  listWorkspaceEvents,
+  sleep,
+  waitForRunTerminal,
+} from './helpers';
 
-async function deleteWorkspace(request: APIRequestContext, wid: string) {
-  await request.delete(`/api/v1/workspaces/${wid}`);
-}
+const KUBE_NAMESPACE = process.env.ROMULUS_K8S_NAMESPACE ?? 'romulus';
 
-async function createGraph(request: APIRequestContext, wid: string, nodes: any[], edges: any[]): Promise<any> {
-  const res = await request.post(`/api/v1/workspaces/${wid}/graphs`, {
-    data: { name: 'run-exec-test-graph', nodes, edges },
+function deleteWorkerPod(podName: string): void {
+  execFileSync('kubectl', ['delete', 'pod', podName, '-n', KUBE_NAMESPACE, '--wait=true'], {
+    encoding: 'utf8',
   });
-  expect(res.status()).toBe(201);
-  return res.json();
 }
 
-async function waitForRunTerminal(
-  request: APIRequestContext,
-  wid: string,
-  gid: string,
-  rid: string,
-  timeoutMs = RUN_TIMEOUT_MS,
-): Promise<any> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const res = await request.get(
-      `/api/v1/workspaces/${wid}/graphs/${gid}/runs/${rid}`,
-    );
-    expect(res.status()).toBe(200);
-    const run = await res.json();
-    if (run.state === 'completed' || run.state === 'error') {
-      return run;
-    }
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-  }
-  throw new Error(`Run ${rid} did not reach terminal state within ${timeoutMs}ms`);
+function waitForWorkerRollout(): void {
+  execFileSync('kubectl', ['rollout', 'status', 'deployment/worker', '-n', KUBE_NAMESPACE, '--timeout=180s'], {
+    encoding: 'utf8',
+  });
 }
 
 test.describe('Graph Run Execution', () => {
+  test.describe.configure({ mode: 'serial' });
   test.setTimeout(300_000);
 
-  test('command -> agent graph runs to completion', async ({ request }) => {
-    const wid = await createWorkspace(request);
+  test('controller dispatches pending nodes and the workspace event stream captures run execution', async ({ request }) => {
+    const wid = await createWorkspace(request, 'Run Execution Test WS');
     try {
       const graph = await createGraph(
         request, wid,
         [
-          { node_type: 'command', name: 'start', command_config: { command: 'echo ok' } },
+          { node_type: 'command', name: 'start', command_config: { command: 'sleep 2; echo ok' } },
           {
             node_type: 'agent',
             name: 'worker',
@@ -74,6 +58,7 @@ test.describe('Graph Run Execution', () => {
       expect(created.id).toMatch(UUID_RE);
       expect(created.run_nodes).toHaveLength(2);
       expect(created.run_edges).toHaveLength(1);
+      expect(created.run_nodes.every((node: any) => node.state === 'pending')).toBe(true);
 
       // Poll until terminal state
       const run = await waitForRunTerminal(request, wid, graph.id, created.id);
@@ -93,13 +78,20 @@ test.describe('Graph Run Execution', () => {
       expect(agentNode.state).toBe('completed');
       expect(agentNode.agent_id).toMatch(UUID_RE);
       expect(agentNode.session_id).toBeTruthy();
+
+      const workspaceEvents = await listWorkspaceEvents(request, wid, 0, 200);
+      const runEvents = workspaceEvents.filter((event) => event.run_id === created.id);
+      expect(runEvents.length).toBeGreaterThan(0);
+      expect(runEvents.some((event) => event.node_id === cmdNode.id && event.type === 'command.output')).toBe(true);
+      expect(runEvents.some((event) => event.node_id === agentNode.id && event.type === 'session.idle')).toBe(true);
+      expect(runEvents.every((event) => event.worker_id && event.sandbox_id === run.sandbox_id)).toBe(true);
     } finally {
-      await deleteWorkspace(request, wid);
+      await deleteWorkspaceWithChildren(request, wid);
     }
   });
 
   test('command node runs echo to completion', async ({ request }) => {
-    const wid = await createWorkspace(request);
+    const wid = await createWorkspace(request, 'Run Execution Test WS');
     try {
       const graph = await createGraph(
         request, wid,
@@ -122,12 +114,12 @@ test.describe('Graph Run Execution', () => {
       expect(cmdNode.state).toBe('completed');
       expect(cmdNode.command_config).toMatchObject({ command: 'echo "hello"' });
     } finally {
-      await deleteWorkspace(request, wid);
+      await deleteWorkspaceWithChildren(request, wid);
     }
   });
 
   test('command node with bad command sets run to error', async ({ request }) => {
-    const wid = await createWorkspace(request);
+    const wid = await createWorkspace(request, 'Run Execution Test WS');
     try {
       const graph = await createGraph(
         request, wid,
@@ -148,7 +140,46 @@ test.describe('Graph Run Execution', () => {
       const cmdNode = run.run_nodes.find((n: any) => n.node_type === 'command');
       expect(cmdNode.state).toBe('error');
     } finally {
-      await deleteWorkspace(request, wid);
+      await deleteWorkspaceWithChildren(request, wid);
+    }
+  });
+
+  test('worker loss fails an active run and the pool recovers automatically', async ({ request }) => {
+    const wid = await createWorkspace(request, 'Run Execution Test WS');
+    try {
+      const graph = await createGraph(
+        request,
+        wid,
+        [{ node_type: 'command', name: 'long-command', command_config: { command: 'sleep 120' } }],
+        [],
+      );
+
+      const createRes = await request.post(`/api/v1/workspaces/${wid}/graphs/${graph.id}/runs`);
+      expect(createRes.status()).toBe(201);
+      const created = await createRes.json();
+      await sleep(2_000);
+
+      const run = await getRun(request, wid, graph.id, created.id);
+      expect(run.sandbox_id).toMatch(UUID_RE);
+
+      const sandboxRes = await request.get(`/api/v1/workspaces/${wid}/sandboxes/${run.sandbox_id}`);
+      expect(sandboxRes.status()).toBe(200);
+      const sandbox = await sandboxRes.json();
+      expect(sandbox.worker.pod_name).toBeTruthy();
+
+      const podName = sandbox.worker.pod_name as string;
+      deleteWorkerPod(podName);
+
+      const failedRun = await waitForRunTerminal(request, wid, graph.id, created.id, 180_000);
+      expect(failedRun.state).toBe('error');
+      expect(failedRun.run_nodes[0].state).toBe('error');
+
+      await sleep(2_000);
+      waitForWorkerRollout();
+    } finally {
+      await deleteWorkspaceWithChildren(request, wid);
+      await sleep(2_000);
+      waitForWorkerRollout();
     }
   });
 });

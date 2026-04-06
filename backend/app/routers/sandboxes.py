@@ -50,7 +50,13 @@ def create_sandbox(
     workspace_id: uuid.UUID, body: CreateSandboxRequest, session: SessionDep
 ) -> Any:
     _require_workspace(workspace_id, session)
-    sandbox, worker = svc.create_sandbox(session, workspace_id, body.name)
+    try:
+        sandbox, worker = svc.create_sandbox(session, workspace_id, body.name)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        )
     return SandboxResponse(sandbox=sandbox, worker=worker)
 
 

@@ -31,14 +31,11 @@ def create_sandbox(
     session.commit()
     session.refresh(sandbox)
 
-    worker = worker_svc.create_worker(session, workspace_id=workspace_id)
-
-    sandbox.worker_id = worker.id
-    sandbox.updated_at = datetime.datetime.utcnow()
-    session.add(sandbox)
-    session.commit()
-    session.refresh(sandbox)
-
+    _, worker = worker_svc.lease_worker_for_sandbox(
+        session,
+        workspace_id=workspace_id,
+        sandbox=sandbox,
+    )
     return sandbox, worker
 
 
@@ -49,11 +46,11 @@ def delete_sandbox(
     if sandbox is None:
         return False
 
-    if sandbox.worker_id is not None:
-        worker_svc.delete_worker(session, sandbox.worker_id)
+    worker_svc.release_sandbox_lease(session, sandbox)
 
     sandbox.deleted = True
     sandbox.worker_id = None
+    sandbox.current_lease_id = None
     sandbox.updated_at = datetime.datetime.utcnow()
     session.add(sandbox)
     session.commit()

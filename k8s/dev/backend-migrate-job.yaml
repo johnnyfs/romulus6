@@ -1,0 +1,28 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: romulus-backend-migrate
+  namespace: romulus
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app: romulus-backend-migrate
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: backend:latest
+          imagePullPolicy: Never
+          envFrom:
+            - configMapRef:
+                name: romulus-backend-config
+            - secretRef:
+                name: romulus-dev-secrets
+          command:
+            - uv
+            - run
+            - alembic
+            - upgrade
+            - head

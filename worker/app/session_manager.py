@@ -4,8 +4,10 @@ import os
 import uuid
 from collections import defaultdict
 from datetime import datetime, UTC
+from typing import Any
 
 from app.agents.opencode import OpenCodeRunner, OpenCodeServer
+from app.backend_client import BackendClient
 from app.config import settings
 from app.models import Event, EventType, Session, SessionStatus
 
@@ -15,12 +17,14 @@ logger = logging.getLogger(__name__)
 # replace _sessions/_events with a shared backend (Redis, PostgreSQL).
 
 class SessionManager:
-    def __init__(self, server: OpenCodeServer):
+    def __init__(self, server: OpenCodeServer, backend_client: BackendClient):
         self._server = server
+        self._backend_client = backend_client
         self._sessions: dict[str, Session] = {}
         self._events: dict[str, list[Event]] = defaultdict(list)
         self._runners: dict[str, OpenCodeRunner] = {}
         self._notify: dict[str, asyncio.Event] = {}
+        self._session_meta: dict[str, dict[str, Any]] = {}
 
     async def create_session(
         self,
@@ -30,6 +34,7 @@ class SessionManager:
         workspace_name: str | None = None,
         graph_tools: bool = False,
         workspace_id: str | None = None,
+        sandbox_id: str | None = None,
     ) -> Session:
         session_id = str(uuid.uuid4())
         workspace_name = workspace_name or session_id
@@ -39,6 +44,10 @@ class SessionManager:
         session = Session(id=session_id, agent_type=agent_type, model=model, workspace_dir=workspace_dir)
         self._sessions[session_id] = session
         self._notify[session_id] = asyncio.Event()
+        self._session_meta[session_id] = {
+            "workspace_id": workspace_id,
+            "sandbox_id": sandbox_id,
+        }
 
         asyncio.create_task(self._run_agent(session_id, prompt, model))
         return session
@@ -123,6 +132,7 @@ class SessionManager:
 
     def _append_event(self, session_id: str, event: Event) -> None:
         self._events[session_id].append(event)
+        asyncio.create_task(self._backend_client.send_event(event.model_dump(mode="json")))
         notify = self._notify.get(session_id)
         if notify:
             notify.set()

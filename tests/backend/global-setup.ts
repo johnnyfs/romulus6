@@ -1,13 +1,17 @@
 import { request } from '@playwright/test';
 
-const TEST_WORKSPACE_NAMES = new Set([
+const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:8000';
+const TEST_WORKSPACE_NAME_PREFIXES = [
   'Test Workspace',
   'To Be Deleted',
   'Graph Test WS',
   'Run Test WS',
   'Agent Test WS',
   'Run Execution Test WS',
-]);
+  'Sandbox Test WS',
+  'Workspace Events Test WS',
+  'Worker API Test WS',
+];
 
 async function tryDelete(ctx: Awaited<ReturnType<typeof request.newContext>>, path: string) {
   try {
@@ -36,12 +40,14 @@ async function deleteWorkspaceWithChildren(ctx: Awaited<ReturnType<typeof reques
 }
 
 export default async function globalSetup() {
-  const ctx = await request.newContext({ baseURL: 'http://localhost:8000' });
+  const ctx = await request.newContext({ baseURL: BASE_URL });
   try {
     const res = await ctx.get('/api/v1/workspaces');
     if (!res.ok()) return;
     const workspaces: any[] = await res.json();
-    for (const ws of workspaces.filter((w) => TEST_WORKSPACE_NAMES.has(w.name))) {
+    for (const ws of workspaces.filter((w) =>
+      TEST_WORKSPACE_NAME_PREFIXES.some((prefix) => typeof w.name === 'string' && w.name.startsWith(prefix))
+    )) {
       await deleteWorkspaceWithChildren(ctx, ws.id);
     }
   } finally {

@@ -7,7 +7,7 @@ export default defineConfig({
     port: parseInt(process.env.VITE_PORT ?? '5173'),
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: process.env.VITE_BACKEND_TARGET ?? 'http://localhost:8000',
         rewrite: (path) => path.replace(/^\/api/, '/api/v1'),
       },
     },

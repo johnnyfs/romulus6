@@ -1,20 +1,28 @@
 import os
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import k8s
+from app.routers.events import router as events_router
 from app.routers.agents import router as agents_router
 from app.routers.graphs import router as graphs_router
 from app.routers.sandboxes import router as sandboxes_router
+from app.routers.workers import router as workers_router
 from app.routers.workspaces import router as workspaces_router
+from app.services.controller import run_controller_loop
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     k8s.init_k8s()
+    stop_event = asyncio.Event()
+    controller_task = asyncio.create_task(run_controller_loop(stop_event))
     yield
+    stop_event.set()
+    await controller_task
 
 
 app = FastAPI(title="Romulus", lifespan=lifespan)
@@ -31,6 +39,8 @@ app.include_router(workspaces_router, prefix="/api/v1")
 app.include_router(sandboxes_router, prefix="/api/v1")
 app.include_router(agents_router, prefix="/api/v1")
 app.include_router(graphs_router, prefix="/api/v1")
+app.include_router(events_router, prefix="/api/v1")
+app.include_router(workers_router, prefix="/api/v1")
 
 
 @app.get("/health")
