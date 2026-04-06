@@ -10,6 +10,7 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 import sqlmodel
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision: str = "g7a8b9c0d1e2"
 down_revision: Union[str, None] = "m3a4b5c6d7e8"
@@ -19,11 +20,24 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     # --- Enums ---
-    templateargtype = sa.Enum("string", "model_type", name="templateargtype")
+    templateargtype = postgresql.ENUM("string", "model_type", name="templateargtype", create_type=True)
     templateargtype.create(op.get_bind(), checkfirst=True)
 
-    subgraphtemplatenodetype = sa.Enum("task_template", "subgraph_template", name="subgraphtemplatenodetype")
+    subgraphtemplatenodetype = postgresql.ENUM(
+        "task_template",
+        "subgraph_template",
+        name="subgraphtemplatenodetype",
+        create_type=True,
+    )
     subgraphtemplatenodetype.create(op.get_bind(), checkfirst=True)
+    nodetype = postgresql.ENUM("agent", "command", name="nodetype", create_type=False)
+    templateargtype_ref = postgresql.ENUM("string", "model_type", name="templateargtype", create_type=False)
+    subgraphtemplatenodetype_ref = postgresql.ENUM(
+        "task_template",
+        "subgraph_template",
+        name="subgraphtemplatenodetype",
+        create_type=False,
+    )
 
     # --- Task Template ---
     op.create_table(
@@ -31,7 +45,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("workspace_id", sa.Uuid(), nullable=False),
         sa.Column("name", sqlmodel.AutoString(), nullable=False),
-        sa.Column("task_type", sa.Enum("agent", "command", name="nodetype", create_type=False), nullable=False),
+        sa.Column("task_type", nodetype, nullable=False),
         sa.Column("agent_type", sqlmodel.AutoString(), nullable=True),
         sa.Column("model", sqlmodel.AutoString(), nullable=True),
         sa.Column("prompt", sqlmodel.AutoString(), nullable=True),
@@ -58,7 +72,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("task_template_id", sa.Uuid(), nullable=False),
         sa.Column("name", sqlmodel.AutoString(), nullable=False),
-        sa.Column("arg_type", templateargtype, nullable=False, server_default="string"),
+        sa.Column("arg_type", templateargtype_ref, nullable=False, server_default="string"),
         sa.Column("default_value", sqlmodel.AutoString(), nullable=True),
         sa.Column("model_constraint", sqlmodel.AutoString(), nullable=True),
         sa.Column("created_at", sa.DateTime(), nullable=False),
@@ -103,7 +117,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("subgraph_template_id", sa.Uuid(), nullable=False),
         sa.Column("name", sqlmodel.AutoString(), nullable=False),
-        sa.Column("arg_type", templateargtype, nullable=False, server_default="string"),
+        sa.Column("arg_type", templateargtype_ref, nullable=False, server_default="string"),
         sa.Column("default_value", sqlmodel.AutoString(), nullable=True),
         sa.Column("model_constraint", sqlmodel.AutoString(), nullable=True),
         sa.Column("created_at", sa.DateTime(), nullable=False),
@@ -126,7 +140,7 @@ def upgrade() -> None:
         "subgraphtemplatenode",
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("subgraph_template_id", sa.Uuid(), nullable=False),
-        sa.Column("node_type", subgraphtemplatenodetype, nullable=False),
+        sa.Column("node_type", subgraphtemplatenodetype_ref, nullable=False),
         sa.Column("name", sqlmodel.AutoString(), nullable=True),
         sa.Column("task_template_id", sa.Uuid(), nullable=True),
         sa.Column("ref_subgraph_template_id", sa.Uuid(), nullable=True),
