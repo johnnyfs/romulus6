@@ -1,7 +1,7 @@
 import uuid
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import Column, String
+from sqlalchemy import Column, ForeignKey, String
 from sqlmodel import Field, Relationship
 
 from .base import RomulusBase
@@ -12,15 +12,26 @@ if TYPE_CHECKING:
 
 class GraphRun(RomulusBase, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
-    graph_id: uuid.UUID = Field(foreign_key="graph.id", index=True)
+    graph_id: Optional[uuid.UUID] = Field(default=None, foreign_key="graph.id", index=True)
     workspace_id: uuid.UUID = Field(foreign_key="workspace.id", index=True)
     sandbox_id: Optional[uuid.UUID] = Field(default=None, foreign_key="sandbox.id")
     state: str = Field(default="pending")
+    parent_run_node_id: Optional[uuid.UUID] = Field(
+        default=None,
+        sa_column=Column(
+            ForeignKey("graphrunnode.id", use_alter=True),
+            index=True,
+            nullable=True,
+        ),
+    )
 
     sandbox: Optional["Sandbox"] = Relationship()
     run_nodes: List["GraphRunNode"] = Relationship(
         back_populates="run",
-        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+        sa_relationship_kwargs={
+            "cascade": "all, delete-orphan",
+            "foreign_keys": "[GraphRunNode.run_id]",
+        },
     )
     run_edges: List["GraphRunEdge"] = Relationship(
         back_populates="run",
@@ -31,7 +42,8 @@ class GraphRun(RomulusBase, table=True):
 class GraphRunNode(RomulusBase, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     run_id: uuid.UUID = Field(foreign_key="graphrun.id", index=True)
-    source_node_id: uuid.UUID = Field()
+    source_node_id: Optional[uuid.UUID] = Field(default=None)
+    source_type: str = Field(default="graph_node")
     node_type: str
     name: Optional[str] = Field(default=None, sa_column=Column("name", String, nullable=True))
     state: str = Field(default="pending")
@@ -42,8 +54,15 @@ class GraphRunNode(RomulusBase, table=True):
     agent_id: Optional[uuid.UUID] = Field(default=None, foreign_key="agent.id")
     session_id: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     graph_tools: bool = Field(default=False)
+    child_run_id: Optional[uuid.UUID] = Field(default=None, foreign_key="graphrun.id")
 
-    run: Optional[GraphRun] = Relationship(back_populates="run_nodes")
+    run: Optional[GraphRun] = Relationship(
+        back_populates="run_nodes",
+        sa_relationship_kwargs={"foreign_keys": "[GraphRunNode.run_id]"},
+    )
+    child_run: Optional[GraphRun] = Relationship(
+        sa_relationship_kwargs={"foreign_keys": "[GraphRunNode.child_run_id]"},
+    )
 
 
 class GraphRunEdge(RomulusBase, table=True):

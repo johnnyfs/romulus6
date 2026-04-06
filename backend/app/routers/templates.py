@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlmodel import Session
 
 from app.database import get_session
+from app.models.agent import AgentConfig, CommandConfig
 from app.models.graph import NodeType
 from app.models.template import (
     SubgraphTemplateNodeType,
@@ -225,6 +226,10 @@ sub_router = APIRouter(
 class SubgraphNodeInputSchema(BaseModel):
     node_type: SubgraphTemplateNodeType
     name: Optional[str] = None
+    # For agent/command inline nodes
+    agent_config: Optional[AgentConfig] = None
+    command_config: Optional[CommandConfig] = None
+    # For task_template/subgraph_template reference nodes
     task_template_id: Optional[uuid.UUID] = None
     ref_subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
@@ -245,6 +250,8 @@ class CreateSubgraphTemplateRequest(BaseModel):
 class AddSubgraphNodeRequest(BaseModel):
     node_type: SubgraphTemplateNodeType
     name: Optional[str] = None
+    agent_config: Optional[AgentConfig] = None
+    command_config: Optional[CommandConfig] = None
     task_template_id: Optional[uuid.UUID] = None
     ref_subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
@@ -253,6 +260,8 @@ class AddSubgraphNodeRequest(BaseModel):
 class PatchSubgraphNodeRequest(BaseModel):
     name: Optional[str] = None
     node_type: Optional[SubgraphTemplateNodeType] = None
+    agent_config: Optional[AgentConfig] = None
+    command_config: Optional[CommandConfig] = None
     task_template_id: Optional[uuid.UUID] = None
     ref_subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
@@ -268,6 +277,8 @@ class SubgraphNodeResponse(BaseModel):
     subgraph_template_id: uuid.UUID
     node_type: SubgraphTemplateNodeType
     name: Optional[str] = None
+    agent_config: Optional[AgentConfig] = None
+    command_config: Optional[CommandConfig] = None
     task_template_id: Optional[uuid.UUID] = None
     ref_subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
@@ -311,6 +322,23 @@ class SubgraphTemplateListResponse(BaseModel):
 
 # --- Helpers ---
 
+def _agent_config_from(obj: Any) -> Optional[AgentConfig]:
+    if obj.agent_type is None:
+        return None
+    return AgentConfig(
+        agent_type=obj.agent_type,
+        model=obj.model,
+        prompt=obj.prompt,
+        graph_tools=getattr(obj, "graph_tools", False),
+    )
+
+
+def _command_config_from(obj: Any) -> Optional[CommandConfig]:
+    if obj.command is None:
+        return None
+    return CommandConfig(command=obj.command)
+
+
 def _node_response(n: Any) -> SubgraphNodeResponse:
     bindings = None
     if n.argument_bindings:
@@ -323,6 +351,8 @@ def _node_response(n: Any) -> SubgraphNodeResponse:
         subgraph_template_id=n.subgraph_template_id,
         node_type=n.node_type,
         name=n.name,
+        agent_config=_agent_config_from(n),
+        command_config=_command_config_from(n),
         task_template_id=n.task_template_id,
         ref_subgraph_template_id=n.ref_subgraph_template_id,
         argument_bindings=bindings,
@@ -351,16 +381,23 @@ def _to_detail(t: Any) -> SubgraphTemplateDetailResponse:
 
 
 def _to_node_inputs(nodes: list[SubgraphNodeInputSchema]) -> list[SubgraphNodeInput]:
-    return [
-        SubgraphNodeInput(
+    result = []
+    for n in nodes:
+        ac = n.agent_config
+        cc = n.command_config
+        result.append(SubgraphNodeInput(
             node_type=n.node_type,
             name=n.name,
+            agent_type=ac.agent_type if ac else None,
+            model=ac.model.value if ac and ac.model else None,
+            prompt=ac.prompt if ac else None,
+            command=cc.command if cc else None,
+            graph_tools=ac.graph_tools if ac else False,
             task_template_id=n.task_template_id,
             ref_subgraph_template_id=n.ref_subgraph_template_id,
             argument_bindings=n.argument_bindings,
-        )
-        for n in nodes
-    ]
+        ))
+    return result
 
 
 # --- Endpoints ---
@@ -442,12 +479,19 @@ def add_subgraph_node(
 ) -> Any:
     _require_workspace(workspace_id, session)
     tmpl = _require_subgraph_template(workspace_id, template_id, session)
+    ac = body.agent_config
+    cc = body.command_config
     try:
         node = svc.add_subgraph_template_node(
             session,
             tmpl=tmpl,
             node_type=body.node_type,
             name=body.name,
+            agent_type=ac.agent_type if ac else None,
+            model=ac.model.value if ac and ac.model else None,
+            prompt=ac.prompt if ac else None,
+            command=cc.command if cc else None,
+            graph_tools=ac.graph_tools if ac else False,
             task_template_id=body.task_template_id,
             ref_subgraph_template_id=body.ref_subgraph_template_id,
             argument_bindings=body.argument_bindings,
@@ -467,6 +511,8 @@ def patch_subgraph_node(
 ) -> Any:
     _require_workspace(workspace_id, session)
     tmpl = _require_subgraph_template(workspace_id, template_id, session)
+    ac = body.agent_config
+    cc = body.command_config
     try:
         node = svc.patch_subgraph_template_node(
             session,
@@ -474,6 +520,11 @@ def patch_subgraph_node(
             node_id=node_id,
             name=body.name,
             node_type=body.node_type,
+            agent_type=ac.agent_type if ac else None,
+            model=ac.model.value if ac and ac.model else None,
+            prompt=ac.prompt if ac else None,
+            command=cc.command if cc else None,
+            graph_tools=ac.graph_tools if ac else None,
             task_template_id=body.task_template_id,
             ref_subgraph_template_id=body.ref_subgraph_template_id,
             argument_bindings=body.argument_bindings,

@@ -35,6 +35,13 @@ class ArgumentInput:
 class SubgraphNodeInput:
     node_type: SubgraphTemplateNodeType
     name: Optional[str] = None
+    # For agent/command inline nodes
+    agent_type: Optional[str] = None
+    model: Optional[str] = None
+    prompt: Optional[str] = None
+    command: Optional[str] = None
+    graph_tools: bool = False
+    # For task_template/subgraph_template reference nodes
     task_template_id: Optional[uuid.UUID] = None
     ref_subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
@@ -86,6 +93,30 @@ def _has_subgraph_cycle(
                 stack.append(node.ref_subgraph_template_id)
 
     return False
+
+
+def _build_subgraph_node(
+    tmpl_id: uuid.UUID, node_input: SubgraphNodeInput
+) -> SubgraphTemplateNode:
+    """Build a SubgraphTemplateNode from input, including inline agent/command fields."""
+    bindings_json = (
+        json.dumps(node_input.argument_bindings)
+        if node_input.argument_bindings
+        else None
+    )
+    return SubgraphTemplateNode(
+        subgraph_template_id=tmpl_id,
+        node_type=node_input.node_type,
+        name=node_input.name,
+        agent_type=node_input.agent_type,
+        model=node_input.model,
+        prompt=node_input.prompt,
+        command=node_input.command,
+        graph_tools=node_input.graph_tools,
+        task_template_id=node_input.task_template_id,
+        ref_subgraph_template_id=node_input.ref_subgraph_template_id,
+        argument_bindings=bindings_json,
+    )
 
 
 def _create_arguments(
@@ -269,19 +300,7 @@ def create_subgraph_template(
 
     db_nodes = []
     for node_input in nodes:
-        bindings_json = (
-            json.dumps(node_input.argument_bindings)
-            if node_input.argument_bindings
-            else None
-        )
-        node = SubgraphTemplateNode(
-            subgraph_template_id=tmpl.id,
-            node_type=node_input.node_type,
-            name=node_input.name,
-            task_template_id=node_input.task_template_id,
-            ref_subgraph_template_id=node_input.ref_subgraph_template_id,
-            argument_bindings=bindings_json,
-        )
+        node = _build_subgraph_node(tmpl.id, node_input)
         session.add(node)
         db_nodes.append(node)
     session.flush()
@@ -372,19 +391,7 @@ def update_subgraph_template(
 
     db_nodes = []
     for node_input in nodes:
-        bindings_json = (
-            json.dumps(node_input.argument_bindings)
-            if node_input.argument_bindings
-            else None
-        )
-        node = SubgraphTemplateNode(
-            subgraph_template_id=tmpl.id,
-            node_type=node_input.node_type,
-            name=node_input.name,
-            task_template_id=node_input.task_template_id,
-            ref_subgraph_template_id=node_input.ref_subgraph_template_id,
-            argument_bindings=bindings_json,
-        )
+        node = _build_subgraph_node(tmpl.id, node_input)
         session.add(node)
         db_nodes.append(node)
     session.flush()
@@ -453,6 +460,11 @@ def add_subgraph_template_node(
     tmpl: SubgraphTemplate,
     node_type: SubgraphTemplateNodeType,
     name: Optional[str] = None,
+    agent_type: Optional[str] = None,
+    model: Optional[str] = None,
+    prompt: Optional[str] = None,
+    command: Optional[str] = None,
+    graph_tools: bool = False,
     task_template_id: Optional[uuid.UUID] = None,
     ref_subgraph_template_id: Optional[uuid.UUID] = None,
     argument_bindings: Optional[dict[str, str]] = None,
@@ -469,6 +481,11 @@ def add_subgraph_template_node(
         subgraph_template_id=tmpl.id,
         node_type=node_type,
         name=name,
+        agent_type=agent_type,
+        model=model,
+        prompt=prompt,
+        command=command,
+        graph_tools=graph_tools,
         task_template_id=task_template_id,
         ref_subgraph_template_id=ref_subgraph_template_id,
         argument_bindings=bindings_json,
@@ -485,6 +502,11 @@ def patch_subgraph_template_node(
     node_id: uuid.UUID,
     name: Optional[str] = None,
     node_type: Optional[SubgraphTemplateNodeType] = None,
+    agent_type: Optional[str] = None,
+    model: Optional[str] = None,
+    prompt: Optional[str] = None,
+    command: Optional[str] = None,
+    graph_tools: Optional[bool] = None,
     task_template_id: Optional[uuid.UUID] = None,
     ref_subgraph_template_id: Optional[uuid.UUID] = None,
     argument_bindings: Optional[dict[str, str]] = None,
@@ -510,6 +532,16 @@ def patch_subgraph_template_node(
         node.name = name
     if node_type is not None:
         node.node_type = node_type
+    if agent_type is not None:
+        node.agent_type = agent_type
+    if model is not None:
+        node.model = model
+    if prompt is not None:
+        node.prompt = prompt
+    if command is not None:
+        node.command = command
+    if graph_tools is not None:
+        node.graph_tools = graph_tools
     if task_template_id is not None:
         node.task_template_id = task_template_id
     if ref_subgraph_template_id is not None:

@@ -13,6 +13,7 @@ WORKER_POOL_MAX ?= 1
 
 .PHONY: \
 	dev dev-up dev-down dev-clean dev-restart-backend \
+	dev-restart-workers \
 	dev-namespace dev-config dev-secrets dev-db dev-db-migrate \
 	dev-backend dev-frontend dev-worker \
 	dev-build-images dev-build-backend-image dev-build-worker-image \
@@ -91,13 +92,20 @@ dev-worker: dev-config dev-secrets
 	kubectl scale deployment/worker -n $(K8S_NAMESPACE) --replicas=$(WORKER_POOL_TARGET)
 	kubectl rollout status deployment/worker -n $(K8S_NAMESPACE)
 
+dev-restart-workers: dev-build-worker-image dev-config dev-secrets
+	kubectl apply -f $(K8S_DEV_DIR)/worker-service.yaml
+	sed 's|image: worker:latest|image: $(WORKER_IMAGE)|' $(K8S_DEV_DIR)/worker-deployment.yaml | kubectl apply -f -
+	kubectl scale deployment/worker -n $(K8S_NAMESPACE) --replicas=$(WORKER_POOL_TARGET)
+	kubectl rollout restart deployment/worker -n $(K8S_NAMESPACE)
+	kubectl rollout status deployment/worker -n $(K8S_NAMESPACE)
+
 dev-frontend:
 	cd frontend && \
 		VITE_PORT=$(FRONTEND_PORT) \
 		VITE_BACKEND_TARGET=http://$$($(MINIKUBE) ip):$(BACKEND_NODEPORT) \
 		npm run dev -- --port $(FRONTEND_PORT)
 
-dev-restart-backend: dev-config dev-secrets
+dev-restart-backend: dev-build-backend-image dev-config dev-secrets
 	kubectl apply -f $(K8S_DEV_DIR)/backend-rbac.yaml
 	kubectl apply -f $(K8S_DEV_DIR)/backend-service.yaml
 	kubectl apply -f $(K8S_DEV_DIR)/backend-nodeport-service.yaml

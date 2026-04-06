@@ -30,6 +30,9 @@ class NodeInputSchema(BaseModel):
     name: Optional[str] = None
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
+    task_template_id: Optional[uuid.UUID] = None
+    subgraph_template_id: Optional[uuid.UUID] = None
+    argument_bindings: Optional[dict[str, str]] = None
 
 
 class EdgeInputSchema(BaseModel):
@@ -48,6 +51,9 @@ class AddNodeRequest(BaseModel):
     name: Optional[str] = None
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
+    task_template_id: Optional[uuid.UUID] = None
+    subgraph_template_id: Optional[uuid.UUID] = None
+    argument_bindings: Optional[dict[str, str]] = None
 
 
 class PatchNodeRequest(BaseModel):
@@ -55,6 +61,9 @@ class PatchNodeRequest(BaseModel):
     node_type: Optional[NodeType] = None
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
+    task_template_id: Optional[uuid.UUID] = None
+    subgraph_template_id: Optional[uuid.UUID] = None
+    argument_bindings: Optional[dict[str, str]] = None
 
 
 class AddEdgeRequest(BaseModel):
@@ -71,6 +80,9 @@ class GraphNodeResponse(BaseModel):
     name: Optional[str] = None
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
+    task_template_id: Optional[uuid.UUID] = None
+    subgraph_template_id: Optional[uuid.UUID] = None
+    argument_bindings: Optional[dict[str, str]] = None
     created_at: datetime.datetime
 
     model_config = {"from_attributes": True}
@@ -101,7 +113,8 @@ class GraphDetailResponse(BaseModel):
 class GraphRunNodeResponse(BaseModel):
     id: uuid.UUID
     run_id: uuid.UUID
-    source_node_id: uuid.UUID
+    source_node_id: Optional[uuid.UUID] = None
+    source_type: str = "graph_node"
     node_type: str
     name: Optional[str] = None
     state: str
@@ -109,6 +122,7 @@ class GraphRunNodeResponse(BaseModel):
     command_config: Optional[CommandConfig] = None
     agent_id: Optional[uuid.UUID] = None
     session_id: Optional[str] = None
+    child_run_id: Optional[uuid.UUID] = None
     created_at: datetime.datetime
 
     model_config = {"from_attributes": True}
@@ -126,10 +140,11 @@ class GraphRunEdgeResponse(BaseModel):
 
 class GraphRunResponse(BaseModel):
     id: uuid.UUID
-    graph_id: uuid.UUID
+    graph_id: Optional[uuid.UUID] = None
     workspace_id: uuid.UUID
     state: str = "pending"
     sandbox_id: Optional[uuid.UUID] = None
+    parent_run_node_id: Optional[uuid.UUID] = None
     created_at: datetime.datetime
     run_nodes: list[GraphRunNodeResponse]
     run_edges: list[GraphRunEdgeResponse]
@@ -176,6 +191,16 @@ def _command_config_from(obj: Any) -> Optional[CommandConfig]:
     return CommandConfig(command=obj.command)
 
 
+def _parse_bindings(obj: Any) -> Optional[dict[str, str]]:
+    raw = getattr(obj, "argument_bindings", None)
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    import json
+    return json.loads(raw)
+
+
 def _node_response(n: Any) -> GraphNodeResponse:
     return GraphNodeResponse(
         id=n.id,
@@ -184,6 +209,9 @@ def _node_response(n: Any) -> GraphNodeResponse:
         name=n.name,
         agent_config=_agent_config_from(n),
         command_config=_command_config_from(n),
+        task_template_id=getattr(n, "task_template_id", None),
+        subgraph_template_id=getattr(n, "subgraph_template_id", None),
+        argument_bindings=_parse_bindings(n),
         created_at=n.created_at,
     )
 
@@ -193,6 +221,7 @@ def _run_node_response(rn: Any) -> GraphRunNodeResponse:
         id=rn.id,
         run_id=rn.run_id,
         source_node_id=rn.source_node_id,
+        source_type=getattr(rn, "source_type", "graph_node"),
         node_type=rn.node_type,
         name=rn.name,
         state=rn.state,
@@ -200,6 +229,7 @@ def _run_node_response(rn: Any) -> GraphRunNodeResponse:
         command_config=_command_config_from(rn),
         agent_id=rn.agent_id,
         session_id=rn.session_id,
+        child_run_id=getattr(rn, "child_run_id", None),
         created_at=rn.created_at,
     )
 
@@ -223,6 +253,7 @@ def _run_response(run: Any) -> GraphRunResponse:
         workspace_id=run.workspace_id,
         state=run.state,
         sandbox_id=run.sandbox_id,
+        parent_run_node_id=getattr(run, "parent_run_node_id", None),
         created_at=run.created_at,
         run_nodes=[_run_node_response(rn) for rn in run.run_nodes],
         run_edges=[GraphRunEdgeResponse.model_validate(re) for re in run.run_edges],
@@ -240,6 +271,9 @@ def _node_input(n: NodeInputSchema) -> NodeInput:
         prompt=ac.prompt if ac else None,
         command=cc.command if cc else None,
         graph_tools=ac.graph_tools if ac else False,
+        task_template_id=n.task_template_id,
+        subgraph_template_id=n.subgraph_template_id,
+        argument_bindings=n.argument_bindings,
     )
 
 
@@ -321,17 +355,23 @@ def add_node(
     graph = _require_graph(workspace_id, graph_id, session)
     ac = body.agent_config
     cc = body.command_config
-    node = svc.add_node(
-        session,
-        graph=graph,
-        node_type=body.node_type,
-        name=body.name,
-        agent_type=ac.agent_type if ac else None,
-        model=ac.model.value if ac else None,
-        prompt=ac.prompt if ac else None,
-        command=cc.command if cc else None,
-        graph_tools=ac.graph_tools if ac else False,
-    )
+    try:
+        node = svc.add_node(
+            session,
+            graph=graph,
+            node_type=body.node_type,
+            name=body.name,
+            agent_type=ac.agent_type if ac else None,
+            model=ac.model.value if ac else None,
+            prompt=ac.prompt if ac else None,
+            command=cc.command if cc else None,
+            graph_tools=ac.graph_tools if ac else False,
+            task_template_id=body.task_template_id,
+            subgraph_template_id=body.subgraph_template_id,
+            argument_bindings=body.argument_bindings,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
     return _node_response(node)
 
 
@@ -366,18 +406,24 @@ def patch_node(
     graph = _require_graph(workspace_id, graph_id, session)
     ac = body.agent_config
     cc = body.command_config
-    node = svc.patch_node(
-        session,
-        graph=graph,
-        node_id=node_id,
-        name=body.name,
-        node_type=body.node_type,
-        agent_type=ac.agent_type if ac else None,
-        model=ac.model.value if ac else None,
-        prompt=ac.prompt if ac else None,
-        command=cc.command if cc else None,
-        graph_tools=ac.graph_tools if ac else None,
-    )
+    try:
+        node = svc.patch_node(
+            session,
+            graph=graph,
+            node_id=node_id,
+            name=body.name,
+            node_type=body.node_type,
+            agent_type=ac.agent_type if ac else None,
+            model=ac.model.value if ac else None,
+            prompt=ac.prompt if ac else None,
+            command=cc.command if cc else None,
+            graph_tools=ac.graph_tools if ac else None,
+            task_template_id=body.task_template_id,
+            subgraph_template_id=body.subgraph_template_id,
+            argument_bindings=body.argument_bindings,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
     if node is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Node not found")
     return _node_response(node)
@@ -439,7 +485,10 @@ async def create_run(
 ) -> Any:
     _require_workspace(workspace_id, session)
     graph = _require_graph(workspace_id, graph_id, session)
-    run = svc.create_run(session, graph=graph)
+    try:
+        run = svc.create_run(session, graph=graph)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
     run_svc.enqueue_run(session, run.id, reason="run created")
     return _run_response(run)
 
@@ -473,5 +522,29 @@ def get_run(
     _require_graph(workspace_id, graph_id, session)
     run = session.get(GraphRun, run_id)
     if run is None or run.graph_id != graph_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    return _run_response(run)
+
+
+# --- Workspace-scoped run lookup (for child runs without graph_id) ---
+
+runs_router = APIRouter(
+    prefix="/workspaces/{workspace_id}/runs",
+    tags=["runs"],
+)
+
+
+@runs_router.get(
+    "/{run_id}",
+    response_model=GraphRunResponse,
+)
+def get_run_by_id(
+    workspace_id: uuid.UUID,
+    run_id: uuid.UUID,
+    session: SessionDep,
+) -> Any:
+    _require_workspace(workspace_id, session)
+    run = session.get(GraphRun, run_id)
+    if run is None or run.workspace_id != workspace_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     return _run_response(run)

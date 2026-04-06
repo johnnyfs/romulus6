@@ -41,6 +41,22 @@ def enqueue_run(session: Session, run_id: uuid.UUID, reason: str | None = None) 
     controller_svc.enqueue_run_reconcile(session, run_id, reason=reason)
 
 
+def _parent_run_id(session: Session, child_run: GraphRun) -> uuid.UUID:
+    """Get the run_id of the parent run node."""
+    parent_node = session.get(GraphRunNode, child_run.parent_run_node_id)
+    assert parent_node is not None
+    return parent_node.run_id
+
+
+def _parent_run(session: Session, child_run: GraphRun) -> GraphRun | None:
+    if child_run.parent_run_node_id is None:
+        return None
+    parent_node = session.get(GraphRunNode, child_run.parent_run_node_id)
+    if parent_node is None:
+        return None
+    return session.get(GraphRun, parent_node.run_id)
+
+
 async def _post_session_with_retry(
     worker_url: str,
     payload: dict[str, Any],
@@ -112,7 +128,8 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
             return
 
         if run.state == "error":
-            _maybe_release_run_sandbox(session, run)
+            if run.parent_run_node_id is None:
+                _maybe_release_run_sandbox(session, run)
             return
 
         if all(node.state == "completed" for node in run.run_nodes):
@@ -120,7 +137,11 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
             run.updated_at = datetime.datetime.utcnow()
             session.add(run)
             session.commit()
-            _maybe_release_run_sandbox(session, run)
+            if run.parent_run_node_id is not None:
+                # Propagate completion to parent run node
+                complete_node(session, _parent_run_id(session, run), run.parent_run_node_id)
+            else:
+                _maybe_release_run_sandbox(session, run)
             return
 
         if any(node.state == "error" for node in run.run_nodes):
@@ -128,12 +149,29 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
             run.updated_at = datetime.datetime.utcnow()
             session.add(run)
             session.commit()
-            _maybe_release_run_sandbox(session, run)
+            if run.parent_run_node_id is not None:
+                # Propagate error to parent run node
+                parent_node = session.get(GraphRunNode, run.parent_run_node_id)
+                if parent_node:
+                    fail_node_and_run(
+                        session, parent_node.run_id, run.parent_run_node_id,
+                        "child run failed", release_lease=False,
+                    )
+            else:
+                _maybe_release_run_sandbox(session, run)
             return
 
-        worker = _ensure_run_sandbox_worker(session, run)
-        if worker is None:
-            return
+        # Subgraph child runs don't need their own sandbox/worker — they share the parent's
+        has_dispatchable_nodes = any(
+            n.node_type in ("agent", "command") and n.state == "pending"
+            for n in run.run_nodes
+        )
+        worker = None
+        if has_dispatchable_nodes:
+            worker = _ensure_run_sandbox_worker(session, run)
+            if worker is None:
+                enqueue_run(session, run.id, reason="awaiting worker capacity")
+                return
 
         if run.state == "pending":
             run.state = "running"
@@ -145,10 +183,26 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
         for node in unblocked:
             if node.state != "pending":
                 continue
+
+            if node.node_type == "subgraph":
+                # Start the child run by enqueueing it
+                node.state = "running"
+                node.updated_at = datetime.datetime.utcnow()
+                session.add(node)
+                session.commit()
+                if node.child_run_id:
+                    enqueue_run(session, node.child_run_id, reason="parent node unblocked")
+                continue
+
             node.state = "dispatching"
             node.updated_at = datetime.datetime.utcnow()
             session.add(node)
             session.commit()
+            if worker is None:
+                worker = _ensure_run_sandbox_worker(session, run)
+                if worker is None:
+                    enqueue_run(session, run.id, reason="awaiting worker capacity")
+                    return
             if node.node_type == "agent":
                 asyncio.create_task(_dispatch_agent_node(run.id, node.id, worker.id))
             elif node.node_type == "command":
@@ -156,8 +210,20 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
 
 
 def _ensure_run_sandbox_worker(session: Session, run: GraphRun) -> Worker | None:
+    if run.sandbox_id is None and run.parent_run_node_id is not None:
+        parent_run = _parent_run(session, run)
+        if parent_run is not None and parent_run.sandbox_id is not None:
+            run.sandbox_id = parent_run.sandbox_id
+            run.updated_at = datetime.datetime.utcnow()
+            session.add(run)
+            session.commit()
+
     if run.sandbox_id is None:
-        sandbox, worker = sandbox_svc.create_sandbox(session, run.workspace_id, f"run-{run.id}")
+        try:
+            sandbox, worker = sandbox_svc.create_sandbox(session, run.workspace_id, f"run-{run.id}")
+        except RuntimeError:
+            logger.info("run %s is waiting for worker capacity", run.id)
+            return None
         run.sandbox_id = sandbox.id
         run.updated_at = datetime.datetime.utcnow()
         session.add(run)
@@ -165,7 +231,24 @@ def _ensure_run_sandbox_worker(session: Session, run: GraphRun) -> Worker | None
         return worker
 
     sandbox = session.get(Sandbox, run.sandbox_id)
+    if sandbox is None:
+        run.state = "error"
+        run.updated_at = datetime.datetime.utcnow()
+        session.add(run)
+        session.commit()
+        return None
+
     worker = worker_svc.get_worker_for_sandbox(session, sandbox)
+    if worker is None:
+        try:
+            _, worker = worker_svc.lease_worker_for_sandbox(
+                session,
+                workspace_id=run.workspace_id,
+                sandbox=sandbox,
+            )
+        except RuntimeError:
+            logger.info("run %s is waiting for worker capacity", run.id)
+            return None
     if worker is None or worker.worker_url is None:
         run.state = "error"
         run.updated_at = datetime.datetime.utcnow()

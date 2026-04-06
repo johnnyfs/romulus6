@@ -18,6 +18,8 @@ class TemplateArgType(str, Enum):
 
 
 class SubgraphTemplateNodeType(str, Enum):
+    agent = "agent"
+    command = "command"
     task_template = "task_template"
     subgraph_template = "subgraph_template"
 
@@ -146,6 +148,13 @@ class SubgraphTemplateNode(RomulusBase, table=True):
     subgraph_template_id: uuid.UUID = Field(foreign_key="subgraphtemplate.id", index=True)
     node_type: SubgraphTemplateNodeType
     name: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    # For agent/command inline nodes
+    agent_type: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    model: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    prompt: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    command: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    graph_tools: bool = Field(default=False)
+    # For task_template/subgraph_template reference nodes
     task_template_id: Optional[uuid.UUID] = Field(
         default=None, foreign_key="tasktemplate.id"
     )

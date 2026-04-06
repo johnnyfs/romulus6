@@ -23,7 +23,7 @@ import GraphPanel from '../components/GraphPanel'
 
 interface ActivityBlock {
   blockId: string
-  agentId: string
+  streamKey: string
   latest: AgentEvent
   history: AgentEvent[]
 }
@@ -100,12 +100,12 @@ function ActivityLine({
   block,
   expanded,
   onToggle,
-  agentLabel,
+  sourceLabel,
 }: {
   block: ActivityBlock
   expanded: boolean
   onToggle: () => void
-  agentLabel: string
+  sourceLabel: string
 }) {
   return (
     <div style={styles.activityWrap}>
@@ -113,7 +113,7 @@ function ActivityLine({
         <button style={styles.chevron} onClick={onToggle} title="Toggle history">
           {expanded ? '∨' : '›'}
         </button>
-        <span style={styles.activityPrefix}>{agentLabel}</span>
+        <span style={styles.activityPrefix}>{sourceLabel}</span>
         <span style={styles.activityLatest}>
           {renderActivityEvent(block.latest)}
         </span>
@@ -195,36 +195,40 @@ export default function WorkspaceDetailPage() {
   useEffect(() => {
     if (!id) return
 
-    const applyEvent = (event: AgentEvent) => {
-      const agentId = event.agent_id ?? event.source_id ?? 'unknown'
+      const applyEvent = (event: AgentEvent) => {
+      const streamKey = event.stream_key ?? event.agent_id ?? event.node_id ?? event.run_id ?? event.source_id ?? 'unknown'
+      const agentId = event.agent_id ?? null
       eventCursor.current += 1
       if (!event.type.startsWith('session.')) {
         if (!seenEventIds.current.has(event.id)) {
           seenEventIds.current.add(event.id)
           setEventMap((prev) => ({
             ...prev,
-            [agentId]: [...(prev[agentId] ?? []), event],
+            [streamKey]: [...(prev[streamKey] ?? []), event],
           }))
         }
       }
-      if (event.type === 'session.busy') {
+      if (agentId && event.type === 'session.busy') {
         setAgentBusy((prev) => ({ ...prev, [agentId]: true }))
         setAgentWaiting((prev) => ({ ...prev, [agentId]: false }))
-      } else if (event.type === 'session.idle') {
+      } else if (agentId && event.type === 'session.idle') {
         setAgentBusy((prev) => ({ ...prev, [agentId]: false }))
       } else if (
-        event.type === 'session.completed' ||
-        event.type === 'session.error' ||
-        event.type === 'session.interrupted'
+        agentId &&
+        (
+          event.type === 'session.completed' ||
+          event.type === 'session.error' ||
+          event.type === 'session.interrupted'
+        )
       ) {
         setAgentBusy((prev) => ({ ...prev, [agentId]: false }))
         setAgentWaiting((prev) => ({ ...prev, [agentId]: false }))
         setAgentTerminal((prev) => ({ ...prev, [agentId]: true }))
       }
-      if (event.type === 'feedback.request') {
+      if (agentId && event.type === 'feedback.request') {
         setAgentBusy((prev) => ({ ...prev, [agentId]: false }))
         setAgentWaiting((prev) => ({ ...prev, [agentId]: true }))
-      } else if (event.type === 'feedback.response') {
+      } else if (agentId && event.type === 'feedback.response') {
         const fbId = String(event.data?.feedback_id ?? '')
         const fbResp = String(event.data?.response ?? '')
         if (fbId) setResolvedFeedback((prev) => ({ ...prev, [fbId]: fbResp }))
@@ -244,29 +248,33 @@ export default function WorkspaceDetailPage() {
       eventCursor.current = 0
       for (const event of events) {
         eventCursor.current += 1
-        const agentId = event.agent_id ?? event.source_id ?? 'unknown'
+        const streamKey = event.stream_key ?? event.agent_id ?? event.node_id ?? event.run_id ?? event.source_id ?? 'unknown'
+        const agentId = event.agent_id ?? null
         if (!event.type.startsWith('session.')) {
           seenEventIds.current.add(event.id)
-          nextMap[agentId] = [...(nextMap[agentId] ?? []), event]
+          nextMap[streamKey] = [...(nextMap[streamKey] ?? []), event]
         }
-        if (event.type === 'session.busy') {
+        if (agentId && event.type === 'session.busy') {
           nextBusy[agentId] = true
           nextWaiting[agentId] = false
         }
-        if (event.type === 'session.idle') nextBusy[agentId] = false
+        if (agentId && event.type === 'session.idle') nextBusy[agentId] = false
         if (
-          event.type === 'session.completed' ||
-          event.type === 'session.error' ||
-          event.type === 'session.interrupted'
+          agentId &&
+          (
+            event.type === 'session.completed' ||
+            event.type === 'session.error' ||
+            event.type === 'session.interrupted'
+          )
         ) {
           nextBusy[agentId] = false
           nextTerminal[agentId] = true
           nextWaiting[agentId] = false
         }
-        if (event.type === 'feedback.request') {
+        if (agentId && event.type === 'feedback.request') {
           nextBusy[agentId] = false
           nextWaiting[agentId] = true
-        } else if (event.type === 'feedback.response') {
+        } else if (agentId && event.type === 'feedback.response') {
           const fbId = String(event.data?.feedback_id ?? '')
           const fbResp = String(event.data?.response ?? '')
           if (fbId) nextResolved[fbId] = fbResp
@@ -315,13 +323,13 @@ export default function WorkspaceDetailPage() {
   }, [agents, eventMap])
 
   const feed = useMemo((): FeedItem[] => {
-    const allRaw: { event: AgentEvent; agentId: string }[] = []
-    for (const [agentId, evts] of Object.entries(eventMap)) {
-      for (const ev of evts) allRaw.push({ event: ev, agentId })
+    const allRaw: { event: AgentEvent; streamKey: string }[] = []
+    for (const [streamKey, evts] of Object.entries(eventMap)) {
+      for (const ev of evts) allRaw.push({ event: ev, streamKey })
     }
     for (const msg of userMessages) {
       allRaw.push({
-        agentId: msg.agentId,
+        streamKey: `agent:${msg.agentId}`,
         event: {
           id: `user-${msg.timestamp}`,
           session_id: '',
@@ -337,8 +345,9 @@ export default function WorkspaceDetailPage() {
     const textBuffers: Record<string, { idx: number; text: string }> = {}
     const activityIdx: Record<string, number> = {}
 
-    for (const { event, agentId } of allRaw) {
-      if (!showDeadMessages && deadAgentIds.has(agentId)) continue
+    for (const { event, streamKey } of allRaw) {
+      const agentId = event.agent_id ?? (streamKey.startsWith('agent:') ? streamKey.slice('agent:'.length) : null)
+      if (!showDeadMessages && agentId && deadAgentIds.has(agentId)) continue
       if (event.type === 'text.delta') {
         const key = String(event.data.message_id ?? event.data.session_id ?? agentId)
         const chunk = String(event.data.delta ?? '')
@@ -353,11 +362,11 @@ export default function WorkspaceDetailPage() {
           textBuffers[key] = { idx: items.length, text: chunk }
           items.push({
             kind: 'message',
-            agentId,
+            agentId: agentId ?? 'unknown',
             key: event.id,
             event: { ...event, data: { ...event.data, accumulated: chunk } },
           })
-          delete activityIdx[agentId]
+          delete activityIdx[streamKey]
         }
       } else if (event.type === 'text.complete') {
         const key = String(event.data.message_id ?? event.data.session_id ?? agentId)
@@ -365,27 +374,27 @@ export default function WorkspaceDetailPage() {
       } else if (event.type === 'user.message') {
         items.push({
           kind: 'user',
-          agentId,
+          agentId: agentId ?? 'unknown',
           key: event.id,
           prompt: String(event.data.prompt ?? ''),
           timestamp: event.timestamp,
         })
-        delete activityIdx[agentId]
+        delete activityIdx[streamKey]
       } else if (event.type === 'feedback.request') {
         const fbId = String(event.data.feedback_id ?? '')
         items.push({
           kind: 'feedback',
-          agentId,
+          agentId: agentId ?? 'unknown',
           key: event.id,
           event,
           resolved: fbId in resolvedFeedback,
           resolvedResponse: resolvedFeedback[fbId],
         })
-        delete activityIdx[agentId]
+        delete activityIdx[streamKey]
       } else if (event.type === 'feedback.response') {
         // audit-only, skip rendering
       } else if (isActivity(event.type)) {
-        const idx = activityIdx[agentId]
+        const idx = activityIdx[streamKey]
         if (idx !== undefined) {
           const item = items[idx] as Extract<FeedItem, { kind: 'activity' }>
           item.block = {
@@ -394,11 +403,11 @@ export default function WorkspaceDetailPage() {
             history: [...item.block.history, event],
           }
         } else {
-          const blockId = `act-${agentId}-${event.id}`
-          activityIdx[agentId] = items.length
+          const blockId = `act-${streamKey}-${event.id}`
+          activityIdx[streamKey] = items.length
           items.push({
             kind: 'activity',
-            block: { blockId, agentId, latest: event, history: [event] },
+            block: { blockId, streamKey, latest: event, history: [event] },
           })
         }
       }
@@ -413,6 +422,13 @@ export default function WorkspaceDetailPage() {
     const a = agents.find((x) => x.id === agentId)
     if (!a) return 'agent'
     return a.name ?? `${a.agent_type}/${a.model.split('/')[1]}`
+  }
+
+  function eventLabel(event: AgentEvent, fallbackId?: string): string {
+    if (event.display_label) return `${event.display_label}:`
+    if (event.agent_id) return `${agentName(event.agent_id)}:`
+    if (fallbackId) return `${agentName(fallbackId)}:`
+    return 'event:'
   }
 
   // Partition agents into ad-hoc and run-grouped
@@ -720,7 +736,7 @@ export default function WorkspaceDetailPage() {
                   block={item.block}
                   expanded={expandedBlocks.has(item.block.blockId)}
                   onToggle={() => toggleBlock(item.block.blockId)}
-                  agentLabel={agentName(item.block.agentId)}
+                  sourceLabel={eventLabel(item.block.latest).replace(/:$/, '')}
                 />
               )
             })}

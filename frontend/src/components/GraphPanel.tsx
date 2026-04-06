@@ -2,8 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   type Graph,
   type GraphDetail,
-  type AgentConfig,
-  type CommandConfig,
   type NodeType,
   addEdge,
   addNode,
@@ -15,6 +13,8 @@ import {
   listGraphs,
   patchNode,
 } from '../api/graphs'
+import type { TaskTemplate, SubgraphTemplate, SubgraphTemplateDetail } from '../api/templates'
+import { listTaskTemplates, listSubgraphTemplates, getSubgraphTemplate } from '../api/templates'
 import { NODE_W, NODE_H, CANVAS_WIDTH, computeLayout, type Pos } from './graphLayout'
 import RunsView from './RunsView'
 import TemplatesView from './TemplatesView'
@@ -48,6 +48,17 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
   const [editPrompt, setEditPrompt] = useState('')
   const [editCommand, setEditCommand] = useState('')
   const [editGraphTools, setEditGraphTools] = useState(false)
+  const [editTaskTemplateId, setEditTaskTemplateId] = useState('')
+  const [editSubgraphTemplateId, setEditSubgraphTemplateId] = useState('')
+  const [editBindings, setEditBindings] = useState<Record<string, string>>({})
+  const [nodeDirty, setNodeDirty] = useState(false)
+  const [taskTemplates, setTaskTemplates] = useState<TaskTemplate[]>([])
+  const [subgraphTemplates, setSubgraphTemplates] = useState<SubgraphTemplate[]>([])
+  const [sgDetailCache, setSgDetailCache] = useState<Record<string, SubgraphTemplateDetail>>({})
+
+  function markDirty<T>(setter: (v: T) => void) {
+    return (v: T) => { setter(v); setNodeDirty(true) }
+  }
 
   // ── Data loading ─────────────────────────────────────────────────────────
 
@@ -71,7 +82,9 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
     loadGraphs().then((gs) => {
       if (gs.length > 0) setActiveGraphId(gs[0].id)
     })
-  }, [loadGraphs])
+    listTaskTemplates(workspaceId).then(setTaskTemplates)
+    listSubgraphTemplates(workspaceId).then(setSubgraphTemplates)
+  }, [loadGraphs, workspaceId])
 
   useEffect(() => {
     if (activeGraphId) {
@@ -105,8 +118,21 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
       } else {
         setEditCommand('')
       }
+      setEditTaskTemplateId(node.task_template_id ?? '')
+      setEditSubgraphTemplateId(node.subgraph_template_id ?? '')
+      setEditBindings(node.argument_bindings ?? {})
+      setNodeDirty(false)
     }
   }, [selectedNodeId, detail])
+
+  // Fetch subgraph template detail for argument bindings
+  useEffect(() => {
+    if (editSubgraphTemplateId && !sgDetailCache[editSubgraphTemplateId]) {
+      getSubgraphTemplate(workspaceId, editSubgraphTemplateId).then(d => {
+        setSgDetailCache(prev => ({ ...prev, [d.id]: d }))
+      }).catch(() => {})
+    }
+  }, [editSubgraphTemplateId, workspaceId, sgDetailCache])
 
   // ── Layout ───────────────────────────────────────────────────────────────
 
@@ -245,65 +271,43 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
     }
   }
 
-  async function handleSaveName() {
-    if (!selectedNodeId || !activeGraphId || !detail) return
-    const node = detail.nodes.find((n) => n.id === selectedNodeId)
-    if (!node || node.name === (editName || null)) return
-    const updated = await patchNode(workspaceId, activeGraphId, selectedNodeId, {
+  const refTemplateArgs = useMemo(() => {
+    if (editType === 'task_template' && editTaskTemplateId) {
+      return taskTemplates.find(t => t.id === editTaskTemplateId)?.arguments ?? []
+    }
+    if (editType === 'subgraph_template' && editSubgraphTemplateId) {
+      const cached = sgDetailCache[editSubgraphTemplateId]
+      return cached?.arguments?.filter(a => !(a as any).deleted) ?? []
+    }
+    return []
+  }, [editType, editTaskTemplateId, editSubgraphTemplateId, taskTemplates, sgDetailCache])
+
+  async function handleSaveNode() {
+    if (!selectedNodeId || !activeGraphId) return
+    const patch: Record<string, any> = {
       name: editName || undefined,
-    })
-    setDetail((prev) =>
-      prev
-        ? { ...prev, nodes: prev.nodes.map((n) => (n.id === updated.id ? updated : n)) }
-        : prev,
-    )
-  }
-
-  async function handleSaveType(val: NodeType) {
-    if (!selectedNodeId || !activeGraphId) return
-    const patch: { node_type: NodeType; agent_config?: AgentConfig; command_config?: CommandConfig } = { node_type: val }
-    if (val === 'agent') {
+      node_type: editType,
+    }
+    if (editType === 'agent') {
       patch.agent_config = { agent_type: 'opencode', model: editModel, prompt: editPrompt, graph_tools: editGraphTools }
-    } else if (val === 'command') {
+    } else if (editType === 'command') {
       patch.command_config = { command: editCommand }
+    } else if (editType === 'task_template') {
+      patch.task_template_id = editTaskTemplateId || undefined
+      if (Object.keys(editBindings).length > 0) patch.argument_bindings = editBindings
+    } else if (editType === 'subgraph_template') {
+      patch.subgraph_template_id = editSubgraphTemplateId || undefined
+      if (Object.keys(editBindings).length > 0) patch.argument_bindings = editBindings
     }
-    const updated = await patchNode(workspaceId, activeGraphId, selectedNodeId, patch)
-    setDetail((prev) =>
-      prev
-        ? { ...prev, nodes: prev.nodes.map((n) => (n.id === updated.id ? updated : n)) }
-        : prev,
-    )
-  }
-
-  async function handleSaveAgentConfig(overrides?: Partial<AgentConfig>) {
-    if (!selectedNodeId || !activeGraphId) return
-    const config: AgentConfig = {
-      agent_type: 'opencode',
-      model: overrides?.model ?? editModel,
-      prompt: overrides?.prompt ?? editPrompt,
-      graph_tools: overrides?.graph_tools ?? editGraphTools,
+    try {
+      const updated = await patchNode(workspaceId, activeGraphId, selectedNodeId, patch)
+      setDetail((prev) =>
+        prev ? { ...prev, nodes: prev.nodes.map((n) => (n.id === updated.id ? updated : n)) } : prev,
+      )
+      setNodeDirty(false)
+    } catch (err) {
+      alert(String(err))
     }
-    const updated = await patchNode(workspaceId, activeGraphId, selectedNodeId, {
-      agent_config: config,
-    })
-    setDetail((prev) =>
-      prev
-        ? { ...prev, nodes: prev.nodes.map((n) => (n.id === updated.id ? updated : n)) }
-        : prev,
-    )
-  }
-
-  async function handleSaveCommandConfig() {
-    if (!selectedNodeId || !activeGraphId) return
-    const config: CommandConfig = { command: editCommand }
-    const updated = await patchNode(workspaceId, activeGraphId, selectedNodeId, {
-      command_config: config,
-    })
-    setDetail((prev) =>
-      prev
-        ? { ...prev, nodes: prev.nodes.map((n) => (n.id === updated.id ? updated : n)) }
-        : prev,
-    )
   }
 
   async function handleDeleteNode(nodeId: string) {
@@ -658,80 +662,46 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
         )}
       </div>
 
-      {/* Inspector */}
+      {/* Inspector — draft and save */}
       {selectedNode && (
         <div style={s.inspector}>
-          <div style={s.inspectorTitle}>NODE INSPECTOR</div>
+          <div style={s.inspectorTitle}>NODE{nodeDirty ? ' *' : ''}</div>
           <div style={s.inspectorRow}>
             <label style={s.inspectorLabel}>Name:</label>
-            <input
-              style={s.inspectorInput}
-              value={editName}
-              onChange={(e) => setEditName(e.target.value)}
-              onBlur={handleSaveName}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleSaveName() }}
-              placeholder={selectedNode.node_type}
-            />
+            <input style={s.inspectorInput} value={editName}
+              onChange={(e) => markDirty(setEditName)(e.target.value)}
+              placeholder={selectedNode.node_type} />
           </div>
           <div style={s.inspectorRow}>
             <label style={s.inspectorLabel}>Type:</label>
-            <select
-              style={s.inspectorSelect}
-              value={editType}
-              onChange={(e) => {
-                const val = e.target.value as NodeType
-                setEditType(val)
-                handleSaveType(val)
-              }}
-            >
+            <select style={s.inspectorSelect} value={editType}
+              onChange={(e) => markDirty(setEditType)(e.target.value as NodeType)}>
               <option value="agent">agent</option>
               <option value="command">command</option>
+              <option value="task_template">task_template</option>
+              <option value="subgraph_template">subgraph_template</option>
             </select>
           </div>
           {editType === 'agent' && (
             <>
               <div style={s.inspectorRow}>
                 <label style={s.inspectorLabel}>Model:</label>
-                <select
-                  style={s.inspectorSelect}
-                  value={editModel}
-                  onChange={(e) => {
-                    setEditModel(e.target.value)
-                    handleSaveAgentConfig({ model: e.target.value })
-                  }}
-                >
-                  {MODEL_OPTIONS.map((m) => (
-                    <option key={m.value} value={m.value}>{m.label}</option>
-                  ))}
+                <select style={s.inspectorSelect} value={editModel}
+                  onChange={(e) => markDirty(setEditModel)(e.target.value)}>
+                  {MODEL_OPTIONS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
                 </select>
               </div>
               <div style={{ ...s.inspectorRow, alignItems: 'flex-start' }}>
                 <label style={{ ...s.inspectorLabel, marginTop: 4 }}>Prompt:</label>
-                <textarea
-                  style={{ ...s.inspectorInput, minHeight: 60, resize: 'vertical', fontFamily: 'inherit' }}
-                  value={editPrompt}
-                  onChange={(e) => setEditPrompt(e.target.value)}
-                  onBlur={() => handleSaveAgentConfig()}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault()
-                      handleSaveAgentConfig()
-                    }
-                  }}
-                  placeholder="Enter agent prompt..."
-                />
+                <textarea style={{ ...s.inspectorInput, minHeight: 60, resize: 'vertical', fontFamily: 'inherit' }}
+                  value={editPrompt} onChange={(e) => markDirty(setEditPrompt)(e.target.value)}
+                  placeholder="Enter agent prompt..." />
               </div>
               <div style={s.inspectorRow}>
                 <label style={s.inspectorLabel}>
-                  <input
-                    type="checkbox"
-                    checked={editGraphTools}
-                    onChange={(e) => {
-                      setEditGraphTools(e.target.checked)
-                      handleSaveAgentConfig({ graph_tools: e.target.checked })
-                    }}
-                    style={{ marginRight: 6 }}
-                  />
+                  <input type="checkbox" checked={editGraphTools}
+                    onChange={(e) => markDirty(setEditGraphTools)(e.target.checked)}
+                    style={{ marginRight: 6 }} />
                   Graph Editor
                 </label>
               </div>
@@ -740,15 +710,69 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
           {editType === 'command' && (
             <div style={{ ...s.inspectorRow, alignItems: 'flex-start' }}>
               <label style={{ ...s.inspectorLabel, marginTop: 4 }}>Command:</label>
-              <textarea
-                style={{ ...s.inspectorInput, minHeight: 80, resize: 'vertical', fontFamily: 'monospace' }}
-                value={editCommand}
-                onChange={(e) => setEditCommand(e.target.value)}
-                onBlur={() => handleSaveCommandConfig()}
-                placeholder="Enter bash command(s)..."
-              />
+              <textarea style={{ ...s.inspectorInput, minHeight: 80, resize: 'vertical', fontFamily: 'monospace' }}
+                value={editCommand} onChange={(e) => markDirty(setEditCommand)(e.target.value)}
+                placeholder="Enter bash command(s)..." />
             </div>
           )}
+          {editType === 'task_template' && (
+            <>
+              <div style={s.inspectorRow}>
+                <label style={s.inspectorLabel}>Task:</label>
+                <select style={s.inspectorSelect} value={editTaskTemplateId}
+                  onChange={(e) => markDirty(setEditTaskTemplateId)(e.target.value)}>
+                  <option value="">-- select --</option>
+                  {taskTemplates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+              </div>
+              {refTemplateArgs.length > 0 && (
+                <>
+                  <div style={{ ...s.inspectorTitle, marginTop: 6 }}>BINDINGS</div>
+                  {refTemplateArgs.map((arg) => (
+                    <div key={arg.id} style={s.inspectorRow}>
+                      <label style={s.inspectorLabel} title={arg.name}>{arg.name.slice(0, 6)}:</label>
+                      <input style={s.inspectorInput}
+                        value={editBindings[arg.name] ?? ''}
+                        onChange={(e) => { setEditBindings(prev => ({ ...prev, [arg.name]: e.target.value })); setNodeDirty(true) }}
+                        placeholder={arg.default_value ?? `{{ ${arg.name} }}`} />
+                    </div>
+                  ))}
+                </>
+              )}
+            </>
+          )}
+          {editType === 'subgraph_template' && (
+            <>
+              <div style={s.inspectorRow}>
+                <label style={s.inspectorLabel}>Sub:</label>
+                <select style={s.inspectorSelect} value={editSubgraphTemplateId}
+                  onChange={(e) => markDirty(setEditSubgraphTemplateId)(e.target.value)}>
+                  <option value="">-- select --</option>
+                  {subgraphTemplates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+              </div>
+              {refTemplateArgs.length > 0 && (
+                <>
+                  <div style={{ ...s.inspectorTitle, marginTop: 6 }}>BINDINGS</div>
+                  {refTemplateArgs.map((arg) => (
+                    <div key={arg.id} style={s.inspectorRow}>
+                      <label style={s.inspectorLabel} title={arg.name}>{arg.name.slice(0, 6)}:</label>
+                      <input style={s.inspectorInput}
+                        value={editBindings[arg.name] ?? ''}
+                        onChange={(e) => { setEditBindings(prev => ({ ...prev, [arg.name]: e.target.value })); setNodeDirty(true) }}
+                        placeholder={arg.default_value ?? `{{ ${arg.name} }}`} />
+                    </div>
+                  ))}
+                </>
+              )}
+            </>
+          )}
+          <div style={{ display: 'flex', gap: 4, marginTop: 6, marginBottom: 4 }}>
+            <button style={{ ...s.saveNodeBtn, opacity: nodeDirty ? 1 : 0.5 }}
+              onClick={handleSaveNode} disabled={!nodeDirty || mutating}>
+              Save
+            </button>
+          </div>
           {/* Dependencies (incoming edges — nodes that must run before this one) */}
           <div style={{ ...s.inspectorTitle, marginTop: 8 }}>DEPENDENCIES</div>
           {selectedNodeEdges.incoming.map((edge) => (
@@ -1025,6 +1049,16 @@ const s: Record<string, React.CSSProperties> = {
     background: 'var(--surface-2)',
     color: 'var(--text)',
     outline: 'none',
+    fontSize: '12px',
+  },
+  saveNodeBtn: {
+    flex: 1,
+    padding: '4px 10px',
+    background: 'var(--accent)',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '4px',
+    cursor: 'pointer',
     fontSize: '12px',
   },
   deleteNodeBtn: {

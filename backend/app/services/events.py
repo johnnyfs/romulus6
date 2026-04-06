@@ -8,6 +8,8 @@ from sqlmodel import Session, asc, select
 
 from app.models.agent import Agent, AgentStatus
 from app.models.event import Event
+from app.models.graph import Graph
+from app.models.run import GraphRun
 from app.models.run import GraphRunNode
 
 MARK_COMPLETE_TOOL = "mark_node_complete"
@@ -52,7 +54,49 @@ def persist_event(
     return event
 
 
-def _serialize_event(event: Event) -> dict[str, Any]:
+def _run_path_parts(session: Session, event: Event) -> list[str]:
+    if event.node_id is None:
+        return []
+
+    parts: list[str] = []
+    node = session.get(GraphRunNode, event.node_id)
+    if node is None:
+        return parts
+
+    current_node = node
+    current_run = session.get(GraphRun, current_node.run_id)
+    parts.append(current_node.name or current_node.node_type)
+
+    while current_run is not None and current_run.parent_run_node_id is not None:
+        parent_node = session.get(GraphRunNode, current_run.parent_run_node_id)
+        if parent_node is None:
+            break
+        parts.append(parent_node.name or parent_node.node_type)
+        current_run = session.get(GraphRun, parent_node.run_id)
+
+    if current_run is not None and current_run.graph_id is not None:
+        graph = session.get(Graph, current_run.graph_id)
+        if graph is not None:
+            parts.append(graph.name)
+
+    return list(reversed(parts))
+
+
+def _serialize_event(session: Session, event: Event) -> dict[str, Any]:
+    path_parts = _run_path_parts(session, event)
+    display_label = " / ".join(path_parts)
+    if not display_label:
+        display_label = event.source_name or event.source_id
+
+    if event.node_id is not None:
+        stream_key = f"node:{event.node_id}"
+    elif event.agent_id is not None:
+        stream_key = f"agent:{event.agent_id}"
+    elif event.run_id is not None:
+        stream_key = f"run:{event.run_id}"
+    else:
+        stream_key = f"{event.type}:{event.source_id}"
+
     return {
         "id": event.id,
         "workspace_id": str(event.workspace_id),
@@ -65,6 +109,9 @@ def _serialize_event(event: Event) -> dict[str, Any]:
         "sandbox_id": str(event.sandbox_id) if event.sandbox_id else None,
         "worker_id": str(event.worker_id) if event.worker_id else None,
         "source_name": event.source_name,
+        "display_label": display_label,
+        "path_parts": path_parts,
+        "stream_key": stream_key,
         "type": event.event_type,
         "event_time": event.timestamp,
         "received_at": event.received_at.isoformat(),
@@ -87,7 +134,7 @@ def list_workspace_events(
         .offset(since)
         .limit(limit)
     ).all()
-    return [_serialize_event(e) for e in results]
+    return [_serialize_event(session, e) for e in results]
 
 
 async def stream_workspace_events(

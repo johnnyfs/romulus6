@@ -9,6 +9,7 @@ from typing import Any
 from app.agents.opencode import OpenCodeRunner, OpenCodeServer
 from app.backend_client import BackendClient
 from app.config import settings
+from app.graph_tools import write_graph_tools
 from app.models import Event, EventType, Session, SessionStatus
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,12 @@ class SessionManager:
         workspace_name = workspace_name or session_id
         workspace_dir = os.path.join(settings.workspace_root, workspace_name)
         os.makedirs(workspace_dir, exist_ok=True)
+        os.makedirs(os.path.join(settings.workspace_root, ".opencode", "tools"), exist_ok=True)
+
+        if graph_tools and workspace_id:
+            # The shared opencode server runs with cwd=settings.workspace_root, so
+            # custom tools must be materialized under that root to be discoverable.
+            write_graph_tools(settings.workspace_root, workspace_id, settings.romulus_backend_url)
 
         session = Session(id=session_id, agent_type=agent_type, model=model, workspace_dir=workspace_dir)
         self._sessions[session_id] = session

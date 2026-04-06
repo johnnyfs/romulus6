@@ -13,10 +13,21 @@ logger = logging.getLogger(__name__)
 
 class BackendClient:
     def __init__(self) -> None:
-        self._client = httpx.AsyncClient(timeout=10.0)
+        self._client = self._build_client()
         self.worker_id: str | None = None
         self._heartbeat_task: asyncio.Task | None = None
         self._stopped = False
+
+    def _build_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            timeout=10.0,
+            limits=httpx.Limits(max_keepalive_connections=0, max_connections=20),
+        )
+
+    async def _reset_client(self) -> None:
+        old_client = self._client
+        self._client = self._build_client()
+        await old_client.aclose()
 
     @property
     def worker_url(self) -> str:
@@ -69,6 +80,7 @@ class BackendClient:
                 return
             except Exception:
                 logger.exception("worker registration failed, retrying")
+                await self._reset_client()
                 await asyncio.sleep(settings.register_retry_seconds)
 
     async def _heartbeat_loop(self) -> None:
@@ -83,6 +95,9 @@ class BackendClient:
                             "metadata": {"hostname": socket.gethostname()},
                         },
                     )
+                except httpx.TransportError as exc:
+                    logger.warning("worker heartbeat transport error: %s", exc)
+                    await self._reset_client()
                 except Exception:
                     logger.exception("worker heartbeat failed")
             await asyncio.sleep(settings.heartbeat_interval_seconds)

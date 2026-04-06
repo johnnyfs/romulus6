@@ -1,7 +1,7 @@
 import datetime
 import uuid
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.models.sandbox import Sandbox
 from app.models.worker import Worker
@@ -23,13 +23,31 @@ def get_sandbox(
     return sandbox
 
 
+def get_sandbox_by_name(
+    session: Session, workspace_id: uuid.UUID, name: str
+) -> Sandbox | None:
+    return session.exec(
+        select(Sandbox)
+        .where(Sandbox.workspace_id == workspace_id)
+        .where(Sandbox.name == name)
+        .where(Sandbox.deleted == False)  # noqa: E712
+        .order_by(Sandbox.created_at.desc())
+    ).first()
+
+
 def create_sandbox(
     session: Session, workspace_id: uuid.UUID, name: str
 ) -> tuple[Sandbox, Worker]:
-    sandbox = Sandbox(workspace_id=workspace_id, name=name)
-    session.add(sandbox)
-    session.commit()
-    session.refresh(sandbox)
+    sandbox = get_sandbox_by_name(session, workspace_id, name)
+    if sandbox is None:
+        sandbox = Sandbox(workspace_id=workspace_id, name=name)
+        session.add(sandbox)
+        session.commit()
+        session.refresh(sandbox)
+
+    worker = worker_svc.get_worker_for_sandbox(session, sandbox)
+    if worker is not None and worker.worker_url:
+        return sandbox, worker
 
     _, worker = worker_svc.lease_worker_for_sandbox(
         session,
