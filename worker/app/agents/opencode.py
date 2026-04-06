@@ -180,6 +180,12 @@ class OpenCodeRunner(AgentRunner):
                 "error": str(props.get("error", "unknown")),
             })
 
+        elif oc_type == "feedback.request":
+            return Event(session_id=self._session_id, type=EventType.FEEDBACK_REQUEST, data=props)
+
+        elif oc_type == "feedback.response":
+            return Event(session_id=self._session_id, type=EventType.FEEDBACK_RESPONSE, data=props)
+
         elif oc_type == "message.part.delta":
             if props.get("field") == "text":
                 return Event(session_id=self._session_id, type=EventType.TEXT_DELTA, data={

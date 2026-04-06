@@ -11,6 +11,7 @@ const TEST_WORKSPACE_NAME_PREFIXES = [
   'Sandbox Test WS',
   'Workspace Events Test WS',
   'Worker API Test WS',
+  'Feedback Test WS',
 ];
 
 async function tryDelete(ctx: Awaited<ReturnType<typeof request.newContext>>, path: string) {

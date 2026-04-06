@@ -4,6 +4,7 @@ export type AgentStatus =
   | 'starting'
   | 'busy'
   | 'idle'
+  | 'waiting'
   | 'completed'
   | 'error'
   | 'interrupted'
@@ -109,6 +110,28 @@ export async function getAgentEvents(
   )
   if (!res.ok) throw new Error('Failed to fetch agent events')
   return res.json()
+}
+
+export async function sendFeedback(
+  workspaceId: string,
+  agentId: string,
+  feedbackId: string,
+  feedbackType: string,
+  response: string,
+): Promise<void> {
+  const res = await fetch(
+    `/api/workspaces/${workspaceId}/agents/${agentId}/feedback`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        feedback_id: feedbackId,
+        feedback_type: feedbackType,
+        response,
+      }),
+    },
+  )
+  if (!res.ok) throw new Error('Failed to send feedback')
 }
 
 export async function streamAgentEvents(

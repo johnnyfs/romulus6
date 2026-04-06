@@ -123,6 +123,44 @@ async def send_message(session: Session, agent: Agent, prompt: str) -> None:
         resp.raise_for_status()
 
 
+async def send_feedback(
+    session: Session,
+    agent: Agent,
+    feedback_id: str,
+    feedback_type: str,
+    response: str,
+) -> None:
+    from app.services.events import persist_event
+
+    agent.status = AgentStatus.busy
+    agent.updated_at = datetime.datetime.utcnow()
+    session.add(agent)
+    session.commit()
+
+    persist_event(
+        session,
+        workspace_id=agent.workspace_id,
+        source_type="user",
+        source_id=str(agent.id),
+        payload={
+            "id": str(uuid.uuid4()),
+            "type": "feedback.response",
+            "session_id": agent.session_id,
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "data": {
+                "feedback_id": feedback_id,
+                "feedback_type": feedback_type,
+                "response": response,
+            },
+        },
+        source_name=None,
+        session_id=agent.session_id,
+        agent_id=agent.id,
+        sandbox_id=agent.sandbox_id,
+    )
+    await send_message(session, agent, response)
+
+
 def delete_agent(session: Session, workspace_id: uuid.UUID, agent_id: uuid.UUID) -> bool:
     agent = get_agent(session, workspace_id, agent_id)
     if agent is None:
