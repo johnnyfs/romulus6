@@ -152,8 +152,8 @@ install-frontend:
 install-tests:
 	cd tests && npm install
 
-test-backend:
-	cd tests && npm run test -- $(ARGS)
+test-backend: dev-namespace
+	cd tests && PLAYWRIGHT_BASE_URL=http://$$($(MINIKUBE) ip):$(BACKEND_NODEPORT) npm run test -- $(ARGS)
 
 sandbox-delete-all:
 	kubectl get deployments -n $(K8S_NAMESPACE) -l app=worker -o name | xargs -r kubectl delete -n $(K8S_NAMESPACE)
