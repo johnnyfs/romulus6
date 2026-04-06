@@ -6,7 +6,22 @@ from .lease import WorkerLease
 from .reconcile import RunReconcile
 from .run import GraphRun, GraphRunEdge, GraphRunNode
 from .sandbox import Sandbox
+from .template import (
+    SubgraphTemplate,
+    SubgraphTemplateArgument,
+    SubgraphTemplateEdge,
+    SubgraphTemplateNode,
+    TaskTemplate,
+    TaskTemplateArgument,
+)
 from .worker import Worker
 from .workspace import Workspace
 
-__all__ = ["RomulusBase", "Workspace", "Worker", "WorkerLease", "RunReconcile", "Sandbox", "Agent", "Event", "Graph", "GraphNode", "GraphEdge", "GraphRun", "GraphRunNode", "GraphRunEdge"]
+__all__ = [
+    "RomulusBase", "Workspace", "Worker", "WorkerLease", "RunReconcile",
+    "Sandbox", "Agent", "Event", "Graph", "GraphNode", "GraphEdge",
+    "GraphRun", "GraphRunNode", "GraphRunEdge",
+    "TaskTemplate", "TaskTemplateArgument",
+    "SubgraphTemplate", "SubgraphTemplateArgument",
+    "SubgraphTemplateNode", "SubgraphTemplateEdge",
+]
