@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sqlmodel import Session
 
 from app.database import get_session
-from app.models.agent import AgentConfig, CommandConfig, OpenCodeAgentConfig, PydanticAgentConfig
+from app.models.agent import AgentConfig, CommandConfig, ImageAttachment, OpenCodeAgentConfig, PydanticAgentConfig
 from app.models.graph import Graph, NodeType
 from app.models.run import GraphRun
 from app.models.workspace import Workspace
@@ -135,6 +135,9 @@ class GraphRunNodeResponse(BaseModel):
     run_id: uuid.UUID
     source_node_id: Optional[uuid.UUID] = None
     source_type: str = "graph_node"
+    attempt: int = 1
+    retry_of_run_node_id: Optional[uuid.UUID] = None
+    next_attempt_run_node_id: Optional[uuid.UUID] = None
     node_type: str
     name: Optional[str] = None
     state: str
@@ -201,10 +204,13 @@ def _agent_config_from(obj: Any) -> Optional[AgentConfig]:
     if obj.agent_type is None:
         return None
     if obj.agent_type == "pydantic":
+        images_raw = _parse_json_field(obj, "images")
+        images = [ImageAttachment(**img) for img in images_raw] if images_raw else []
         return PydanticAgentConfig(
             agent_type=obj.agent_type,
             model=obj.model,
             prompt=obj.prompt,
+            images=images,
         )
     return OpenCodeAgentConfig(
         agent_type=obj.agent_type,
@@ -256,6 +262,9 @@ def _run_node_response(rn: Any) -> GraphRunNodeResponse:
         run_id=rn.run_id,
         source_node_id=rn.source_node_id,
         source_type=getattr(rn, "source_type", "graph_node"),
+        attempt=getattr(rn, "attempt", 1),
+        retry_of_run_node_id=getattr(rn, "retry_of_run_node_id", None),
+        next_attempt_run_node_id=getattr(rn, "next_attempt_run_node_id", None),
         node_type=rn.node_type,
         name=rn.name,
         state=rn.state,
@@ -299,6 +308,9 @@ def _run_response(run: Any) -> GraphRunResponse:
 def _node_input(n: NodeInputSchema) -> NodeInput:
     ac = n.agent_config
     cc = n.command_config
+    images = None
+    if isinstance(ac, PydanticAgentConfig) and ac.images:
+        images = [img.model_dump(mode="json") for img in ac.images]
     return NodeInput(
         node_type=n.node_type,
         name=n.name,
@@ -306,11 +318,12 @@ def _node_input(n: NodeInputSchema) -> NodeInput:
         model=ac.model.value if ac else None,
         prompt=ac.prompt if ac else None,
         command=cc.command if cc else None,
-        graph_tools=ac.graph_tools if ac else False,
+        graph_tools=getattr(ac, "graph_tools", False) if ac else False,
         task_template_id=n.task_template_id,
         subgraph_template_id=n.subgraph_template_id,
         argument_bindings=n.argument_bindings,
         output_schema=n.output_schema,
+        images=images,
     )
 
 
@@ -424,6 +437,9 @@ def add_node(
     graph = _require_graph(workspace_id, graph_id, session)
     ac = body.agent_config
     cc = body.command_config
+    images = None
+    if isinstance(ac, PydanticAgentConfig) and ac.images:
+        images = [img.model_dump(mode="json") for img in ac.images]
     try:
         node = svc.add_node(
             session,
@@ -434,11 +450,12 @@ def add_node(
             model=ac.model.value if ac else None,
             prompt=ac.prompt if ac else None,
             command=cc.command if cc else None,
-            graph_tools=ac.graph_tools if ac else False,
+            graph_tools=getattr(ac, "graph_tools", False) if ac else False,
             task_template_id=body.task_template_id,
             subgraph_template_id=body.subgraph_template_id,
             argument_bindings=body.argument_bindings,
             output_schema=body.output_schema,
+            images=images,
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
@@ -476,6 +493,9 @@ def patch_node(
     graph = _require_graph(workspace_id, graph_id, session)
     ac = body.agent_config
     cc = body.command_config
+    images = None
+    if isinstance(ac, PydanticAgentConfig) and ac.images:
+        images = [img.model_dump(mode="json") for img in ac.images]
     try:
         node = svc.patch_node(
             session,
@@ -487,11 +507,12 @@ def patch_node(
             model=ac.model.value if ac else None,
             prompt=ac.prompt if ac else None,
             command=cc.command if cc else None,
-            graph_tools=ac.graph_tools if ac else None,
+            graph_tools=getattr(ac, "graph_tools", None) if ac else None,
             task_template_id=body.task_template_id,
             subgraph_template_id=body.subgraph_template_id,
             argument_bindings=body.argument_bindings,
             output_schema=body.output_schema,
+            images=images,
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))

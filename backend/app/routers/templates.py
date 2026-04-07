@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlmodel import Session
 
 from app.database import get_session
-from app.models.agent import AgentConfig, CommandConfig, OpenCodeAgentConfig, PydanticAgentConfig
+from app.models.agent import AgentConfig, CommandConfig, ImageAttachment, OpenCodeAgentConfig, PydanticAgentConfig
 from app.models.graph import NodeType
 from app.models.template import (
     SubgraphTemplateNodeType,
@@ -122,6 +122,8 @@ class CreateTaskTemplateRequest(BaseModel):
     graph_tools: bool = False
     label: Optional[str] = None
     arguments: list[ArgumentSchema] = []
+    output_schema: Optional[dict[str, str]] = None
+    images: Optional[list[ImageAttachment]] = None
 
 
 class TaskTemplateResponse(BaseModel):
@@ -136,10 +138,21 @@ class TaskTemplateResponse(BaseModel):
     graph_tools: bool
     label: Optional[str] = None
     arguments: list[ArgumentResponse]
+    output_schema: Optional[dict[str, str]] = None
+    images: Optional[list[ImageAttachment]] = None
     created_at: datetime.datetime
     updated_at: datetime.datetime
 
     model_config = {"from_attributes": True}
+
+
+def _parse_json_field(obj: Any, field: str) -> Optional[dict]:
+    raw = getattr(obj, field, None)
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    return json.loads(raw)
 
 
 def _task_tmpl_response(t: Any) -> TaskTemplateResponse:
@@ -155,9 +168,20 @@ def _task_tmpl_response(t: Any) -> TaskTemplateResponse:
         graph_tools=t.graph_tools,
         label=t.label,
         arguments=[_arg_response(a) for a in t.arguments if not a.deleted],
+        output_schema=_parse_json_field(t, "output_schema"),
+        images=_parse_json_images(t),
         created_at=t.created_at,
         updated_at=t.updated_at,
     )
+
+
+def _parse_json_images(obj: Any) -> Optional[list[ImageAttachment]]:
+    raw = getattr(obj, "images", None)
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    return [ImageAttachment(**img) for img in raw] if raw else None
 
 
 # --- Endpoints ---
@@ -167,6 +191,7 @@ def create_task_template(
     workspace_id: uuid.UUID, body: CreateTaskTemplateRequest, session: SessionDep
 ) -> Any:
     _require_workspace(workspace_id, session)
+    images = [img.model_dump(mode="json") for img in body.images] if body.images else None
     tmpl = svc.create_task_template(
         session,
         workspace_id=workspace_id,
@@ -179,6 +204,8 @@ def create_task_template(
         graph_tools=body.graph_tools,
         label=body.label,
         arguments=_to_arg_inputs(body.arguments),
+        output_schema=body.output_schema,
+        images=images,
     )
     return _task_tmpl_response(tmpl)
 
@@ -209,6 +236,7 @@ def update_task_template(
     tmpl = svc.get_task_template(session, workspace_id, template_id)
     if tmpl is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task template not found")
+    images = [img.model_dump(mode="json") for img in body.images] if body.images else None
     tmpl = svc.update_task_template(
         session,
         tmpl=tmpl,
@@ -221,6 +249,8 @@ def update_task_template(
         graph_tools=body.graph_tools,
         label=body.label,
         arguments=_to_arg_inputs(body.arguments),
+        output_schema=body.output_schema,
+        images=images,
     )
     return _task_tmpl_response(tmpl)
 
@@ -256,6 +286,7 @@ class SubgraphNodeInputSchema(BaseModel):
     task_template_id: Optional[uuid.UUID] = None
     ref_subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
+    output_schema: Optional[dict[str, str]] = None
 
 
 class SubgraphEdgeInputSchema(BaseModel):
@@ -269,6 +300,7 @@ class CreateSubgraphTemplateRequest(BaseModel):
     nodes: list[SubgraphNodeInputSchema] = []
     edges: list[SubgraphEdgeInputSchema] = []
     arguments: list[ArgumentSchema] = []
+    output_schema: Optional[dict[str, str]] = None
 
 
 class AddSubgraphNodeRequest(BaseModel):
@@ -279,6 +311,7 @@ class AddSubgraphNodeRequest(BaseModel):
     task_template_id: Optional[uuid.UUID] = None
     ref_subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
+    output_schema: Optional[dict[str, str]] = None
 
 
 class PatchSubgraphNodeRequest(BaseModel):
@@ -289,6 +322,7 @@ class PatchSubgraphNodeRequest(BaseModel):
     task_template_id: Optional[uuid.UUID] = None
     ref_subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
+    output_schema: Optional[dict[str, str]] = None
 
 
 class AddSubgraphEdgeRequest(BaseModel):
@@ -306,6 +340,7 @@ class SubgraphNodeResponse(BaseModel):
     task_template_id: Optional[uuid.UUID] = None
     ref_subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
+    output_schema: Optional[dict[str, str]] = None
     created_at: datetime.datetime
 
     model_config = {"from_attributes": True}
@@ -329,6 +364,7 @@ class SubgraphTemplateDetailResponse(BaseModel):
     nodes: list[SubgraphNodeResponse]
     edges: list[SubgraphEdgeResponse]
     arguments: list[ArgumentResponse]
+    output_schema: Optional[dict[str, str]] = None
     created_at: datetime.datetime
     updated_at: datetime.datetime
 
@@ -352,10 +388,13 @@ def _agent_config_from(obj: Any) -> Optional[AgentConfig]:
     if obj.agent_type is None:
         return None
     if obj.agent_type == "pydantic":
+        images_raw = _parse_json_field(obj, "images")
+        images = [ImageAttachment(**img) for img in images_raw] if images_raw else []
         return PydanticAgentConfig(
             agent_type=obj.agent_type,
             model=obj.model,
             prompt=obj.prompt,
+            images=images,
         )
     return OpenCodeAgentConfig(
         agent_type=obj.agent_type,
@@ -388,6 +427,7 @@ def _node_response(n: Any) -> SubgraphNodeResponse:
         task_template_id=n.task_template_id,
         ref_subgraph_template_id=n.ref_subgraph_template_id,
         argument_bindings=bindings,
+        output_schema=_parse_json_field(n, "output_schema"),
         created_at=n.created_at,
     )
 
@@ -408,6 +448,7 @@ def _to_detail(t: Any) -> SubgraphTemplateDetailResponse:
         nodes=[_node_response(n) for n in t.nodes if not n.deleted],
         edges=[SubgraphEdgeResponse.model_validate(e) for e in t.edges if not e.deleted],
         arguments=[_arg_response(a) for a in t.arguments if not a.deleted],
+        output_schema=_parse_json_field(t, "output_schema"),
         created_at=t.created_at,
         updated_at=t.updated_at,
     )
@@ -418,6 +459,9 @@ def _to_node_inputs(nodes: list[SubgraphNodeInputSchema]) -> list[SubgraphNodeIn
     for n in nodes:
         ac = n.agent_config
         cc = n.command_config
+        images = None
+        if isinstance(ac, PydanticAgentConfig) and ac.images:
+            images = [img.model_dump(mode="json") for img in ac.images]
         result.append(SubgraphNodeInput(
             node_type=n.node_type,
             name=n.name,
@@ -425,10 +469,12 @@ def _to_node_inputs(nodes: list[SubgraphNodeInputSchema]) -> list[SubgraphNodeIn
             model=ac.model.value if ac and ac.model else None,
             prompt=ac.prompt if ac else None,
             command=cc.command if cc else None,
-            graph_tools=ac.graph_tools if ac else False,
+            graph_tools=getattr(ac, "graph_tools", False) if ac else False,
             task_template_id=n.task_template_id,
             ref_subgraph_template_id=n.ref_subgraph_template_id,
             argument_bindings=n.argument_bindings,
+            output_schema=n.output_schema,
+            images=images,
         ))
     return result
 
@@ -449,6 +495,7 @@ def create_subgraph_template(
             edges=[SubgraphEdgeInput(from_index=e.from_index, to_index=e.to_index) for e in body.edges],
             arguments=_to_arg_inputs(body.arguments),
             label=body.label,
+            output_schema=body.output_schema,
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
@@ -489,6 +536,7 @@ def update_subgraph_template(
             edges=[SubgraphEdgeInput(from_index=e.from_index, to_index=e.to_index) for e in body.edges],
             arguments=_to_arg_inputs(body.arguments),
             label=body.label,
+            output_schema=body.output_schema,
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
@@ -516,6 +564,9 @@ def add_subgraph_node(
     tmpl = _require_subgraph_template(workspace_id, template_id, session)
     ac = body.agent_config
     cc = body.command_config
+    images = None
+    if isinstance(ac, PydanticAgentConfig) and ac.images:
+        images = [img.model_dump(mode="json") for img in ac.images]
     try:
         node = svc.add_subgraph_template_node(
             session,
@@ -526,10 +577,12 @@ def add_subgraph_node(
             model=ac.model.value if ac and ac.model else None,
             prompt=ac.prompt if ac else None,
             command=cc.command if cc else None,
-            graph_tools=ac.graph_tools if ac else False,
+            graph_tools=getattr(ac, "graph_tools", False) if ac else False,
             task_template_id=body.task_template_id,
             ref_subgraph_template_id=body.ref_subgraph_template_id,
             argument_bindings=body.argument_bindings,
+            output_schema=body.output_schema,
+            images=images,
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
@@ -548,6 +601,9 @@ def patch_subgraph_node(
     tmpl = _require_subgraph_template(workspace_id, template_id, session)
     ac = body.agent_config
     cc = body.command_config
+    images = None
+    if isinstance(ac, PydanticAgentConfig) and ac.images:
+        images = [img.model_dump(mode="json") for img in ac.images]
     try:
         node = svc.patch_subgraph_template_node(
             session,
@@ -559,10 +615,12 @@ def patch_subgraph_node(
             model=ac.model.value if ac and ac.model else None,
             prompt=ac.prompt if ac else None,
             command=cc.command if cc else None,
-            graph_tools=ac.graph_tools if ac else None,
+            graph_tools=getattr(ac, "graph_tools", None) if ac else None,
             task_template_id=body.task_template_id,
             ref_subgraph_template_id=body.ref_subgraph_template_id,
             argument_bindings=body.argument_bindings,
+            output_schema=body.output_schema,
+            images=images,
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))

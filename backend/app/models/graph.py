@@ -77,6 +77,7 @@ class GraphNode(RomulusBase, table=True):
     output_schema: Optional[str] = Field(
         default=None, sa_column=Column(String, nullable=True)
     )
+    images: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
 
     graph: Optional[Graph] = Relationship(back_populates="nodes")
     ref_task_template: Optional["TaskTemplate"] = Relationship(

@@ -47,6 +47,23 @@ class GraphRunNode(RomulusBase, table=True):
     run_id: uuid.UUID = Field(foreign_key="graphrun.id", index=True)
     source_node_id: Optional[uuid.UUID] = Field(default=None)
     source_type: str = Field(default="graph_node")
+    attempt: int = Field(default=1)
+    retry_of_run_node_id: Optional[uuid.UUID] = Field(
+        default=None,
+        sa_column=Column(
+            ForeignKey("graphrunnode.id", use_alter=True),
+            index=True,
+            nullable=True,
+        ),
+    )
+    next_attempt_run_node_id: Optional[uuid.UUID] = Field(
+        default=None,
+        sa_column=Column(
+            ForeignKey("graphrunnode.id", use_alter=True),
+            index=True,
+            nullable=True,
+        ),
+    )
     node_type: str
     name: Optional[str] = Field(default=None, sa_column=Column("name", String, nullable=True))
     state: str = Field(default="pending")
@@ -59,6 +76,7 @@ class GraphRunNode(RomulusBase, table=True):
     graph_tools: bool = Field(default=False)
     output_schema: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     output: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    images: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     child_run_id: Optional[uuid.UUID] = Field(default=None, foreign_key="graphrun.id")
 
     run: Optional[GraphRun] = Relationship(

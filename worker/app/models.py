@@ -45,6 +45,7 @@ class Session(BaseModel):
     model: str
     schema_id: str | None = None
     output_schema: dict[str, str] | None = None
+    images: list[dict[str, str]] | None = None
     runner_state: dict[str, Any] = Field(default_factory=dict)
     status: SessionStatus = SessionStatus.STARTING
     workspace_dir: str
@@ -57,6 +58,7 @@ class CreateSessionRequest(BaseModel):
     model: str = "anthropic/claude-sonnet-4-6"
     schema_id: str | None = None
     output_schema: dict[str, str] | None = None
+    images: list[dict[str, str]] | None = None
     workspace_name: str | None = None
     graph_tools: bool = False
     workspace_id: str | None = None

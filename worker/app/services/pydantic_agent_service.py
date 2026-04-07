@@ -1,8 +1,10 @@
 import asyncio
+import base64
 from typing import Any
 
 from pydantic import BaseModel, Field, create_model
 from pydantic_ai import Agent
+from pydantic_ai.messages import BinaryContent, ImageUrl, UserContent
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.models.openai import OpenAIResponsesModel
@@ -46,6 +48,23 @@ class PydanticAgentService:
             raise ValueError("schema_id or output_schema is required")
         return schema_model_for_id(schema_id)
 
+    def _build_user_prompt(
+        self, prompt: str, images: list[dict[str, str]] | None
+    ) -> str | list[UserContent]:
+        if not images:
+            return prompt
+        parts: list[UserContent] = [prompt]
+        for img in images:
+            if img["type"] == "url":
+                parts.append(ImageUrl(url=img["url"]))
+            elif img["type"] == "base64":
+                raw_bytes = base64.b64decode(img["data"])
+                parts.append(BinaryContent(
+                    data=raw_bytes,
+                    media_type=img.get("media_type", "image/png"),
+                ))
+        return parts
+
     async def run(
         self,
         *,
@@ -53,13 +72,15 @@ class PydanticAgentService:
         prompt: str,
         schema_id: str | None = None,
         output_schema: dict[str, str] | None = None,
+        images: list[dict[str, str]] | None = None,
     ) -> BaseModel:
         output_model = self._build_output_model(schema_id=schema_id, output_schema=output_schema)
         agent = Agent(
             _build_model(model),
             output_type=output_model,
         )
-        result = await asyncio.to_thread(agent.run_sync, prompt)
+        user_prompt = self._build_user_prompt(prompt, images)
+        result = await asyncio.to_thread(agent.run_sync, user_prompt)
         if output_schema is not None:
             validate_output_against_schema(result.output.model_dump(mode="json"), output_schema)
         return result.output

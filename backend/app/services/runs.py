@@ -21,6 +21,7 @@ from app.utils.output_schema import validate_output_against_schema
 from app.utils.slugify import slugify
 
 logger = logging.getLogger(__name__)
+MAX_RUN_NODE_ATTEMPTS = 3
 
 TOOL_FILE_CONTENT = """\
 import { tool } from "@opencode/tool";
@@ -65,6 +66,27 @@ def _resolve_output_references(session: Session, run: GraphRun, node: GraphRunNo
     from app.services.graphs import _jinja_env
 
     return _jinja_env.from_string(text).render(context)
+
+
+def _collect_child_run_output(session: Session, run: GraphRun) -> dict | None:
+    """Collect outputs from leaf nodes (no outgoing edges) of a completed run."""
+    outgoing = {e.from_run_node_id for e in run.run_edges}
+    leaf_nodes = [n for n in run.run_nodes if n.id not in outgoing and n.state == "completed"]
+    if not leaf_nodes:
+        return None
+    # Single leaf: use its output directly
+    if len(leaf_nodes) == 1 and leaf_nodes[0].output:
+        return json.loads(leaf_nodes[0].output)
+    # Multiple leaves: merge keyed by slugified node name
+    merged: dict = {}
+    for leaf in leaf_nodes:
+        if leaf.output:
+            leaf_data = json.loads(leaf.output)
+            if leaf.name:
+                merged[slugify(leaf.name)] = leaf_data
+            else:
+                merged.update(leaf_data)
+    return merged or None
 
 
 def enqueue_run(session: Session, run_id: uuid.UUID, reason: str | None = None) -> None:
@@ -123,6 +145,77 @@ def _get_unblocked_nodes(
     ]
 
 
+def _active_run_nodes(run_nodes: list[GraphRunNode]) -> list[GraphRunNode]:
+    return [node for node in run_nodes if node.next_attempt_run_node_id is None]
+
+
+def _active_run_edges(
+    run_edges: list[GraphRunEdge],
+    active_nodes: list[GraphRunNode],
+) -> list[GraphRunEdge]:
+    active_ids = {node.id for node in active_nodes}
+    return [
+        edge
+        for edge in run_edges
+        if edge.from_run_node_id in active_ids and edge.to_run_node_id in active_ids
+    ]
+
+
+def _create_retry_attempt(
+    session: Session,
+    run: GraphRun,
+    node: GraphRunNode,
+) -> GraphRunNode:
+    retry = GraphRunNode(
+        run_id=run.id,
+        source_node_id=node.source_node_id,
+        source_type=node.source_type,
+        attempt=node.attempt + 1,
+        retry_of_run_node_id=node.id,
+        node_type=node.node_type,
+        name=node.name,
+        state="pending",
+        agent_type=node.agent_type,
+        model=node.model,
+        prompt=node.prompt,
+        command=node.command,
+        graph_tools=node.graph_tools,
+        output_schema=node.output_schema,
+        images=node.images,
+    )
+    session.add(retry)
+    session.flush()
+
+    edges = list(
+        session.exec(
+            select(GraphRunEdge).where(GraphRunEdge.run_id == run.id)
+        ).all()
+    )
+    for edge in edges:
+        if edge.from_run_node_id == node.id:
+            session.add(
+                GraphRunEdge(
+                    run_id=run.id,
+                    from_run_node_id=retry.id,
+                    to_run_node_id=edge.to_run_node_id,
+                )
+            )
+        if edge.to_run_node_id == node.id:
+            session.add(
+                GraphRunEdge(
+                    run_id=run.id,
+                    from_run_node_id=edge.from_run_node_id,
+                    to_run_node_id=retry.id,
+                )
+            )
+
+    node.next_attempt_run_node_id = retry.id
+    node.updated_at = datetime.datetime.utcnow()
+    session.add(node)
+    session.flush()
+    return retry
+
+
 async def _ensure_workspace_dir(worker_url: str, workspace_dir: str) -> None:
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -133,11 +226,117 @@ async def _ensure_workspace_dir(worker_url: str, workspace_dir: str) -> None:
         resp.raise_for_status()
 
 
-async def _place_tool_file(worker_url: str, workspace_dir: str) -> None:
+_MEDIA_TYPE_MAP = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+
+
+def _guess_media_type(path: str) -> str:
+    import os
+    ext = os.path.splitext(path)[1].lower()
+    return _MEDIA_TYPE_MAP.get(ext, "image/png")
+
+
+async def _read_sandbox_file_base64(worker_url: str, path: str) -> str:
+    """Read a file from the sandbox and return its base64-encoded content."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{worker_url}/commands",
+            json={"command": ["base64", path], "cwd": "/", "timeout": 30},
+            timeout=35.0,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        if result.get("exit_code", 1) != 0:
+            raise RuntimeError(f"Failed to read image {path}: {result.get('stderr', '')}")
+        return result["stdout"].strip()
+
+
+async def _resolve_images(
+    worker_url: str, images_json: str | None
+) -> list[dict[str, str]] | None:
+    """Resolve image attachments, reading sandbox files as base64."""
+    if not images_json:
+        return None
+    images = json.loads(images_json)
+    if not images:
+        return None
+    resolved = []
+    for img in images:
+        if img["type"] == "url":
+            resolved.append({"type": "url", "url": img["url"]})
+        elif img["type"] == "sandbox_path":
+            data = await _read_sandbox_file_base64(worker_url, img["path"])
+            resolved.append({
+                "type": "base64",
+                "data": data,
+                "media_type": _guess_media_type(img["path"]),
+            })
+    return resolved or None
+
+
+_SCHEMA_TYPE_MAP = {
+    "string": "string",
+    "number": "number",
+    "boolean": "boolean",
+}
+
+
+def _generate_tool_content(output_schema: dict[str, str] | None) -> str:
+    """Generate mark_node_complete tool content with typed parameters when schema is provided."""
+    if not output_schema:
+        return TOOL_FILE_CONTENT
+
+    properties: dict[str, dict] = {}
+    for field_name, field_type in output_schema.items():
+        json_type = _SCHEMA_TYPE_MAP.get(field_type, "string")
+        properties[field_name] = {
+            "type": json_type,
+            "description": f"The {field_name} output field ({field_type})",
+        }
+
+    required = list(output_schema.keys())
+
+    params_json = json.dumps({
+        "type": "object",
+        "properties": {
+            "output": {
+                "type": "object",
+                "description": "The output data for this node. Must match the required output schema.",
+                "properties": properties,
+                "required": required,
+            },
+        },
+        "required": ["output"],
+    }, indent=6)
+
+    return (
+        'import { tool } from "@opencode/tool";\n'
+        "\n"
+        "export default tool({\n"
+        '  name: "mark_node_complete",\n'
+        '  description: "Call this tool when you have completed the task assigned to you. '
+        'Pass your output as a JSON object matching the required output schema.",\n'
+        f"  parameters: {params_json},\n"
+        "  async execute(params) {\n"
+        '    return JSON.stringify({ status: "complete", output: params.output ?? {} });\n'
+        "  },\n"
+        "});\n"
+    )
+
+
+async def _place_tool_file(
+    worker_url: str, workspace_dir: str, output_schema: dict[str, str] | None = None
+) -> None:
+    tool_content = _generate_tool_content(output_schema)
     script = (
         f"mkdir -p '{workspace_dir}/.opencode/tools' && "
         f"cat > '{workspace_dir}/.opencode/tools/mark_node_complete.ts' << 'TOOLEOF'\n"
-        f"{TOOL_FILE_CONTENT}TOOLEOF"
+        f"{tool_content}TOOLEOF"
     )
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -162,19 +361,23 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
                 _maybe_release_run_sandbox(session, run)
             return
 
-        if all(node.state == "completed" for node in run.run_nodes):
+        active_nodes = _active_run_nodes(list(run.run_nodes))
+        active_edges = _active_run_edges(list(run.run_edges), active_nodes)
+
+        if active_nodes and all(node.state == "completed" for node in active_nodes):
             run.state = "completed"
             run.updated_at = datetime.datetime.utcnow()
             session.add(run)
             session.commit()
             if run.parent_run_node_id is not None:
-                # Propagate completion to parent run node
-                complete_node(session, _parent_run_id(session, run), run.parent_run_node_id)
+                # Propagate completion and output to parent run node
+                child_output = _collect_child_run_output(session, run)
+                complete_node(session, _parent_run_id(session, run), run.parent_run_node_id, output=child_output)
             else:
                 _maybe_release_run_sandbox(session, run)
             return
 
-        if any(node.state == "error" for node in run.run_nodes):
+        if any(node.state == "error" for node in active_nodes):
             run.state = "error"
             run.updated_at = datetime.datetime.utcnow()
             session.add(run)
@@ -194,7 +397,7 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
         # Subgraph child runs don't need their own sandbox/worker — they share the parent's
         has_dispatchable_nodes = any(
             n.node_type in ("agent", "command") and n.state == "pending"
-            for n in run.run_nodes
+            for n in active_nodes
         )
         worker = None
         if has_dispatchable_nodes:
@@ -209,7 +412,7 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
             session.add(run)
             session.commit()
 
-        unblocked = _get_unblocked_nodes(list(run.run_nodes), list(run.run_edges))
+        unblocked = _get_unblocked_nodes(active_nodes, active_edges)
         for node in unblocked:
             if node.state != "pending":
                 continue
@@ -301,8 +504,9 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
 
         try:
             await _ensure_workspace_dir(worker.worker_url, workspace_dir)
-            if node.graph_tools:
-                await _place_tool_file(worker.worker_url, workspace_dir)
+            if node.graph_tools and node.agent_type != "pydantic":
+                schema = json.loads(node.output_schema) if node.output_schema else None
+                await _place_tool_file(worker.worker_url, workspace_dir, output_schema=schema)
 
             agent = Agent(
                 workspace_id=run.workspace_id,
@@ -320,7 +524,7 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
 
             resolved_prompt = _resolve_output_references(session, run, node) or ""
             dispatch_prompt = resolved_prompt
-            if node.graph_tools:
+            if node.graph_tools and node.agent_type != "pydantic":
                 dispatch_prompt = (
                     f"{dispatch_prompt}\n\n"
                     "IMPORTANT: When you have fully completed the task described above, "
@@ -334,6 +538,11 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
                         f"object with these fields: {fields_desc}."
                     )
 
+            if node.agent_type == "pydantic" and not node.output_schema:
+                raise ValueError("pydantic agent requires output_schema")
+
+            resolved_images = await _resolve_images(worker.worker_url, node.images)
+
             data = await _post_session_with_retry(
                 worker.worker_url,
                 payload={
@@ -345,6 +554,7 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
                     "graph_tools": node.graph_tools,
                     "workspace_id": str(run.workspace_id),
                     "sandbox_id": str(run.sandbox_id) if run.sandbox_id else None,
+                    "images": resolved_images,
                 },
             )
 
@@ -433,7 +643,7 @@ def complete_node(
     output: dict | None = None,
 ) -> None:
     node = session.get(GraphRunNode, node_id)
-    if node is None or node.state == "completed":
+    if node is None or node.state == "completed" or node.next_attempt_run_node_id is not None:
         return
     schema = json.loads(node.output_schema) if node.output_schema else None
     if output is None and node.output is not None:
@@ -458,6 +668,22 @@ def fail_node_and_run(
 ) -> None:
     node = session.get(GraphRunNode, node_id)
     run = session.get(GraphRun, run_id)
+    if node is not None and node.next_attempt_run_node_id is not None:
+        return
+    if (
+        node is not None
+        and run is not None
+        and node.child_run_id is None
+        and node.attempt < MAX_RUN_NODE_ATTEMPTS
+    ):
+        node.state = "error"
+        node.updated_at = datetime.datetime.utcnow()
+        session.add(node)
+        _create_retry_attempt(session, run, node)
+        _resume_run_if_terminal(session, run)
+        session.commit()
+        enqueue_run(session, run_id, reason=f"node retry scheduled: {reason}")
+        return
     if node is not None and node.state != "error":
         node.state = "error"
         node.updated_at = datetime.datetime.utcnow()
@@ -524,6 +750,7 @@ def sync_run_node(session: Session, run_id: uuid.UUID, node_id: uuid.UUID) -> Gr
     node.command = source.command
     node.graph_tools = source.graph_tools
     node.output_schema = source.output_schema
+    node.images = source.images
     node.output = None
     node.state = "pending"
     node.agent_id = None

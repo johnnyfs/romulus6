@@ -34,6 +34,7 @@ class NodeInput:
     subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
     output_schema: Optional[dict[str, str]] = None
+    images: Optional[list[dict]] = None
 
 
 @dataclass
@@ -113,16 +114,29 @@ def _coerce_boolean_bindings(
 def _coerce_number_bindings(
     bindings: dict[str, Any], template_args: list
 ) -> None:
-    """Convert string numeric values to Python float for number-typed args (in-place)."""
+    """Convert string numeric values to Python float for number-typed args (in-place).
+
+    Also validates against min_value/max_value bounds when defined.
+    """
     for arg in template_args:
         if arg.arg_type == TemplateArgType.number and arg.name in bindings:
             val = bindings[arg.name]
             if isinstance(val, str):
                 try:
-                    bindings[arg.name] = float(val)
+                    val = float(val)
+                    bindings[arg.name] = val
                 except ValueError:
                     raise ValueError(
                         f"argument '{arg.name}' value '{val}' is not a valid number"
+                    )
+            if isinstance(val, (int, float)):
+                if arg.min_value is not None and val < float(arg.min_value):
+                    raise ValueError(
+                        f"argument '{arg.name}' value {val} is below minimum {float(arg.min_value)}"
+                    )
+                if arg.max_value is not None and val > float(arg.max_value):
+                    raise ValueError(
+                        f"argument '{arg.name}' value {val} is above maximum {float(arg.max_value)}"
                     )
 
 
@@ -207,6 +221,11 @@ def _build_graph_node(graph_id: uuid.UUID, node_input: NodeInput) -> GraphNode:
         if node_input.output_schema
         else None
     )
+    images_json = (
+        json.dumps(node_input.images)
+        if node_input.images
+        else None
+    )
     return GraphNode(
         graph_id=graph_id,
         node_type=node_input.node_type,
@@ -220,6 +239,7 @@ def _build_graph_node(graph_id: uuid.UUID, node_input: NodeInput) -> GraphNode:
         subgraph_template_id=node_input.subgraph_template_id,
         argument_bindings=bindings_json,
         output_schema=output_schema_json,
+        images=images_json,
     )
 
 
@@ -354,6 +374,7 @@ def add_node(
     subgraph_template_id: Optional[uuid.UUID] = None,
     argument_bindings: Optional[dict[str, str]] = None,
     output_schema: Optional[dict[str, str]] = None,
+    images: Optional[list[dict]] = None,
 ) -> GraphNode:
     if node_type == NodeType.subgraph_template and subgraph_template_id is not None:
         _validate_no_materialization_cycle(session, subgraph_template_id, set())
@@ -361,6 +382,7 @@ def add_node(
     validate_output_schema_definition(output_schema)
     bindings_json = json.dumps(argument_bindings) if argument_bindings else None
     output_schema_json = json.dumps(output_schema) if output_schema else None
+    images_json = json.dumps(images) if images else None
     node = GraphNode(
         graph_id=graph.id,
         node_type=node_type,
@@ -374,6 +396,7 @@ def add_node(
         subgraph_template_id=subgraph_template_id,
         argument_bindings=bindings_json,
         output_schema=output_schema_json,
+        images=images_json,
     )
     session.add(node)
     session.commit()
@@ -396,6 +419,7 @@ def patch_node(
     subgraph_template_id: Optional[uuid.UUID] = None,
     argument_bindings: Optional[dict[str, str]] = None,
     output_schema: Optional[dict[str, str]] = None,
+    images: Optional[list[dict]] = None,
 ) -> Optional[GraphNode]:
     node = session.get(GraphNode, node_id)
     if node is None or node.graph_id != graph.id:
@@ -434,6 +458,8 @@ def patch_node(
         node.argument_bindings = json.dumps(argument_bindings)
     if output_schema is not None:
         node.output_schema = json.dumps(output_schema)
+    if images is not None:
+        node.images = json.dumps(images)
     session.add(node)
     session.commit()
     session.refresh(node)
@@ -540,6 +566,8 @@ def _materialize_task_template(
         prompt=_substitute_args(task_template.prompt, bindings),
         command=_substitute_args(task_template.command, bindings),
         graph_tools=task_template.graph_tools,
+        output_schema=task_template.output_schema,
+        images=task_template.images,
     )
     session.add(rn)
     return rn
@@ -607,6 +635,8 @@ def _materialize_subgraph(
                 prompt=_substitute_args(tmpl_node.prompt, bindings),
                 command=_substitute_args(tmpl_node.command, bindings),
                 graph_tools=tmpl_node.graph_tools,
+                output_schema=tmpl_node.output_schema,
+                images=tmpl_node.images,
             )
             session.add(rn)
             template_node_to_run_node[tmpl_node.id] = rn
@@ -629,6 +659,9 @@ def _materialize_subgraph(
             )
             if tmpl_node.name:
                 rn.name = tmpl_node.name
+            # Subgraph template node output_schema overrides task template's
+            if tmpl_node.output_schema:
+                rn.output_schema = tmpl_node.output_schema
             template_node_to_run_node[tmpl_node.id] = rn
 
         elif tmpl_node.node_type == SubgraphTemplateNodeType.subgraph_template:
@@ -654,6 +687,7 @@ def _materialize_subgraph(
                 node_type="subgraph",
                 name=tmpl_node.name or _substitute_args(ref_sg.label, bindings) or ref_sg.name,
                 state="pending",
+                output_schema=tmpl_node.output_schema or ref_sg.output_schema,
             )
             session.add(rn)
             session.flush()
@@ -708,6 +742,9 @@ def create_run(session: Session, graph: Graph) -> GraphRun:
             # Override name from graph node if set
             if node.name:
                 rn.name = node.name
+            # Graph node output_schema overrides template's
+            if node.output_schema:
+                rn.output_schema = node.output_schema
             run_nodes.append((node.id, rn))
 
         elif node.node_type == NodeType.subgraph_template:
@@ -733,6 +770,7 @@ def create_run(session: Session, graph: Graph) -> GraphRun:
                 node_type="subgraph",
                 name=node.name or _substitute_args(sg_tmpl.label, bindings) or sg_tmpl.name,
                 state="pending",
+                output_schema=node.output_schema or sg_tmpl.output_schema,
             )
             session.add(rn)
             session.flush()
@@ -760,6 +798,7 @@ def create_run(session: Session, graph: Graph) -> GraphRun:
                 command=node.command,
                 graph_tools=node.graph_tools,
                 output_schema=node.output_schema,
+                images=node.images,
             )
             session.add(rn)
             run_nodes.append((node.id, rn))

@@ -47,6 +47,7 @@ class SessionManager:
         sandbox_id: str | None = None,
         schema_id: str | None = None,
         output_schema: dict[str, str] | None = None,
+        images: list[dict[str, str]] | None = None,
     ) -> Session:
         session_id = str(uuid.uuid4())
         workspace_name = workspace_name or session_id
@@ -65,6 +66,7 @@ class SessionManager:
             model=model,
             schema_id=schema_id,
             output_schema=output_schema,
+            images=images,
             workspace_dir=workspace_dir,
         )
         self._sessions[session_id] = session
