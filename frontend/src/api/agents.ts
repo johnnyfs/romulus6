@@ -13,7 +13,7 @@ export type AgentStatus =
 export interface Agent {
   id: string
   workspace_id: string
-  sandbox_id: string
+  sandbox_id: string | null
   agent_type: AgentType
   model: string
   session_id: string | null
@@ -42,6 +42,7 @@ export interface AgentEvent {
   source_id?: string | null
   source_type?: string | null
   display_label?: string | null
+  display_color?: string | null
   path_parts?: string[]
   stream_key?: string | null
 }

@@ -1,4 +1,5 @@
 export type WorkspacePanelTab = 'graph' | 'runs' | 'templates'
+export type WorkspaceDetailTab = 'activity' | 'sandboxes'
 export type TemplatesSubTab = 'tasks' | 'subgraphs'
 
 export const WORKSPACE_DETAIL_PARAM_KEYS = {
@@ -6,6 +7,7 @@ export const WORKSPACE_DETAIL_PARAM_KEYS = {
   graphId: 'graph',
   graphNodeId: 'graphNode',
   panelTab: 'panel',
+  workspaceTab: 'tab',
   runGraphId: 'runGraph',
   runId: 'run',
   runNodeId: 'runNode',

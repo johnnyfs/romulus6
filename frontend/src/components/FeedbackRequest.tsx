@@ -5,6 +5,7 @@ import type { AgentEvent } from '../api/agents'
 interface FeedbackRequestProps {
   event: AgentEvent
   agentLabel: string
+  color?: string
   resolved: boolean
   resolvedResponse?: string
   disabled: boolean
@@ -14,6 +15,7 @@ interface FeedbackRequestProps {
 export default function FeedbackRequest({
   event,
   agentLabel,
+  color,
   resolved,
   resolvedResponse,
   disabled,
@@ -37,9 +39,15 @@ export default function FeedbackRequest({
   }
 
   return (
-    <div style={fbStyles.card}>
+    <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
+    <div style={{
+      ...fbStyles.card,
+      maxWidth: '85%',
+      borderLeft: `3px solid ${color ?? '#e0a855'}`,
+      borderRadius: '3px',
+    }}>
       <div style={fbStyles.header}>
-        <span style={fbStyles.agentLabel}>{agentLabel}</span>
+        <span style={{ ...fbStyles.agentLabel, color: color ?? 'var(--accent)' }}>{agentLabel}</span>
         <span style={fbStyles.badge}>
           {feedbackType === 'approve' ? 'approval needed' : feedbackType === 'select' ? 'choice needed' : 'input needed'}
         </span>
@@ -78,6 +86,7 @@ export default function FeedbackRequest({
           onRespond={handleRespond}
         />
       )}
+    </div>
     </div>
   )
 }
@@ -244,8 +253,7 @@ function InputControls({
 const fbStyles: Record<string, React.CSSProperties> = {
   card: {
     border: '1px solid var(--border)',
-    borderLeft: '3px solid #e0a855',
-    borderRadius: '6px',
+    borderLeft: 'none',
     padding: '12px 16px',
     background: 'var(--surface)',
     display: 'flex',
