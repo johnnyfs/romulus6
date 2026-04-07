@@ -7,10 +7,19 @@ interface Props {
   isRunning?: boolean
   isRunAgent?: boolean
   onClick: () => void
+  onDismiss: () => void
   onDelete: () => void
 }
 
-export default function AgentCard({ agent, selected, isRunning, isRunAgent, onClick, onDelete }: Props) {
+export default function AgentCard({
+  agent,
+  selected,
+  isRunning,
+  isRunAgent,
+  onClick,
+  onDismiss,
+  onDelete,
+}: Props) {
   const displayName = agent.name ?? agent.model.split('/')[1]
   const modelShort = agent.model.split('/')[1]
   // For run agents, extract the node name from "run-<uuid>-<nodename>"
@@ -27,6 +36,7 @@ export default function AgentCard({ agent, selected, isRunning, isRunAgent, onCl
         ...styles.row,
         background: selected ? 'var(--surface-2)' : 'transparent',
         borderLeft: selected ? '2px solid var(--accent)' : '2px solid transparent',
+        opacity: agent.dismissed ? 0.55 : 1,
         ...(isRunAgent ? { paddingLeft: '18px', fontSize: '12px' } : {}),
       }}
       onClick={onClick}
@@ -39,14 +49,25 @@ export default function AgentCard({ agent, selected, isRunning, isRunAgent, onCl
       >
         ●
       </span>
-      <span style={styles.label}>{label}</span>
+      <span style={{ ...styles.label, color: agent.dismissed ? 'var(--text-muted)' : 'var(--text)' }}>
+        {label}
+      </span>
       <button
-        style={styles.deleteBtn}
-        onClick={(e) => { e.stopPropagation(); onDelete() }}
-        title="Delete agent"
+        style={styles.dismissBtn}
+        onClick={(e) => { e.stopPropagation(); onDismiss() }}
+        title={agent.dismissed ? 'Restore agent' : 'Dismiss agent'}
       >
-        ×
+        {agent.dismissed ? 'undo' : 'x'}
       </button>
+      {agent.dismissed && (
+        <button
+          style={styles.deleteBtn}
+          onClick={(e) => { e.stopPropagation(); onDelete() }}
+          title="Delete agent and its history"
+        >
+          del
+        </button>
+      )}
     </div>
   )
 }
@@ -71,17 +92,29 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
-    color: 'var(--text)',
     fontSize: '13px',
   },
-  deleteBtn: {
+  dismissBtn: {
     background: 'none',
     border: 'none',
     cursor: 'pointer',
     padding: '0 2px',
     flexShrink: 0,
+    color: 'var(--text-muted)',
+    fontSize: '14px',
+    lineHeight: 1,
+    opacity: 0.8,
+  },
+  deleteBtn: {
+    background: 'none',
+    border: 'none',
+    cursor: 'pointer',
+    padding: '0 4px',
+    flexShrink: 0,
     color: 'var(--danger)',
-    fontSize: '16px',
+    fontSize: '11px',
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em',
     lineHeight: 1,
     opacity: 0.6,
   },

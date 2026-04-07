@@ -59,6 +59,7 @@ async def create_agent(
         prompt=prompt,
         name=resolved_name,
         status=AgentStatus.starting,
+        dismissed=False,
         graph_tools=graph_tools,
     )
     session.add(agent)
@@ -93,7 +94,13 @@ async def create_agent(
 
 
 def list_agents(session: Session, workspace_id: uuid.UUID) -> list[Agent]:
-    return list(session.exec(Agent.active().where(Agent.workspace_id == workspace_id)).all())
+    return list(
+        session.exec(
+            Agent.active()
+            .where(Agent.workspace_id == workspace_id)
+            .order_by(Agent.dismissed.asc(), Agent.updated_at.desc(), Agent.created_at.desc())
+        ).all()
+    )
 
 
 def get_agent(
@@ -124,6 +131,24 @@ async def send_message(session: Session, agent: Agent, prompt: str) -> None:
             timeout=10.0,
         )
         resp.raise_for_status()
+
+
+def set_agent_dismissed(
+    session: Session,
+    workspace_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    *,
+    dismissed: bool,
+) -> Agent | None:
+    agent = get_agent(session, workspace_id, agent_id)
+    if agent is None:
+        return None
+    agent.dismissed = dismissed
+    agent.updated_at = datetime.datetime.utcnow()
+    session.add(agent)
+    session.commit()
+    session.refresh(agent)
+    return agent
 
 
 async def send_feedback(
@@ -168,10 +193,19 @@ def delete_agent(session: Session, workspace_id: uuid.UUID, agent_id: uuid.UUID)
     agent = get_agent(session, workspace_id, agent_id)
     if agent is None:
         return False
+    if not agent.dismissed:
+        raise ValueError("Agent must be dismissed before deletion")
+    for event in session.exec(
+        select(Event)
+        .where(Event.workspace_id == workspace_id)
+        .where(Event.agent_id == agent.id)
+    ).all():
+        session.delete(event)
     if agent.sandbox_id is not None:
         sandbox_svc.delete_sandbox(session, workspace_id, agent.sandbox_id)
     agent.deleted = True
     agent.sandbox_id = None
+    agent.session_id = None
     agent.updated_at = datetime.datetime.utcnow()
     session.add(agent)
     session.commit()

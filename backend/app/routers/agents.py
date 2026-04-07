@@ -116,6 +116,10 @@ class SendMessageRequest(BaseModel):
     prompt: str
 
 
+class DismissAgentRequest(BaseModel):
+    dismissed: bool = True
+
+
 @router.post("/{agent_id}/messages", status_code=status.HTTP_202_ACCEPTED)
 async def send_message(
     workspace_id: uuid.UUID,
@@ -142,6 +146,25 @@ async def send_message(
     except httpx.HTTPStatusError as e:
         _raise_upstream_http_error(e)
     return {"accepted": True}
+
+
+@router.post("/{agent_id}/dismiss", response_model=Agent)
+def dismiss_agent(
+    workspace_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    body: DismissAgentRequest,
+    session: SessionDep,
+) -> Any:
+    _require_workspace(workspace_id, session)
+    agent = svc.set_agent_dismissed(
+        session,
+        workspace_id,
+        agent_id,
+        dismissed=body.dismissed,
+    )
+    if agent is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    return agent
 
 
 class SendFeedbackRequest(BaseModel):
@@ -183,7 +206,11 @@ async def send_feedback(
 @router.delete("/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_agent(workspace_id: uuid.UUID, agent_id: uuid.UUID, session: SessionDep) -> None:
     _require_workspace(workspace_id, session)
-    if not svc.delete_agent(session, workspace_id, agent_id):
+    try:
+        deleted = svc.delete_agent(session, workspace_id, agent_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
 
 

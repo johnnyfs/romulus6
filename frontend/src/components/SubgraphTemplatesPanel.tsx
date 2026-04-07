@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useAutoResize } from '../hooks/useAutoResize'
 import { useSearchParams } from 'react-router-dom'
 import { SUPPORTED_MODELS_BY_AGENT_TYPE } from '../api/models'
 import type { TaskTemplate, TaskTemplateArgument, SubgraphTemplate, SubgraphTemplateDetail, SubgraphTemplateNodeType } from '../api/templates'
@@ -85,6 +86,8 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
   const [editModel, setEditModel] = useState(MODEL_OPTIONS[0].value)
   const [editPrompt, setEditPrompt] = useState('')
   const [editCommand, setEditCommand] = useState('')
+  const promptRef = useAutoResize(editPrompt, 300, 60)
+  const commandRef = useAutoResize(editCommand, 300, 80)
   const [editGraphTools, setEditGraphTools] = useState(false)
   const [editTaskTemplateId, setEditTaskTemplateId] = useState('')
   const [editRefSubgraphId, setEditRefSubgraphId] = useState('')
@@ -92,12 +95,15 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
   const [nodeDirty, setNodeDirty] = useState(false)
 
   // Draft state for subgraph template arguments
-  const [editArgs, setEditArgs] = useState<{ name: string; arg_type: TaskTemplateArgument['arg_type']; default_value: string; min_value: string; max_value: string; enum_options: string[] }[]>([])
+  const argIdCounter = useRef(0)
+  const [editArgs, setEditArgs] = useState<{ _id: number; name: string; arg_type: TaskTemplateArgument['arg_type']; default_value: string; min_value: string; max_value: string; enum_options: string[] }[]>([])
   const [showArgs, setShowArgs] = useState(false)
   const [argsDirty, setArgsDirty] = useState(false)
 
   // Cache of fetched subgraph template details (for argument lists)
   const [sgDetailCache, setSgDetailCache] = useState<Record<string, SubgraphTemplateDetail>>({})
+  const sgDetailCacheRef = useRef(sgDetailCache)
+  useEffect(() => { sgDetailCacheRef.current = sgDetailCache }, [sgDetailCache])
   const activeId = readStringParam(searchParams, WORKSPACE_DETAIL_PARAM_KEYS.subgraphTemplateId)
   const selectedNodeId = readStringParam(searchParams, WORKSPACE_DETAIL_PARAM_KEYS.templateNodeId)
 
@@ -141,14 +147,20 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
     [updateUrlState],
   )
 
+  // Load templates on mount / workspace change
   useEffect(() => {
-    loadList().then((ts) => {
-      const hasActiveTemplate = !!activeId && ts.some((template) => template.id === activeId)
-      if (hasActiveTemplate) return
-      setActiveId(ts[0]?.id ?? null, true)
-    })
+    loadList()
     listTaskTemplates(workspaceId).then(setTaskTemplates)
-  }, [activeId, loadList, setActiveId, workspaceId])
+  }, [loadList, workspaceId])
+
+  // Auto-select first template if current selection is invalid
+  useEffect(() => {
+    if (templates.length === 0) return
+    const hasActive = !!activeId && templates.some((t) => t.id === activeId)
+    if (!hasActive) {
+      setActiveId(templates[0]?.id ?? null, true)
+    }
+  }, [templates, activeId, setActiveId])
 
   useEffect(() => {
     if (activeId && templates.some((template) => template.id === activeId)) {
@@ -157,6 +169,7 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
         if (d) {
           setEditLabel(d.label ?? '')
           setEditArgs(d.arguments.filter(a => !(a as any).deleted).map(a => ({
+            _id: argIdCounter.current++,
             name: a.name, arg_type: a.arg_type, default_value: a.default_value ?? '',
             min_value: a.min_value != null ? String(a.min_value) : '',
             max_value: a.max_value != null ? String(a.max_value) : '',
@@ -200,12 +213,12 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
 
   // Fetch subgraph detail for argument bindings when a subgraph ref is selected
   useEffect(() => {
-    if (editRefSubgraphId && !sgDetailCache[editRefSubgraphId]) {
+    if (editRefSubgraphId && !sgDetailCacheRef.current[editRefSubgraphId]) {
       getSubgraphTemplate(workspaceId, editRefSubgraphId).then(d => {
         setSgDetailCache(prev => ({ ...prev, [d.id]: d }))
       }).catch(() => {})
     }
-  }, [editRefSubgraphId, workspaceId, sgDetailCache])
+  }, [editRefSubgraphId, workspaceId])
 
   const positions = useMemo(() => {
     if (!detail) return new Map<string, Pos>()
@@ -400,7 +413,7 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
           {showArgs && (
             <div style={{ padding: '0 8px 6px' }}>
               {editArgs.map((arg, i) => (
-                <div key={i} style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 3, alignItems: 'center' }}>
+                <div key={arg._id} style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 3, alignItems: 'center' }}>
                   <input style={{ ...s.input, flex: 2 }} value={arg.name} placeholder="name"
                     onChange={(e) => { const a = [...editArgs]; a[i] = { ...a[i], name: e.target.value }; setEditArgs(a); setArgsDirty(true) }} />
                   <select style={{ ...s.sel, flex: 1 }} value={arg.arg_type}
@@ -432,7 +445,7 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
               ))}
               <div style={{ display: 'flex', gap: 4, marginTop: 2 }}>
                 <button style={{ ...s.addBtn, flex: 1 }}
-                  onClick={() => { setEditArgs([...editArgs, { name: '', arg_type: 'string', default_value: '', min_value: '', max_value: '', enum_options: [] }]); setArgsDirty(true) }}>
+                  onClick={() => { setEditArgs([...editArgs, { _id: argIdCounter.current++, name: '', arg_type: 'string', default_value: '', min_value: '', max_value: '', enum_options: [] }]); setArgsDirty(true) }}>
                   + Add
                 </button>
                 {argsDirty && (
@@ -557,7 +570,7 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
               </div>
               <div style={{ ...s.row, alignItems: 'flex-start' }}>
                 <span style={{ ...s.label, marginTop: 4 }}>Prompt</span>
-                <textarea style={{ ...s.input, minHeight: 60, resize: 'vertical', fontFamily: 'inherit' }}
+                <textarea ref={promptRef} style={{ ...s.input, minHeight: 60, resize: 'none', fontFamily: 'inherit' }}
                   value={editPrompt} onChange={e => editNode(setEditPrompt)(e.target.value)}
                   placeholder="Enter agent prompt..." />
               </div>
@@ -575,7 +588,7 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
           {editNodeType === 'command' && (
             <div style={{ ...s.row, alignItems: 'flex-start' }}>
               <span style={{ ...s.label, marginTop: 4 }}>Cmd</span>
-              <textarea style={{ ...s.input, minHeight: 80, resize: 'vertical', fontFamily: 'monospace' }}
+              <textarea ref={commandRef} style={{ ...s.input, minHeight: 80, resize: 'none', fontFamily: 'monospace' }}
                 value={editCommand} onChange={e => editNode(setEditCommand)(e.target.value)}
                 placeholder="Enter bash command(s)..." />
             </div>

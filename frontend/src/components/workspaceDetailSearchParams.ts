@@ -2,12 +2,14 @@ export type WorkspacePanelTab = 'graph' | 'runs' | 'templates'
 export type TemplatesSubTab = 'tasks' | 'subgraphs'
 
 export const WORKSPACE_DETAIL_PARAM_KEYS = {
+  agentId: 'agent',
   graphId: 'graph',
   graphNodeId: 'graphNode',
   panelTab: 'panel',
   runGraphId: 'runGraph',
   runId: 'run',
   runNodeId: 'runNode',
+  showDismissedAgents: 'showDismissedAgents',
   showDeadMessages: 'showDead',
   taskTemplateId: 'taskTemplate',
   templatesSubTab: 'templatesTab',

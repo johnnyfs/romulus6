@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useAutoResize } from '../hooks/useAutoResize'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import {
   TERMINAL_STATUSES,
@@ -6,6 +7,7 @@ import {
   type AgentEvent,
   createAgent,
   deleteAgent,
+  dismissAgent,
   listAgents,
   sendFeedback,
   sendMessage,
@@ -26,6 +28,7 @@ import {
   WORKSPACE_DETAIL_PARAM_KEYS,
   mergeSearchParams,
   readBooleanParam,
+  readStringParam,
 } from '../components/workspaceDetailSearchParams'
 
 // ─── Feed item types ────────────────────────────────────────────────────────
@@ -164,7 +167,16 @@ export default function WorkspaceDetailPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [workspace, setWorkspace] = useState<Workspace | null>(null)
   const [agents, setAgents] = useState<Agent[]>([])
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
+  const selectedAgentId = readStringParam(searchParams, WORKSPACE_DETAIL_PARAM_KEYS.agentId)
+  const setSelectedAgentId = useCallback(
+    (agentId: string | null) => {
+      setSearchParams(
+        (prev) => mergeSearchParams(prev, { [WORKSPACE_DETAIL_PARAM_KEYS.agentId]: agentId }),
+        { replace: true },
+      )
+    },
+    [setSearchParams],
+  )
   const [eventMap, setEventMap] = useState<Record<string, AgentEvent[]>>({})
   const [agentBusy, setAgentBusy] = useState<Record<string, boolean>>({})
   const [agentTerminal, setAgentTerminal] = useState<Record<string, boolean>>({})
@@ -178,6 +190,8 @@ export default function WorkspaceDetailPage() {
   const [formGraphTools, setFormGraphTools] = useState(false)
   const [creating, setCreating] = useState(false)
   const [chatInput, setChatInput] = useState('')
+  const chatRef = useAutoResize(chatInput, 144)
+  const promptRef = useAutoResize(formPrompt, 234, 60)
   const [targetAgentId, setTargetAgentId] = useState<string>('new')
   const [userMessages, setUserMessages] = useState<
     { agentId: string; prompt: string; timestamp: string }[]
@@ -196,6 +210,11 @@ export default function WorkspaceDetailPage() {
   const showDeadMessages = readBooleanParam(
     searchParams,
     WORKSPACE_DETAIL_PARAM_KEYS.showDeadMessages,
+    true,
+  )
+  const showDismissedAgents = readBooleanParam(
+    searchParams,
+    WORKSPACE_DETAIL_PARAM_KEYS.showDismissedAgents,
     true,
   )
   const [collapsedRuns, setCollapsedRuns] = useState<Set<string>>(new Set())
@@ -325,18 +344,23 @@ export default function WorkspaceDetailPage() {
     if (id) localStorage.setItem(`user-messages-${id}`, JSON.stringify(userMessages))
   }, [id, userMessages])
 
+  // Initialize list/feed visibility params if absent
   useEffect(() => {
-    const current = searchParams.get(WORKSPACE_DETAIL_PARAM_KEYS.showDeadMessages)
-    const next = showDeadMessages ? '1' : '0'
-    if (current === next) return
-    setSearchParams(
-      (prev) =>
-        mergeSearchParams(prev, {
-          [WORKSPACE_DETAIL_PARAM_KEYS.showDeadMessages]: next,
-        }),
-      { replace: true },
-    )
-  }, [searchParams, setSearchParams, showDeadMessages])
+    if (
+      searchParams.get(WORKSPACE_DETAIL_PARAM_KEYS.showDeadMessages) == null ||
+      searchParams.get(WORKSPACE_DETAIL_PARAM_KEYS.showDismissedAgents) == null
+    ) {
+      setSearchParams(
+        (prev) =>
+          mergeSearchParams(prev, {
+            [WORKSPACE_DETAIL_PARAM_KEYS.showDeadMessages]: '1',
+            [WORKSPACE_DETAIL_PARAM_KEYS.showDismissedAgents]: '1',
+          }),
+        { replace: true },
+      )
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id])
 
   useEffect(() => {
     feedBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -483,6 +507,10 @@ export default function WorkspaceDetailPage() {
 
   // Partition agents into ad-hoc and run-grouped
   const adHocAgents = useMemo(() => agents.filter((a) => !a.graph_run_id), [agents])
+  const visibleAdHocAgents = useMemo(
+    () => adHocAgents.filter((a) => showDismissedAgents || !a.dismissed),
+    [adHocAgents, showDismissedAgents],
+  )
   const runAgentGroups = useMemo(() => {
     const groups = new Map<string, Agent[]>()
     for (const a of agents) {
@@ -493,6 +521,40 @@ export default function WorkspaceDetailPage() {
     }
     return groups
   }, [agents])
+  const visibleRunAgentGroups = useMemo(() => {
+    const groups = new Map<string, Agent[]>()
+    for (const [runId, runAgents] of runAgentGroups.entries()) {
+      const visible = runAgents.filter((a) => showDismissedAgents || !a.dismissed)
+      if (visible.length > 0) groups.set(runId, visible)
+    }
+    return groups
+  }, [runAgentGroups, showDismissedAgents])
+
+  function replaceAgent(updatedAgent: Agent) {
+    setAgents((prev) => prev.map((agent) => (agent.id === updatedAgent.id ? updatedAgent : agent)))
+  }
+
+  function removeAgentHistory(agentId: string) {
+    setEventMap((prev) =>
+      Object.fromEntries(
+        Object.entries(prev).filter(
+          ([streamKey, events]) =>
+            streamKey !== `agent:${agentId}` &&
+            !events.some((event) => event.agent_id === agentId),
+        ),
+      ),
+    )
+    setUserMessages((prev) => prev.filter((m) => m.agentId !== agentId))
+    setResolvedFeedback((prev) =>
+      Object.fromEntries(
+        Object.entries(prev).filter(([feedbackId]) =>
+          !Object.values(eventMap).flat().some(
+            (event) => event.agent_id === agentId && String(event.data?.feedback_id ?? '') === feedbackId,
+          ),
+        ),
+      ),
+    )
+  }
 
 
   function toggleBlock(blockId: string) {
@@ -675,12 +737,12 @@ export default function WorkspaceDetailPage() {
               <div style={styles.formRow}>
                 <label style={styles.label} htmlFor="agent-prompt-input">Prompt</label>
                 <textarea
+                  ref={promptRef}
                   id="agent-prompt-input"
-                  style={styles.textarea}
+                  style={{ ...styles.textarea, resize: 'none' }}
                   value={formPrompt}
                   onChange={(e) => setFormPrompt(e.target.value)}
                   placeholder="What should this agent do?"
-                  rows={4}
                 />
               </div>
               {formAgentType === 'opencode' && (
@@ -707,29 +769,48 @@ export default function WorkspaceDetailPage() {
           )}
 
           <div style={styles.agentList}>
-            {adHocAgents.map((agent) => (
+            <label style={styles.sidebarToggle}>
+              <input
+                type="checkbox"
+                checked={showDismissedAgents}
+                onChange={(e) => {
+                  setSearchParams(
+                    (prev) =>
+                      mergeSearchParams(prev, {
+                        [WORKSPACE_DETAIL_PARAM_KEYS.showDismissedAgents]: e.target.checked ? '1' : '0',
+                      }),
+                    { replace: false },
+                  )
+                }}
+                style={{ marginRight: 6 }}
+              />
+              Show dismissed
+            </label>
+
+            {visibleAdHocAgents.map((agent) => (
               <AgentCard
                 key={agent.id}
                 agent={agent}
                 selected={selectedAgentId === agent.id}
                 isRunning={!agentTerminal[agent.id]}
                 onClick={() => setSelectedAgentId(agent.id)}
+                onDismiss={async () => {
+                  if (!id) return
+                  const updated = await dismissAgent(id, agent.id, !agent.dismissed)
+                  replaceAgent(updated)
+                }}
                 onDelete={async () => {
                   if (!id) return
+                  if (!agent.dismissed) return
                   await deleteAgent(id, agent.id)
                   setAgents((prev) => prev.filter((a) => a.id !== agent.id))
-                  setEventMap((prev) => {
-                    const next = { ...prev }
-                    delete next[agent.id]
-                    return next
-                  })
-                  setUserMessages((prev) => prev.filter((m) => m.agentId !== agent.id))
+                  removeAgentHistory(agent.id)
                   if (selectedAgentId === agent.id) setSelectedAgentId(null)
                 }}
               />
             ))}
 
-            {Array.from(runAgentGroups.entries()).map(([runId, runAgents]) => (
+            {Array.from(visibleRunAgentGroups.entries()).map(([runId, runAgents]) => (
               <div key={runId}>
                 <button
                   style={styles.runGroupHeader}
@@ -751,16 +832,17 @@ export default function WorkspaceDetailPage() {
                     isRunning={!agentTerminal[agent.id]}
                     isRunAgent
                     onClick={() => setSelectedAgentId(agent.id)}
+                    onDismiss={async () => {
+                      if (!id) return
+                      const updated = await dismissAgent(id, agent.id, !agent.dismissed)
+                      replaceAgent(updated)
+                    }}
                     onDelete={async () => {
                       if (!id) return
+                      if (!agent.dismissed) return
                       await deleteAgent(id, agent.id)
                       setAgents((prev) => prev.filter((a) => a.id !== agent.id))
-                      setEventMap((prev) => {
-                        const next = { ...prev }
-                        delete next[agent.id]
-                        return next
-                      })
-                      setUserMessages((prev) => prev.filter((m) => m.agentId !== agent.id))
+                      removeAgentHistory(agent.id)
                       if (selectedAgentId === agent.id) setSelectedAgentId(null)
                     }}
                   />
@@ -886,11 +968,13 @@ export default function WorkspaceDetailPage() {
               <option value="new">+ New agent</option>
               {agents.map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.name ?? `${a.agent_type}/${a.model.split('/')[1]}`}
+                  {(a.name ?? `${a.agent_type}/${a.model.split('/')[1]}`) + (a.dismissed ? ' (dismissed)' : '')}
                 </option>
               ))}
             </select>
-            <input
+            <textarea
+              ref={chatRef}
+              rows={1}
               style={styles.chatInput}
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
@@ -983,6 +1067,14 @@ const styles: Record<string, React.CSSProperties> = {
     letterSpacing: '0.08em',
     padding: '0 6px',
     marginBottom: '4px',
+  },
+  sidebarToggle: {
+    display: 'flex',
+    alignItems: 'center',
+    fontSize: '12px',
+    color: 'var(--text-muted)',
+    cursor: 'pointer',
+    padding: '2px 6px 8px 6px',
   },
   newAgentBtn: {
     width: '100%',
@@ -1148,7 +1240,7 @@ const styles: Record<string, React.CSSProperties> = {
   // Input bar
   inputBar: {
     display: 'flex',
-    alignItems: 'center',
+    alignItems: 'flex-end',
     gap: '8px',
     padding: '10px 16px',
     background: 'var(--surface)',
@@ -1175,6 +1267,9 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text)',
     outline: 'none',
     fontSize: '14px',
+    resize: 'none' as const,
+    lineHeight: '1.4',
+    fontFamily: 'inherit',
   },
   sendBtn: {
     padding: '7px 16px',
