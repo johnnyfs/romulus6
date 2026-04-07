@@ -51,6 +51,8 @@ class TaskTemplate(RomulusBase, table=True):
     command: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     graph_tools: bool = Field(default=False)
     label: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    output_schema: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    images: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
 
     workspace: Optional["Workspace"] = Relationship(back_populates="task_templates")
     arguments: List["TaskTemplateArgument"] = Relationship(
@@ -101,6 +103,7 @@ class SubgraphTemplate(RomulusBase, table=True):
     workspace_id: uuid.UUID = Field(foreign_key="workspace.id", index=True)
     name: str
     label: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    output_schema: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
 
     workspace: Optional["Workspace"] = Relationship(back_populates="subgraph_templates")
     nodes: List["SubgraphTemplateNode"] = Relationship(
@@ -175,6 +178,10 @@ class SubgraphTemplateNode(RomulusBase, table=True):
     argument_bindings: Optional[str] = Field(
         default=None, sa_column=Column(String, nullable=True)
     )
+    output_schema: Optional[str] = Field(
+        default=None, sa_column=Column(String, nullable=True)
+    )
+    images: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
 
     subgraph_template: Optional[SubgraphTemplate] = Relationship(
         back_populates="nodes",

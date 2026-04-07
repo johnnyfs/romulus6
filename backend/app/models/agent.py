@@ -44,11 +44,27 @@ class OpenCodeAgentConfig(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ImageAttachment(BaseModel):
+    """An image to attach to a pydantic agent call."""
+    type: Literal["url", "sandbox_path"]
+    url: str | None = None
+    path: str | None = None
+
+    @model_validator(mode="after")
+    def validate_fields(self) -> "ImageAttachment":
+        if self.type == "url" and not self.url:
+            raise ValueError("url is required when type is 'url'")
+        if self.type == "sandbox_path" and not self.path:
+            raise ValueError("path is required when type is 'sandbox_path'")
+        return self
+
+
 class PydanticAgentConfig(BaseModel):
     """Pydantic configuration used by graph and template agent nodes."""
     agent_type: Literal["pydantic"] = "pydantic"
     model: SupportedModel
     prompt: str
+    images: list[ImageAttachment] = PydanticField(default_factory=list)
 
     @model_validator(mode="after")
     def validate_model(self) -> "PydanticAgentConfig":

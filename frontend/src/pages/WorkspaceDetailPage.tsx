@@ -23,6 +23,7 @@ import { listWorkspaceEvents, streamWorkspaceEvents } from '../api/workspaceEven
 import { getWorkspace, type Workspace } from '../api/workspaces'
 import AgentCard from '../components/AgentCard'
 import FeedbackRequest from '../components/FeedbackRequest'
+import { MarkdownMessage } from '../components/MarkdownMessage'
 import GraphPanel from '../components/GraphPanel'
 import {
   WORKSPACE_DETAIL_PARAM_KEYS,
@@ -1019,7 +1020,7 @@ export default function WorkspaceDetailPage() {
                             you → {agentName(item.agentId)}
                             {item.isDispatch && <span style={styles.dispatchBadge}>prompt</span>}
                           </div>
-                          {item.prompt}
+                          <MarkdownMessage content={item.prompt} />
                         </div>
                       </div>
                     )
@@ -1035,9 +1036,9 @@ export default function WorkspaceDetailPage() {
                           <div style={{ ...styles.agentBubbleHeader, color }}>
                             {agentName(item.agentId)}
                           </div>
-                          <span style={styles.agentBubbleText}>
-                            {String(item.event.data.accumulated ?? item.event.data.delta ?? '')}
-                          </span>
+                          <MarkdownMessage
+                            content={String(item.event.data.accumulated ?? item.event.data.delta ?? '')}
+                          />
                         </div>
                       </div>
                     )
@@ -1520,7 +1521,6 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--surface)',
     borderLeft: '3px solid var(--user-color)',
     borderRadius: '3px',
-    whiteSpace: 'pre-wrap',
     wordBreak: 'break-word',
     fontSize: '14px',
   },
@@ -1552,7 +1552,6 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '8px 12px',
     background: 'var(--surface)',
     borderRadius: '3px',
-    whiteSpace: 'pre-wrap',
     wordBreak: 'break-word',
     fontSize: '14px',
   },
@@ -1561,7 +1560,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     marginBottom: '2px',
   },
-  agentBubbleText: { color: 'var(--text)' },
 
   // Activity block
   activityWrap: { display: 'flex', flexDirection: 'column' },

@@ -27,6 +27,7 @@ class PydanticRunner(AgentRunner):
                     prompt=prompt,
                     schema_id=session.schema_id,
                     output_schema=session.output_schema,
+                    images=session.images,
                 )
                 await self._queue.put(
                     Event(

@@ -18,6 +18,7 @@ from app.models.template import (
     TemplateArgType,
 )
 from app.services.graphs import _has_cycle
+from app.utils.output_schema import validate_output_schema_definition
 
 
 # ── Data classes ─────────────────────────────────────────────────────────────
@@ -48,6 +49,8 @@ class SubgraphNodeInput:
     task_template_id: Optional[uuid.UUID] = None
     ref_subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
+    output_schema: Optional[dict[str, str]] = None
+    images: Optional[list[dict]] = None
 
 
 @dataclass
@@ -102,9 +105,20 @@ def _build_subgraph_node(
     tmpl_id: uuid.UUID, node_input: SubgraphNodeInput
 ) -> SubgraphTemplateNode:
     """Build a SubgraphTemplateNode from input, including inline agent/command fields."""
+    validate_output_schema_definition(node_input.output_schema)
     bindings_json = (
         json.dumps(node_input.argument_bindings)
         if node_input.argument_bindings
+        else None
+    )
+    output_schema_json = (
+        json.dumps(node_input.output_schema)
+        if node_input.output_schema
+        else None
+    )
+    images_json = (
+        json.dumps(node_input.images)
+        if node_input.images
         else None
     )
     return SubgraphTemplateNode(
@@ -119,6 +133,8 @@ def _build_subgraph_node(
         task_template_id=node_input.task_template_id,
         ref_subgraph_template_id=node_input.ref_subgraph_template_id,
         argument_bindings=bindings_json,
+        output_schema=output_schema_json,
+        images=images_json,
     )
 
 
@@ -229,7 +245,12 @@ def create_task_template(
     graph_tools: bool = False,
     label: Optional[str] = None,
     arguments: Optional[list[ArgumentInput]] = None,
+    output_schema: Optional[dict[str, str]] = None,
+    images: Optional[list[dict]] = None,
 ) -> TaskTemplate:
+    validate_output_schema_definition(output_schema)
+    output_schema_json = json.dumps(output_schema) if output_schema else None
+    images_json = json.dumps(images) if images else None
     tmpl = TaskTemplate(
         workspace_id=workspace_id,
         name=name,
@@ -240,6 +261,8 @@ def create_task_template(
         command=command,
         graph_tools=graph_tools,
         label=label,
+        output_schema=output_schema_json,
+        images=images_json,
     )
     session.add(tmpl)
     session.flush()
@@ -283,6 +306,8 @@ def update_task_template(
     graph_tools: bool = False,
     label: Optional[str] = None,
     arguments: Optional[list[ArgumentInput]] = None,
+    output_schema: Optional[dict[str, str]] = None,
+    images: Optional[list[dict]] = None,
 ) -> TaskTemplate:
     # Delete existing arguments
     existing_args = session.exec(
@@ -294,6 +319,7 @@ def update_task_template(
         session.delete(arg)
     session.flush()
 
+    validate_output_schema_definition(output_schema)
     tmpl.name = name
     tmpl.task_type = task_type
     tmpl.agent_type = agent_type
@@ -302,6 +328,8 @@ def update_task_template(
     tmpl.command = command
     tmpl.graph_tools = graph_tools
     tmpl.label = label
+    tmpl.output_schema = json.dumps(output_schema) if output_schema else None
+    tmpl.images = json.dumps(images) if images else None
     tmpl.updated_at = datetime.datetime.utcnow()
     session.add(tmpl)
     session.flush()
@@ -347,13 +375,16 @@ def create_subgraph_template(
     edges: Optional[list[SubgraphEdgeInput]] = None,
     arguments: Optional[list[ArgumentInput]] = None,
     label: Optional[str] = None,
+    output_schema: Optional[dict[str, str]] = None,
 ) -> SubgraphTemplate:
     nodes = nodes or []
     edges = edges or []
 
     _validate_no_cycle_by_index(len(nodes), edges)
+    validate_output_schema_definition(output_schema)
+    output_schema_json = json.dumps(output_schema) if output_schema else None
 
-    tmpl = SubgraphTemplate(workspace_id=workspace_id, name=name, label=label)
+    tmpl = SubgraphTemplate(workspace_id=workspace_id, name=name, label=label, output_schema=output_schema_json)
     session.add(tmpl)
     session.flush()
 
@@ -418,11 +449,13 @@ def update_subgraph_template(
     edges: Optional[list[SubgraphEdgeInput]] = None,
     arguments: Optional[list[ArgumentInput]] = None,
     label: Optional[str] = None,
+    output_schema: Optional[dict[str, str]] = None,
 ) -> SubgraphTemplate:
     nodes = nodes or []
     edges = edges or []
 
     _validate_no_cycle_by_index(len(nodes), edges)
+    validate_output_schema_definition(output_schema)
 
     # Check for recursive subgraph references
     ref_ids = [
@@ -478,6 +511,7 @@ def update_subgraph_template(
 
     tmpl.name = name
     tmpl.label = label
+    tmpl.output_schema = json.dumps(output_schema) if output_schema else None
     tmpl.updated_at = datetime.datetime.utcnow()
     session.add(tmpl)
     session.commit()
@@ -539,6 +573,8 @@ def add_subgraph_template_node(
     task_template_id: Optional[uuid.UUID] = None,
     ref_subgraph_template_id: Optional[uuid.UUID] = None,
     argument_bindings: Optional[dict[str, str]] = None,
+    output_schema: Optional[dict[str, str]] = None,
+    images: Optional[list[dict]] = None,
 ) -> SubgraphTemplateNode:
     if (
         node_type == SubgraphTemplateNodeType.subgraph_template
@@ -547,7 +583,10 @@ def add_subgraph_template_node(
         if _has_subgraph_cycle(session, tmpl.id, [ref_subgraph_template_id]):
             raise ValueError("recursive subgraph template detected")
 
+    validate_output_schema_definition(output_schema)
     bindings_json = json.dumps(argument_bindings) if argument_bindings else None
+    output_schema_json = json.dumps(output_schema) if output_schema else None
+    images_json = json.dumps(images) if images else None
     node = SubgraphTemplateNode(
         subgraph_template_id=tmpl.id,
         node_type=node_type,
@@ -560,6 +599,8 @@ def add_subgraph_template_node(
         task_template_id=task_template_id,
         ref_subgraph_template_id=ref_subgraph_template_id,
         argument_bindings=bindings_json,
+        output_schema=output_schema_json,
+        images=images_json,
     )
     session.add(node)
     session.commit()
@@ -581,6 +622,8 @@ def patch_subgraph_template_node(
     task_template_id: Optional[uuid.UUID] = None,
     ref_subgraph_template_id: Optional[uuid.UUID] = None,
     argument_bindings: Optional[dict[str, str]] = None,
+    output_schema: Optional[dict[str, str]] = None,
+    images: Optional[list[dict]] = None,
 ) -> Optional[SubgraphTemplateNode]:
     node = session.get(SubgraphTemplateNode, node_id)
     if node is None or node.subgraph_template_id != tmpl.id:
@@ -619,6 +662,11 @@ def patch_subgraph_template_node(
         node.ref_subgraph_template_id = ref_subgraph_template_id
     if argument_bindings is not None:
         node.argument_bindings = json.dumps(argument_bindings)
+    if output_schema is not None:
+        validate_output_schema_definition(output_schema)
+        node.output_schema = json.dumps(output_schema)
+    if images is not None:
+        node.images = json.dumps(images)
     node.updated_at = datetime.datetime.utcnow()
     session.add(node)
     session.commit()

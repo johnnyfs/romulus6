@@ -24,7 +24,7 @@ from app.services.graphs import EdgeInput, NodeInput
 from app.services.templates import ArgumentInput, SubgraphEdgeInput, SubgraphNodeInput
 
 BUNDLE_FORMAT = "romulus.graph-bundle"
-BUNDLE_VERSION = 1
+BUNDLE_VERSION = 2
 
 
 def _json_loads(value: str | None) -> Any:
@@ -99,6 +99,8 @@ def _serialize_task_template(template: TaskTemplate) -> dict[str, Any]:
         "command": template.command,
         "graph_tools": template.graph_tools,
         "label": template.label,
+        "output_schema": _json_loads(template.output_schema),
+        "images": _json_loads(template.images),
         "arguments": [
             _serialize_task_argument(arg)
             for arg in template.arguments
@@ -112,6 +114,7 @@ def _serialize_subgraph_template(template: SubgraphTemplate) -> dict[str, Any]:
         "id": str(template.id),
         "name": template.name,
         "label": template.label,
+        "output_schema": _json_loads(template.output_schema),
         "arguments": [
             _serialize_subgraph_argument(arg)
             for arg in template.arguments
@@ -142,6 +145,8 @@ def _serialize_subgraph_template(template: SubgraphTemplate) -> dict[str, Any]:
                     node.ref_subgraph.name if node.ref_subgraph is not None else None
                 ),
                 "argument_bindings": _json_loads(node.argument_bindings),
+                "output_schema": _json_loads(node.output_schema),
+                "images": _json_loads(node.images),
             }
             for node in template.nodes
             if not node.deleted
@@ -186,6 +191,7 @@ def _serialize_graph(graph: Graph) -> dict[str, Any]:
                 ),
                 "argument_bindings": _json_loads(node.argument_bindings),
                 "output_schema": _json_loads(node.output_schema),
+                "images": _json_loads(node.images),
             }
             for node in graph.nodes
             if not node.deleted
@@ -312,6 +318,8 @@ class ImportTaskTemplate(_ImportModel):
     command: str | None = None
     graph_tools: bool = False
     label: str | None = None
+    output_schema: dict[str, str] | None = None
+    images: list[dict] | None = None
     arguments: list[ImportArgument] = Field(default_factory=list)
 
 
@@ -329,6 +337,8 @@ class ImportSubgraphNode(_ImportModel):
     ref_subgraph_template_id: str | None = None
     ref_subgraph_template_name: str | None = None
     argument_bindings: dict[str, str] | None = None
+    output_schema: dict[str, str] | None = None
+    images: list[dict] | None = None
 
 
 class ImportSubgraphEdge(_ImportModel):
@@ -341,6 +351,7 @@ class ImportSubgraphTemplate(_ImportModel):
     id: str | None = None
     name: str | None = None
     label: str | None = None
+    output_schema: dict[str, str] | None = None
     arguments: list[ImportArgument] = Field(default_factory=list)
     nodes: list[ImportSubgraphNode] = Field(default_factory=list)
     edges: list[ImportSubgraphEdge] = Field(default_factory=list)
@@ -361,6 +372,7 @@ class ImportGraphNode(_ImportModel):
     subgraph_template_name: str | None = None
     argument_bindings: dict[str, str] | None = None
     output_schema: dict[str, str] | None = None
+    images: list[dict] | None = None
 
 
 class ImportGraphEdge(_ImportModel):
@@ -529,6 +541,8 @@ def import_graph_bundle(
                 graph_tools=task.graph_tools,
                 label=task.label,
                 arguments=arg_inputs,
+                output_schema=task.output_schema,
+                images=task.images,
             )
         except ValueError as exc:
             warnings.append(f"task template '{task.name}' skipped: {exc}")
@@ -607,6 +621,8 @@ def import_graph_bundle(
                         task_template_id=task_template_id,
                         ref_subgraph_template_id=ref_subgraph_template_id,
                         argument_bindings=node.argument_bindings,
+                        output_schema=node.output_schema,
+                        images=node.images,
                     )
                 )
 
@@ -653,6 +669,7 @@ def import_graph_bundle(
                     edges=edge_inputs,
                     arguments=arg_inputs,
                     label=template.label,
+                    output_schema=template.output_schema,
                 )
             except ValueError as exc:
                 warnings.append(f"subgraph template '{template.name}' skipped: {exc}")
@@ -731,6 +748,7 @@ def import_graph_bundle(
                 subgraph_template_id=subgraph_template_id,
                 argument_bindings=node.argument_bindings,
                 output_schema=node.output_schema,
+                images=node.images,
             )
         )
 

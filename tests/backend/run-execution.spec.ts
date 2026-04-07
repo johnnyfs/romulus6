@@ -136,9 +136,74 @@ test.describe('Graph Run Execution', () => {
       const run = await waitForRunTerminal(request, wid, graph.id, created.id);
 
       expect(run.state).toBe('error');
+      const cmdNodes = run.run_nodes
+        .filter((n: any) => n.node_type === 'command')
+        .sort((a: any, b: any) => a.attempt - b.attempt);
+      expect(cmdNodes).toHaveLength(3);
+      expect(cmdNodes.map((n: any) => n.attempt)).toEqual([1, 2, 3]);
+      expect(cmdNodes.every((n: any) => n.state === 'error')).toBe(true);
+      expect(cmdNodes[0].next_attempt_run_node_id).toBe(cmdNodes[1].id);
+      expect(cmdNodes[1].retry_of_run_node_id).toBe(cmdNodes[0].id);
+      expect(cmdNodes[1].next_attempt_run_node_id).toBe(cmdNodes[2].id);
+      expect(cmdNodes[2].retry_of_run_node_id).toBe(cmdNodes[1].id);
+      expect(cmdNodes[2].next_attempt_run_node_id).toBe(null);
+    } finally {
+      await deleteWorkspaceWithChildren(request, wid);
+    }
+  });
 
-      const cmdNode = run.run_nodes.find((n: any) => n.node_type === 'command');
-      expect(cmdNode.state).toBe('error');
+  test('failed command node retries in a new run node and downstream nodes wait for the successful attempt', async ({ request }) => {
+    const wid = await createWorkspace(request, 'Run Execution Retry WS');
+    try {
+      const graph = await createGraph(
+        request,
+        wid,
+        [
+          {
+            node_type: 'command',
+            name: 'flaky',
+            command_config: {
+              command: [
+                'count_file=.retry-count',
+                'count=$(cat "$count_file" 2>/dev/null || echo 0)',
+                'count=$((count + 1))',
+                'echo "$count" > "$count_file"',
+                'if [ "$count" -lt 2 ]; then exit 1; fi',
+                'printf ok',
+              ].join('; '),
+            },
+          },
+          {
+            node_type: 'command',
+            name: 'after-flaky',
+            command_config: { command: 'test "{{ flaky.stdout }}" = "ok"' },
+          },
+        ],
+        [{ from_index: 0, to_index: 1 }],
+      );
+
+      const createRes = await request.post(`/api/v1/workspaces/${wid}/graphs/${graph.id}/runs`);
+      expect(createRes.status()).toBe(201);
+      const created = await createRes.json();
+
+      const run = await waitForRunTerminal(request, wid, graph.id, created.id);
+      expect(run.state).toBe('completed');
+
+      const flakyAttempts = run.run_nodes
+        .filter((n: any) => n.name === 'flaky')
+        .sort((a: any, b: any) => a.attempt - b.attempt);
+      expect(flakyAttempts).toHaveLength(2);
+      expect(flakyAttempts[0].state).toBe('error');
+      expect(flakyAttempts[0].attempt).toBe(1);
+      expect(flakyAttempts[0].next_attempt_run_node_id).toBe(flakyAttempts[1].id);
+      expect(flakyAttempts[1].state).toBe('completed');
+      expect(flakyAttempts[1].attempt).toBe(2);
+      expect(flakyAttempts[1].retry_of_run_node_id).toBe(flakyAttempts[0].id);
+
+      const downstreamNodes = run.run_nodes.filter((n: any) => n.name === 'after-flaky');
+      expect(downstreamNodes).toHaveLength(1);
+      expect(downstreamNodes[0].state).toBe('completed');
+      expect(downstreamNodes[0].attempt).toBe(1);
     } finally {
       await deleteWorkspaceWithChildren(request, wid);
     }
