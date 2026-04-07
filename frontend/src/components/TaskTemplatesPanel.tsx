@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import type { NodeType } from '../api/graphs'
-import { ANTHROPIC_MODELS, OPENAI_MODELS } from '../api/agents'
+import { SUPPORTED_MODELS_BY_AGENT_TYPE } from '../api/models'
 import {
   type TaskTemplate,
   type TaskTemplateArgType,
@@ -17,7 +17,7 @@ import {
   readStringParam,
 } from './workspaceDetailSearchParams'
 
-const MODEL_OPTIONS = [...ANTHROPIC_MODELS, ...OPENAI_MODELS]
+const MODEL_OPTIONS = SUPPORTED_MODELS_BY_AGENT_TYPE.opencode
 
 export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: string }) {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -218,16 +218,9 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
               <div style={s.row}>
                 <span style={s.label}>Model</span>
                 <select style={s.sel} value={editModel} onChange={(e) => setEditModel(e.target.value)}>
-                  <optgroup label="Anthropic">
-                    {ANTHROPIC_MODELS.map((m) => (
-                      <option key={m.value} value={m.value}>{m.label}</option>
-                    ))}
-                  </optgroup>
-                  <optgroup label="OpenAI">
-                    {OPENAI_MODELS.map((m) => (
-                      <option key={m.value} value={m.value}>{m.label}</option>
-                    ))}
-                  </optgroup>
+                  {MODEL_OPTIONS.map((m) => (
+                    <option key={m.value} value={m.value}>{m.label}</option>
+                  ))}
                 </select>
               </div>
               <div style={s.row}>

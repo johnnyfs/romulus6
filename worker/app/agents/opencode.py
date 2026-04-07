@@ -5,7 +5,7 @@ import httpx
 from collections.abc import AsyncIterator
 from app.agents.base import AgentRunner
 from app.config import settings
-from app.models import Event, EventType
+from app.models import Event, EventType, Session
 
 logger = logging.getLogger(__name__)
 
@@ -112,8 +112,10 @@ class OpenCodeRunner(AgentRunner):
         self.opencode_session_id: str | None = None
         self._queue: asyncio.Queue | None = None
 
-    async def start(self, prompt: str, workspace_dir: str, model: str, opencode_session_id: str | None = None) -> None:
+    async def start(self, *, prompt: str, session: Session) -> None:
         client = self._server.client
+        model = session.model
+        opencode_session_id = session.runner_state.get("opencode_session_id")
 
         if opencode_session_id:
             self.opencode_session_id = opencode_session_id
@@ -121,6 +123,7 @@ class OpenCodeRunner(AgentRunner):
             r = await client.post("/session", json={"title": self._session_id})
             r.raise_for_status()
             self.opencode_session_id = r.json()["id"]
+            session.runner_state["opencode_session_id"] = self.opencode_session_id
             logger.info("created opencode session %s", self.opencode_session_id)
 
         # Subscribe before sending so we don't miss early events

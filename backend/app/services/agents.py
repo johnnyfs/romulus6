@@ -41,10 +41,12 @@ async def create_agent(
     agent_type: AgentType,
     model: str,
     prompt: str,
-    name: str,
+    name: str | None,
     graph_tools: bool = False,
+    schema_id: str | None = None,
 ) -> Agent:
-    sandbox, worker = sandbox_svc.create_sandbox(session, workspace_id, name)
+    resolved_name = name or f"{agent_type.value}-{uuid.uuid4().hex[:8]}"
+    sandbox, worker = sandbox_svc.create_sandbox(session, workspace_id, resolved_name)
     if worker.worker_url is None:
         sandbox_svc.delete_sandbox(session, workspace_id, sandbox.id)
         raise RuntimeError("Worker URL not available")
@@ -55,7 +57,7 @@ async def create_agent(
         agent_type=agent_type,
         model=model,
         prompt=prompt,
-        name=name,
+        name=resolved_name,
         status=AgentStatus.starting,
         graph_tools=graph_tools,
     )
@@ -74,6 +76,7 @@ async def create_agent(
                 "graph_tools": graph_tools,
                 "workspace_id": str(workspace_id),
                 "sandbox_id": str(sandbox.id),
+                "schema_id": schema_id,
             },
         )
     except Exception:

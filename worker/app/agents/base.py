@@ -1,15 +1,15 @@
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 from app.models import Event
+from app.models import Session
 
 class AgentRunner(ABC):
     @abstractmethod
     async def start(
         self,
+        *,
         prompt: str,
-        workspace_dir: str,
-        model: str,
-        opencode_session_id: str | None = None,
+        session: Session,
     ) -> None: ...
 
     @abstractmethod

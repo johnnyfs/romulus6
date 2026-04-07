@@ -1,4 +1,5 @@
-export type AgentType = 'opencode'
+import type { AgentType, PydanticSchemaId } from './models'
+export { DEFAULT_MODEL_BY_AGENT_TYPE, PYDANTIC_SCHEMA_OPTIONS, SUPPORTED_MODELS_BY_AGENT_TYPE } from './models'
 
 export type AgentStatus =
   | 'starting'
@@ -52,25 +53,21 @@ export interface CreateOpenCodeAgentRequest {
   graph_tools?: boolean
 }
 
-export const ANTHROPIC_MODELS: { label: string; value: string }[] = [
-  { label: 'Claude Sonnet 4.6', value: 'anthropic/claude-sonnet-4-6' },
-  { label: 'Claude Opus 4.6', value: 'anthropic/claude-opus-4-6' },
-  { label: 'Claude Haiku 4.5', value: 'anthropic/claude-haiku-4-5' },
-]
+export interface CreatePydanticAgentRequest {
+  agent_type: 'pydantic'
+  model: string
+  prompt: string
+  name?: string
+  schema_id: PydanticSchemaId
+}
 
-export const OPENAI_MODELS: { label: string; value: string }[] = [
-  { label: 'GPT-4o', value: 'openai/gpt-4o' },
-  { label: 'GPT-4o mini', value: 'openai/gpt-4o-mini' },
-  { label: 'o3-mini', value: 'openai/o3-mini' },
-]
-
-export const DEFAULT_MODEL = 'anthropic/claude-sonnet-4-6'
+export type CreateAgentRequest = CreateOpenCodeAgentRequest | CreatePydanticAgentRequest
 
 export const TERMINAL_STATUSES: AgentStatus[] = ['completed', 'error', 'interrupted']
 
 export async function createAgent(
   workspaceId: string,
-  body: CreateOpenCodeAgentRequest,
+  body: CreateAgentRequest,
 ): Promise<Agent> {
   const res = await fetch(`/api/workspaces/${workspaceId}/agents`, {
     method: 'POST',

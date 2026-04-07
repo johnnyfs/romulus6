@@ -56,6 +56,45 @@ async function readFirstSseEvent(
 test.describe('Agent API', () => {
   test.setTimeout(300_000);
 
+  test('agent type requests enforce model allowlists and required schema fields', async ({ request }) => {
+    const workspaceId = await createWorkspace(request, 'Agent Validation WS');
+
+    try {
+      const badOpenCode = await request.post(`/api/v1/workspaces/${workspaceId}/agents`, {
+        data: {
+          agent_type: 'opencode',
+          model: 'google/gemini-2.5-pro',
+          name: 'bad-opencode',
+          prompt: 'hello',
+        },
+      });
+      expect(badOpenCode.status()).toBe(422);
+
+      const missingSchema = await request.post(`/api/v1/workspaces/${workspaceId}/agents`, {
+        data: {
+          agent_type: 'pydantic',
+          model: 'google/gemini-2.5-pro',
+          name: 'missing-schema',
+          prompt: 'hello',
+        },
+      });
+      expect(missingSchema.status()).toBe(422);
+
+      const badPydanticModel = await request.post(`/api/v1/workspaces/${workspaceId}/agents`, {
+        data: {
+          agent_type: 'pydantic',
+          model: 'anthropic/claude-sonnet-4-6',
+          name: 'bad-pydantic',
+          prompt: 'hello',
+          schema_id: 'structured_response_v1',
+        },
+      });
+      expect(badPydanticModel.status()).toBe(422);
+    } finally {
+      await deleteWorkspaceWithChildren(request, workspaceId);
+    }
+  });
+
   test('agent lifecycle is observable through workspace events, not agent-local polling', async ({ request }) => {
     const workspaceId = await createWorkspace(request, 'Agent Test WS');
 

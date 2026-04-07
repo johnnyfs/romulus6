@@ -15,6 +15,7 @@ import {
   patchNode,
 } from '../api/graphs'
 import type { TaskTemplate, SubgraphTemplate, SubgraphTemplateDetail } from '../api/templates'
+import { SUPPORTED_MODELS_BY_AGENT_TYPE } from '../api/models'
 import { listTaskTemplates, listSubgraphTemplates, getSubgraphTemplate } from '../api/templates'
 import { NODE_W, NODE_H, CANVAS_WIDTH, computeLayout, type Pos } from './graphLayout'
 import RunsView from './RunsView'
@@ -26,14 +27,7 @@ import {
   readStringParam,
 } from './workspaceDetailSearchParams'
 
-const MODEL_OPTIONS = [
-  { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-  { value: 'anthropic/claude-opus-4-6', label: 'Claude Opus 4.6' },
-  { value: 'anthropic/claude-haiku-4-5', label: 'Claude Haiku 4.5' },
-  { value: 'openai/gpt-4o', label: 'GPT-4o' },
-  { value: 'openai/gpt-4o-mini', label: 'GPT-4o Mini' },
-  { value: 'openai/o3-mini', label: 'o3 Mini' },
-]
+const MODEL_OPTIONS = SUPPORTED_MODELS_BY_AGENT_TYPE.opencode
 
 // ─── Component ───────────────────────────────────────────────────────────────
 

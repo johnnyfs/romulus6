@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { SUPPORTED_MODELS_BY_AGENT_TYPE } from '../api/models'
 import type { TaskTemplate, TaskTemplateArgument, SubgraphTemplate, SubgraphTemplateDetail, SubgraphTemplateNodeType } from '../api/templates'
 import {
   addSubgraphTemplateEdge,
@@ -27,14 +28,7 @@ const LAYER_H = 80
 const PADDING_TOP = 24
 const CANVAS_WIDTH = 320
 
-const MODEL_OPTIONS = [
-  { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-  { value: 'anthropic/claude-opus-4-6', label: 'Claude Opus 4.6' },
-  { value: 'anthropic/claude-haiku-4-5', label: 'Claude Haiku 4.5' },
-  { value: 'openai/gpt-4o', label: 'GPT-4o' },
-  { value: 'openai/gpt-4o-mini', label: 'GPT-4o Mini' },
-  { value: 'openai/o3-mini', label: 'o3 Mini' },
-]
+const MODEL_OPTIONS = SUPPORTED_MODELS_BY_AGENT_TYPE.opencode
 
 interface Pos { x: number; y: number }
 
