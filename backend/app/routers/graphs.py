@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sqlmodel import Session
 
 from app.database import get_session
-from app.models.agent import AgentConfig, CommandConfig
+from app.models.agent import AgentConfig, CommandConfig, OpenCodeAgentConfig, PydanticAgentConfig
 from app.models.graph import Graph, NodeType
 from app.models.run import GraphRun
 from app.models.workspace import Workspace
@@ -188,7 +188,13 @@ def _require_graph(
 def _agent_config_from(obj: Any) -> Optional[AgentConfig]:
     if obj.agent_type is None:
         return None
-    return AgentConfig(
+    if obj.agent_type == "pydantic":
+        return PydanticAgentConfig(
+            agent_type=obj.agent_type,
+            model=obj.model,
+            prompt=obj.prompt,
+        )
+    return OpenCodeAgentConfig(
         agent_type=obj.agent_type,
         model=obj.model,
         prompt=obj.prompt,

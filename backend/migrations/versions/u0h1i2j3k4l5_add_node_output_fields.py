@@ -1,7 +1,7 @@
 """add node output_schema and output fields
 
-Revision ID: t9g0h1i2j3k4
-Revises: s8f9g0h1i2j3
+Revision ID: u0h1i2j3k4l5
+Revises: t9g0h1i2j3k4
 Create Date: 2026-04-07 18:00:00.000000
 
 """
@@ -11,8 +11,8 @@ import sqlalchemy as sa
 import sqlmodel
 from alembic import op
 
-revision: str = "t9g0h1i2j3k4"
-down_revision: Union[str, None] = "s8f9g0h1i2j3"
+revision: str = "u0h1i2j3k4l5"
+down_revision: Union[str, None] = "t9g0h1i2j3k4"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -17,6 +17,7 @@ from app.services import controller as controller_svc
 from app.services import events as event_svc
 from app.services import sandboxes as sandbox_svc
 from app.services import workers as worker_svc
+from app.utils.output_schema import validate_output_against_schema
 from app.utils.slugify import slugify
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,7 @@ export default tool({
 
 
 def _resolve_output_references(session: Session, run: GraphRun, node: GraphRunNode) -> str | None:
-    """Resolve {{ slug.output }} references in a node's prompt/command using completed predecessors."""
+    """Resolve {{ slug.field }} references in a node's prompt/command using completed predecessors."""
     text = node.prompt if node.node_type == "agent" else node.command
     if not text or "{{" not in text:
         return text
@@ -59,7 +60,7 @@ def _resolve_output_references(session: Session, run: GraphRun, node: GraphRunNo
         if pred and pred.state == "completed" and pred.name:
             slug = slugify(pred.name)
             output_data = json.loads(pred.output) if pred.output else {}
-            context[slug] = {"output": output_data}
+            context[slug] = {**output_data, "output": output_data}
 
     from app.services.graphs import _jinja_env
 
@@ -339,6 +340,7 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
                     "prompt": dispatch_prompt,
                     "agent_type": node.agent_type,
                     "model": node.model,
+                    "output_schema": json.loads(node.output_schema) if node.output_schema else None,
                     "workspace_name": str(run.workspace_id),
                     "graph_tools": node.graph_tools,
                     "workspace_id": str(run.workspace_id),
@@ -433,6 +435,10 @@ def complete_node(
     node = session.get(GraphRunNode, node_id)
     if node is None or node.state == "completed":
         return
+    schema = json.loads(node.output_schema) if node.output_schema else None
+    if output is None and node.output is not None:
+        output = json.loads(node.output)
+    validate_output_against_schema(output, schema)
     if output is not None:
         node.output = json.dumps(output)
     node.state = "completed"

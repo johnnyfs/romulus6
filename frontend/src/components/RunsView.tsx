@@ -488,7 +488,7 @@ export default function RunsView({ workspaceId, onNavigateToGraphNode, onNavigat
                   </span>
                 </div>
               )}
-              {selectedRunNode.agent_config.graph_tools && (
+              {selectedRunNode.agent_config.agent_type === 'opencode' && selectedRunNode.agent_config.graph_tools && (
                 <div style={rs.inspectorRow}>
                   <span style={rs.inspectorLabel} />
                   <span style={{ ...rs.inspectorValue, color: 'var(--text-dim)' }}>graph tools enabled</span>
@@ -503,6 +503,28 @@ export default function RunsView({ workspaceId, onNavigateToGraphNode, onNavigat
               <div style={{ ...rs.inspectorRow, alignItems: 'flex-start' }}>
                 <span style={{ ...rs.inspectorValue, fontFamily: 'monospace', whiteSpace: 'pre-wrap', maxHeight: 80, overflowY: 'auto' }}>
                   {selectedRunNode.command_config.command}
+                </span>
+              </div>
+            </>
+          )}
+
+          {selectedRunNode.output_schema && (
+            <>
+              <div style={{ ...rs.inspectorTitle, marginTop: 6 }}>OUTPUT SCHEMA</div>
+              <div style={{ ...rs.inspectorRow, alignItems: 'flex-start' }}>
+                <span style={{ ...rs.inspectorValue, fontFamily: 'monospace', whiteSpace: 'pre-wrap', maxHeight: 100, overflowY: 'auto' }}>
+                  {JSON.stringify(selectedRunNode.output_schema, null, 2)}
+                </span>
+              </div>
+            </>
+          )}
+
+          {selectedRunNode.output && (
+            <>
+              <div style={{ ...rs.inspectorTitle, marginTop: 6 }}>OUTPUT</div>
+              <div style={{ ...rs.inspectorRow, alignItems: 'flex-start' }}>
+                <span style={{ ...rs.inspectorValue, fontFamily: 'monospace', whiteSpace: 'pre-wrap', maxHeight: 120, overflowY: 'auto' }}>
+                  {JSON.stringify(selectedRunNode.output, null, 2)}
                 </span>
               </div>
             </>

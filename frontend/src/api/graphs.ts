@@ -2,12 +2,20 @@ const BASE = '/api'
 
 export type NodeType = 'agent' | 'command' | 'task_template' | 'subgraph_template'
 
-export interface AgentConfig {
-  agent_type: string
+export interface OpenCodeAgentConfig {
+  agent_type: 'opencode'
   model: string
   prompt: string
   graph_tools?: boolean
 }
+
+export interface PydanticAgentConfig {
+  agent_type: 'pydantic'
+  model: string
+  prompt: string
+}
+
+export type AgentConfig = OpenCodeAgentConfig | PydanticAgentConfig
 
 export interface CommandConfig {
   command: string

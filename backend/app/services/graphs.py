@@ -18,6 +18,7 @@ from app.models.template import (
     TaskTemplateArgument,
     TemplateArgType,
 )
+from app.utils.output_schema import validate_output_schema_definition
 
 
 @dataclass
@@ -195,6 +196,7 @@ def _validate_no_cycle_by_index(
 
 def _build_graph_node(graph_id: uuid.UUID, node_input: NodeInput) -> GraphNode:
     """Build a GraphNode from a NodeInput, including template fields."""
+    validate_output_schema_definition(node_input.output_schema)
     bindings_json = (
         json.dumps(node_input.argument_bindings)
         if node_input.argument_bindings
@@ -356,6 +358,7 @@ def add_node(
     if node_type == NodeType.subgraph_template and subgraph_template_id is not None:
         _validate_no_materialization_cycle(session, subgraph_template_id, set())
 
+    validate_output_schema_definition(output_schema)
     bindings_json = json.dumps(argument_bindings) if argument_bindings else None
     output_schema_json = json.dumps(output_schema) if output_schema else None
     node = GraphNode(
@@ -406,6 +409,8 @@ def patch_node(
     )
     if effective_type == NodeType.subgraph_template and effective_sg_id is not None:
         _validate_no_materialization_cycle(session, effective_sg_id, set())
+
+    validate_output_schema_definition(output_schema)
 
     if name is not None:
         node.name = name

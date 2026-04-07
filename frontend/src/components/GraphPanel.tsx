@@ -15,7 +15,7 @@ import {
   patchNode,
 } from '../api/graphs'
 import type { TaskTemplate, SubgraphTemplate, SubgraphTemplateDetail } from '../api/templates'
-import { SUPPORTED_MODELS_BY_AGENT_TYPE } from '../api/models'
+import { DEFAULT_MODEL_BY_AGENT_TYPE, SUPPORTED_MODELS_BY_AGENT_TYPE, type AgentType } from '../api/models'
 import { listTaskTemplates, listSubgraphTemplates, getSubgraphTemplate } from '../api/templates'
 import { NODE_W, NODE_H, CANVAS_WIDTH, computeLayout, type Pos } from './graphLayout'
 import RunsView from './RunsView'
@@ -26,8 +26,6 @@ import {
   readEnumParam,
   readStringParam,
 } from './workspaceDetailSearchParams'
-
-const MODEL_OPTIONS = SUPPORTED_MODELS_BY_AGENT_TYPE.opencode
 
 function slugify(name: string): string {
   return name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')
@@ -49,7 +47,8 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
   const [newDeptTo, setNewDeptTo] = useState<string>('')
   const [editName, setEditName] = useState('')
   const [editType, setEditType] = useState<NodeType>('agent')
-  const [editModel, setEditModel] = useState(MODEL_OPTIONS[0].value)
+  const [editAgentType, setEditAgentType] = useState<AgentType>('opencode')
+  const [editModel, setEditModel] = useState(DEFAULT_MODEL_BY_AGENT_TYPE.opencode)
   const [editPrompt, setEditPrompt] = useState('')
   const [editCommand, setEditCommand] = useState('')
   const [editGraphTools, setEditGraphTools] = useState(false)
@@ -165,11 +164,13 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
       setEditName(node.name ?? '')
       setEditType(node.node_type)
       if (node.agent_config) {
+        setEditAgentType(node.agent_config.agent_type)
         setEditModel(node.agent_config.model)
         setEditPrompt(node.agent_config.prompt)
-        setEditGraphTools(node.agent_config.graph_tools ?? false)
+        setEditGraphTools(node.agent_config.agent_type === 'opencode' ? (node.agent_config.graph_tools ?? false) : false)
       } else {
-        setEditModel(MODEL_OPTIONS[0].value)
+        setEditAgentType('opencode')
+        setEditModel(DEFAULT_MODEL_BY_AGENT_TYPE.opencode)
         setEditPrompt('')
         setEditGraphTools(false)
       }
@@ -339,7 +340,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
       .map(e => e.from_node_id)
     return detail.nodes
       .filter(n => parentIds.includes(n.id) && n.name)
-      .map(n => ({ name: n.name!, slug: slugify(n.name!), hasSchema: !!n.output_schema }))
+      .map(n => ({ name: n.name!, slug: slugify(n.name!), fields: Object.keys(n.output_schema ?? {}) }))
   }, [detail, selectedNodeId])
 
   const refTemplateArgs = useMemo(() => {
@@ -353,6 +354,11 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
     return []
   }, [editType, editTaskTemplateId, editSubgraphTemplateId, taskTemplates, sgDetailCache])
 
+  const modelOptions = useMemo(
+    () => SUPPORTED_MODELS_BY_AGENT_TYPE[editAgentType],
+    [editAgentType],
+  )
+
   async function handleSaveNode() {
     if (!selectedNodeId || !activeGraphId) return
     const patch: Record<string, any> = {
@@ -360,7 +366,9 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
       node_type: editType,
     }
     if (editType === 'agent') {
-      patch.agent_config = { agent_type: 'opencode', model: editModel, prompt: editPrompt, graph_tools: editGraphTools }
+      patch.agent_config = editAgentType === 'pydantic'
+        ? { agent_type: 'pydantic', model: editModel, prompt: editPrompt }
+        : { agent_type: 'opencode', model: editModel, prompt: editPrompt, graph_tools: editGraphTools }
       if (Object.keys(editOutputSchema).length > 0) patch.output_schema = editOutputSchema
     } else if (editType === 'command') {
       patch.command_config = { command: editCommand }
@@ -688,7 +696,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
                     onMouseEnter={() => setHoveredNodeId(node.id)}
                   >
                     {node.name || (node.agent_config
-                      ? MODEL_OPTIONS.find(m => m.value === node.agent_config!.model)?.label ?? 'agent'
+                      ? SUPPORTED_MODELS_BY_AGENT_TYPE[node.agent_config.agent_type as AgentType]?.find(m => m.value === node.agent_config!.model)?.label ?? 'agent'
                       : node.node_type)}
                   </div>
 
@@ -787,26 +795,49 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
           {editType === 'agent' && (
             <>
               <div style={s.inspectorRow}>
-                <label style={s.inspectorLabel}>Model:</label>
+                <label style={s.inspectorLabel} htmlFor="graph-node-agent-type">Agent:</label>
+                <select
+                  id="graph-node-agent-type"
+                  style={s.inspectorSelect}
+                  value={editAgentType}
+                  onChange={(e) => {
+                    const nextType = e.target.value as AgentType
+                    markDirty(setEditAgentType)(nextType)
+                    setEditModel(DEFAULT_MODEL_BY_AGENT_TYPE[nextType])
+                    if (nextType !== 'opencode') {
+                      setEditGraphTools(false)
+                    }
+                  }}
+                >
+                  <option value="opencode">opencode</option>
+                  <option value="pydantic">pydantic</option>
+                </select>
+              </div>
+              <div style={s.inspectorRow}>
+                <label style={s.inspectorLabel} htmlFor="graph-node-model">Model:</label>
                 <select style={s.inspectorSelect} value={editModel}
+                  id="graph-node-model"
                   onChange={(e) => markDirty(setEditModel)(e.target.value)}>
-                  {MODEL_OPTIONS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                  {modelOptions.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
                 </select>
               </div>
               <div style={{ ...s.inspectorRow, alignItems: 'flex-start' }}>
-                <label style={{ ...s.inspectorLabel, marginTop: 4 }}>Prompt:</label>
+                <label style={{ ...s.inspectorLabel, marginTop: 4 }} htmlFor="graph-node-prompt">Prompt:</label>
                 <textarea style={{ ...s.inspectorInput, minHeight: 60, resize: 'vertical', fontFamily: 'inherit' }}
+                  id="graph-node-prompt"
                   value={editPrompt} onChange={(e) => markDirty(setEditPrompt)(e.target.value)}
                   placeholder="Enter agent prompt..." />
               </div>
-              <div style={s.inspectorRow}>
-                <label style={s.inspectorLabel}>
-                  <input type="checkbox" checked={editGraphTools}
-                    onChange={(e) => markDirty(setEditGraphTools)(e.target.checked)}
-                    style={{ marginRight: 6 }} />
-                  Graph Editor
-                </label>
-              </div>
+              {editAgentType === 'opencode' && (
+                <div style={s.inspectorRow}>
+                  <label style={s.inspectorLabel}>
+                    <input type="checkbox" checked={editGraphTools}
+                      onChange={(e) => markDirty(setEditGraphTools)(e.target.checked)}
+                      style={{ marginRight: 6 }} />
+                    Graph Editor
+                  </label>
+                </div>
+              )}
             </>
           )}
           {editType === 'command' && (
@@ -911,9 +942,17 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
             <div style={{ marginTop: 6, fontSize: '11px', color: 'var(--text-muted)', padding: '0 4px' }}>
               <div style={{ fontWeight: 600, marginBottom: 2 }}>Available refs:</div>
               {upstreamRefs.map(ref => (
-                <div key={ref.slug} style={{ fontFamily: 'monospace', marginBottom: 1 }}>
-                  {'{{ '}{ref.slug}.output{' }}'}
-                </div>
+                ref.fields.length > 0
+                  ? ref.fields.map(field => (
+                    <div key={`${ref.slug}.${field}`} style={{ fontFamily: 'monospace', marginBottom: 1 }}>
+                      {'{{ '}{ref.slug}.{field}{' }}'}
+                    </div>
+                  ))
+                  : (
+                    <div key={ref.slug} style={{ fontFamily: 'monospace', marginBottom: 1, opacity: 0.65 }}>
+                      {ref.slug} has no declared output schema yet
+                    </div>
+                  )
               ))}
             </div>
           )}

@@ -239,9 +239,15 @@ def ingest_worker_event(
             if node.graph_tools and event_type == "tool.use" and payload.get("data", {}).get("tool_name") == MARK_COMPLETE_TOOL:
                 tool_input = payload.get("data", {}).get("tool_input", {})
                 output = tool_input.get("output")
-                run_svc.complete_node(session, run_id, node_id, output=output)
+                try:
+                    run_svc.complete_node(session, run_id, node_id, output=output)
+                except ValueError as exc:
+                    run_svc.fail_node_and_run(session, run_id, node_id, str(exc))
             elif not node.graph_tools and event_type == "session.idle":
-                run_svc.complete_node(session, run_id, node_id)
+                try:
+                    run_svc.complete_node(session, run_id, node_id)
+                except ValueError as exc:
+                    run_svc.fail_node_and_run(session, run_id, node_id, str(exc))
             elif event_type == "session.error":
                 run_svc.fail_node_and_run(session, run_id, node_id, "worker session error")
             else:

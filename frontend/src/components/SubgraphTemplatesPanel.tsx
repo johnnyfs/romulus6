@@ -189,7 +189,7 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
       setEditNodeType(node.node_type)
       setEditModel(node.agent_config?.model ?? MODEL_OPTIONS[0].value)
       setEditPrompt(node.agent_config?.prompt ?? '')
-      setEditGraphTools(node.agent_config?.graph_tools ?? false)
+      setEditGraphTools(node.agent_config?.agent_type === 'opencode' ? (node.agent_config.graph_tools ?? false) : false)
       setEditCommand(node.command_config?.command ?? '')
       setEditTaskTemplateId(node.task_template_id ?? '')
       setEditRefSubgraphId(node.ref_subgraph_template_id ?? '')
