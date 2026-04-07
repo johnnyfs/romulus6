@@ -14,8 +14,8 @@ class PydanticRunner(AgentRunner):
         self._task: asyncio.Task[None] | None = None
 
     async def start(self, *, prompt: str, session: Session) -> None:
-        if session.schema_id is None:
-            raise ValueError("schema_id is required for pydantic runner")
+        if session.schema_id is None and session.output_schema is None:
+            raise ValueError("schema_id or output_schema is required for pydantic runner")
 
         async def _run() -> None:
             try:
@@ -26,6 +26,7 @@ class PydanticRunner(AgentRunner):
                     model=session.model,
                     prompt=prompt,
                     schema_id=session.schema_id,
+                    output_schema=session.output_schema,
                 )
                 await self._queue.put(
                     Event(
@@ -34,6 +35,7 @@ class PydanticRunner(AgentRunner):
                         data={
                             "delta": output.model_dump_json(indent=2),
                             "schema_id": session.schema_id,
+                            "output_schema": session.output_schema,
                             "structured_output": output.model_dump(mode="json"),
                         },
                     )
