@@ -1,9 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import {
-  ANTHROPIC_MODELS,
-  DEFAULT_MODEL,
-  OPENAI_MODELS,
   TERMINAL_STATUSES,
   type Agent,
   type AgentEvent,
@@ -13,6 +10,13 @@ import {
   sendFeedback,
   sendMessage,
 } from '../api/agents'
+import {
+  DEFAULT_MODEL_BY_AGENT_TYPE,
+  PYDANTIC_SCHEMA_OPTIONS,
+  SUPPORTED_MODELS_BY_AGENT_TYPE,
+  type AgentType,
+  type PydanticSchemaId,
+} from '../api/models'
 import { listWorkspaceEvents, streamWorkspaceEvents } from '../api/workspaceEvents'
 import { getWorkspace, type Workspace } from '../api/workspaces'
 import AgentCard from '../components/AgentCard'
@@ -149,7 +153,9 @@ export default function WorkspaceDetailPage() {
   const [agentTerminal, setAgentTerminal] = useState<Record<string, boolean>>({})
   const [expandedBlocks, setExpandedBlocks] = useState<Set<string>>(new Set())
   const [showForm, setShowForm] = useState(false)
-  const [formModel, setFormModel] = useState(DEFAULT_MODEL)
+  const [formAgentType, setFormAgentType] = useState<AgentType>('opencode')
+  const [formModel, setFormModel] = useState(DEFAULT_MODEL_BY_AGENT_TYPE.opencode)
+  const [formSchemaId, setFormSchemaId] = useState<PydanticSchemaId>('structured_response_v1')
   const [formPrompt, setFormPrompt] = useState('')
   const [formName, setFormName] = useState('')
   const [formGraphTools, setFormGraphTools] = useState(false)
@@ -468,23 +474,44 @@ export default function WorkspaceDetailPage() {
 
   // ── Actions ───────────────────────────────────────────────────────────────
 
-  async function handleCreateAgent(prompt: string, model: string, name: string, graphTools: boolean = false) {
+  async function handleCreateAgent(
+    prompt: string,
+    model: string,
+    name: string,
+    graphTools: boolean = false,
+    agentType: AgentType = 'opencode',
+    schemaId: PydanticSchemaId = 'structured_response_v1',
+  ) {
     if (!id || !prompt.trim()) return
     setCreating(true)
     try {
-      const agent = await createAgent(id, {
-        agent_type: 'opencode',
-        model,
-        prompt: prompt.trim(),
-        name: name.trim() || undefined,
-        graph_tools: graphTools || undefined,
-      })
+      const agent = await createAgent(
+        id,
+        agentType === 'pydantic'
+          ? {
+              agent_type: 'pydantic',
+              model,
+              prompt: prompt.trim(),
+              name: name.trim() || undefined,
+              schema_id: schemaId,
+            }
+          : {
+              agent_type: 'opencode',
+              model,
+              prompt: prompt.trim(),
+              name: name.trim() || undefined,
+              graph_tools: graphTools || undefined,
+            },
+      )
       setAgents((prev) => [...prev, agent])
       setSelectedAgentId(agent.id)
       setShowForm(false)
       setFormPrompt('')
       setFormName('')
       setFormGraphTools(false)
+      setFormAgentType('opencode')
+      setFormModel(DEFAULT_MODEL_BY_AGENT_TYPE.opencode)
+      setFormSchemaId('structured_response_v1')
     } finally {
       setCreating(false)
     }
@@ -495,7 +522,7 @@ export default function WorkspaceDetailPage() {
     setCreating(true)
     try {
       if (targetAgentId === 'new') {
-        await handleCreateAgent(chatInput.trim(), DEFAULT_MODEL, '')
+        await handleCreateAgent(chatInput.trim(), DEFAULT_MODEL_BY_AGENT_TYPE.opencode, '')
       } else {
         setUserMessages((prev) => [
           ...prev,
@@ -560,27 +587,53 @@ export default function WorkspaceDetailPage() {
           {showForm && (
             <div style={styles.form}>
               <div style={styles.formRow}>
-                <label style={styles.label}>Model</label>
+                <label style={styles.label} htmlFor="agent-type-select">Type</label>
                 <select
+                  id="agent-type-select"
+                  style={styles.select}
+                  value={formAgentType}
+                  onChange={(e) => {
+                    const nextType = e.target.value as AgentType
+                    setFormAgentType(nextType)
+                    setFormModel(DEFAULT_MODEL_BY_AGENT_TYPE[nextType])
+                  }}
+                >
+                  <option value="opencode">OpenCode</option>
+                  <option value="pydantic">Pydantic</option>
+                </select>
+              </div>
+              <div style={styles.formRow}>
+                <label style={styles.label} htmlFor="agent-model-select">Model</label>
+                <select
+                  id="agent-model-select"
                   style={styles.select}
                   value={formModel}
                   onChange={(e) => setFormModel(e.target.value)}
                 >
-                  <optgroup label="Anthropic">
-                    {ANTHROPIC_MODELS.map((m) => (
-                      <option key={m.value} value={m.value}>{m.label}</option>
-                    ))}
-                  </optgroup>
-                  <optgroup label="OpenAI">
-                    {OPENAI_MODELS.map((m) => (
-                      <option key={m.value} value={m.value}>{m.label}</option>
-                    ))}
-                  </optgroup>
+                  {SUPPORTED_MODELS_BY_AGENT_TYPE[formAgentType].map((m) => (
+                    <option key={m.value} value={m.value}>{m.label}</option>
+                  ))}
                 </select>
               </div>
+              {formAgentType === 'pydantic' && (
+                <div style={styles.formRow}>
+                  <label style={styles.label} htmlFor="agent-schema-select">Schema</label>
+                  <select
+                    id="agent-schema-select"
+                    style={styles.select}
+                    value={formSchemaId}
+                    onChange={(e) => setFormSchemaId(e.target.value as PydanticSchemaId)}
+                  >
+                    {PYDANTIC_SCHEMA_OPTIONS.map((schema) => (
+                      <option key={schema.value} value={schema.value}>{schema.label}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div style={styles.formRow}>
-                <label style={styles.label}>Name (optional)</label>
+                <label style={styles.label} htmlFor="agent-name-input">Name (optional)</label>
                 <input
+                  id="agent-name-input"
                   style={styles.input}
                   value={formName}
                   onChange={(e) => setFormName(e.target.value)}
@@ -588,8 +641,9 @@ export default function WorkspaceDetailPage() {
                 />
               </div>
               <div style={styles.formRow}>
-                <label style={styles.label}>Prompt</label>
+                <label style={styles.label} htmlFor="agent-prompt-input">Prompt</label>
                 <textarea
+                  id="agent-prompt-input"
                   style={styles.textarea}
                   value={formPrompt}
                   onChange={(e) => setFormPrompt(e.target.value)}
@@ -597,21 +651,23 @@ export default function WorkspaceDetailPage() {
                   rows={4}
                 />
               </div>
-              <div style={styles.formRow}>
-                <label style={styles.label}>
-                  <input
-                    type="checkbox"
-                    checked={formGraphTools}
-                    onChange={(e) => setFormGraphTools(e.target.checked)}
-                    style={{ marginRight: 6 }}
-                  />
-                  Graph Editor
-                </label>
-              </div>
+              {formAgentType === 'opencode' && (
+                <div style={styles.formRow}>
+                  <label style={styles.label}>
+                    <input
+                      type="checkbox"
+                      checked={formGraphTools}
+                      onChange={(e) => setFormGraphTools(e.target.checked)}
+                      style={{ marginRight: 6 }}
+                    />
+                    Graph Editor
+                  </label>
+                </div>
+              )}
               <button
                 style={{ ...styles.submitBtn, opacity: creating || !formPrompt.trim() ? 0.4 : 1 }}
                 disabled={creating || !formPrompt.trim()}
-                onClick={() => handleCreateAgent(formPrompt, formModel, formName, formGraphTools)}
+                onClick={() => handleCreateAgent(formPrompt, formModel, formName, formGraphTools, formAgentType, formSchemaId)}
               >
                 {creating ? 'Dispatching…' : 'Dispatch'}
               </button>

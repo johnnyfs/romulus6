@@ -7,6 +7,8 @@ from sqlalchemy import Index, text
 from sqlmodel import Field, Relationship
 
 from .base import RomulusBase
+from .pydantic_agent import PydanticSchemaId
+from .supported_models import SupportedModel
 
 if TYPE_CHECKING:
     from .sandbox import Sandbox
@@ -15,21 +17,7 @@ if TYPE_CHECKING:
 
 class AgentType(str, Enum):
     opencode = "opencode"
-
-
-# Anthropic model IDs follow Anthropic's versioning scheme and may need
-# periodic updates as new versions are released.
-class AnthropicModel(str, Enum):
-    claude_sonnet = "anthropic/claude-sonnet-4-6"
-    claude_opus = "anthropic/claude-opus-4-6"
-    claude_haiku = "anthropic/claude-haiku-4-5"
-
-
-# OpenAI model IDs are stable aliases that don't require versioning.
-class OpenAIModel(str, Enum):
-    gpt_4o = "openai/gpt-4o"
-    gpt_4o_mini = "openai/gpt-4o-mini"
-    o3_mini = "openai/o3-mini"
+    pydantic = "pydantic"
 
 
 class AgentStatus(str, Enum):
@@ -45,9 +33,18 @@ class AgentStatus(str, Enum):
 class AgentConfig(BaseModel):
     """Shared agent configuration used by both ad hoc dispatch and graph agent nodes."""
     agent_type: Literal["opencode"] = "opencode"
-    model: AnthropicModel | OpenAIModel
+    model: SupportedModel
     prompt: str
     graph_tools: bool = False
+
+    model_config = {"from_attributes": True}
+
+
+class PydanticAgentConfig(BaseModel):
+    agent_type: Literal["pydantic"] = "pydantic"
+    model: SupportedModel
+    prompt: str
+    schema_id: PydanticSchemaId
 
     model_config = {"from_attributes": True}
 
