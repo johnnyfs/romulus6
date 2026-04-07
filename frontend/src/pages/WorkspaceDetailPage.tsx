@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAutoResize } from '../hooks/useAutoResize'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import {
-  TERMINAL_STATUSES,
   type Agent,
   type AgentEvent,
   createAgent,
@@ -12,6 +11,7 @@ import {
   sendFeedback,
   sendMessage,
 } from '../api/agents'
+import { getSandboxDebugSummary, type SandboxDebugSummary } from '../api/sandboxes'
 import {
   DEFAULT_MODEL_BY_AGENT_TYPE,
   PYDANTIC_SCHEMA_OPTIONS,
@@ -26,8 +26,10 @@ import FeedbackRequest from '../components/FeedbackRequest'
 import GraphPanel from '../components/GraphPanel'
 import {
   WORKSPACE_DETAIL_PARAM_KEYS,
+  type WorkspaceDetailTab,
   mergeSearchParams,
   readBooleanParam,
+  readEnumParam,
   readStringParam,
 } from '../components/workspaceDetailSearchParams'
 
@@ -42,11 +44,16 @@ interface ActivityBlock {
 
 type FeedItem =
   | { kind: 'message'; agentId: string; event: AgentEvent; key: string }
-  | { kind: 'user'; agentId: string; prompt: string; timestamp: string; key: string }
+  | { kind: 'user'; agentId: string; prompt: string; timestamp: string; key: string; isDispatch?: boolean }
   | { kind: 'activity'; block: ActivityBlock }
   | { kind: 'feedback'; agentId: string; event: AgentEvent; key: string; resolved: boolean; resolvedResponse?: string }
 
 const ACTIVITY_TYPES = new Set(['tool.use', 'file.edit', 'command.output'])
+
+const AGENT_COLORS = [
+  '#2dd4bf', '#f97066', '#a78bfa', '#84cc16', '#f59e0b', '#e879a8',
+  '#38bdf8', '#f97316', '#34d399', '#f472b6', '#818cf8', '#fbbf24',
+]
 
 function isActivity(type: string): boolean {
   return ACTIVITY_TYPES.has(type)
@@ -75,8 +82,18 @@ function renderActivityEvent(event: AgentEvent): string {
   switch (event.type) {
     case 'file.edit':
       return `✎ ${String(event.data.path ?? 'file')}`
-    case 'tool.use':
-      return `⚙ ${String(event.data.tool ?? 'tool')}`
+    case 'tool.use': {
+      const tool = String(event.data.tool ?? 'tool')
+      const args = event.data.args as Record<string, unknown> | undefined
+      if (args && typeof args === 'object') {
+        const keys = Object.keys(args)
+        if (keys.length > 0) {
+          const preview = keys.map((k) => `${k}=${JSON.stringify(args[k])}`).join(', ')
+          return `⚙ ${tool}(${preview.length > 80 ? preview.slice(0, 77) + '…' : preview})`
+        }
+      }
+      return `⚙ ${tool}`
+    }
     case 'command.output': {
       const out = String(event.data.stdout ?? '').trim()
       const err = String(event.data.stderr ?? '').trim()
@@ -88,12 +105,44 @@ function renderActivityEvent(event: AgentEvent): string {
   }
 }
 
+function ToolUseDetail({ event }: { event: AgentEvent }) {
+  const [expanded, setExpanded] = useState(false)
+  const tool = String(event.data.tool ?? 'tool')
+  const args = event.data.args as Record<string, unknown> | undefined
+  const stdout = event.data.stdout ? String(event.data.stdout) : null
+  const hasDetail = (args && Object.keys(args).length > 0) || stdout
+
+  return (
+    <div>
+      <span
+        style={{ ...hist.accent, cursor: hasDetail ? 'pointer' : 'default' }}
+        onClick={hasDetail ? () => setExpanded((v) => !v) : undefined}
+      >
+        {hasDetail && <span style={{ fontSize: '10px', marginRight: '4px' }}>{expanded ? '∨' : '›'}</span>}
+        ⚙ {tool}
+      </span>
+      {expanded && (
+        <div style={{ marginTop: '4px' }}>
+          {args && Object.keys(args).length > 0 && (
+            <pre style={hist.pre}>{JSON.stringify(args, null, 2)}</pre>
+          )}
+          {stdout && (
+            <pre style={{ ...hist.pre, marginTop: '4px' }}>
+              {stdout}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function renderActivityHistory(event: AgentEvent): React.ReactNode {
   switch (event.type) {
     case 'file.edit':
       return <span style={hist.accent}>✎ {String(event.data.path ?? 'file')}</span>
     case 'tool.use':
-      return <span style={hist.accent}>⚙ {String(event.data.tool ?? 'tool')}</span>
+      return <ToolUseDetail event={event} />
     case 'command.output':
       return (
         <pre style={hist.pre}>
@@ -130,11 +179,13 @@ function ActivityLine({
   expanded,
   onToggle,
   sourceLabel,
+  color,
 }: {
   block: ActivityBlock
   expanded: boolean
   onToggle: () => void
   sourceLabel: string
+  color?: string
 }) {
   return (
     <div style={styles.activityWrap}>
@@ -142,7 +193,7 @@ function ActivityLine({
         <button style={styles.chevron} onClick={onToggle} title="Toggle history">
           {expanded ? '∨' : '›'}
         </button>
-        <span style={styles.activityPrefix}>{sourceLabel}</span>
+        <span style={{ ...styles.activityPrefix, color: color ?? 'var(--text-dim)' }}>{sourceLabel}</span>
         <span style={styles.activityLatest}>
           {renderActivityEvent(block.latest)}
         </span>
@@ -167,6 +218,12 @@ export default function WorkspaceDetailPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [workspace, setWorkspace] = useState<Workspace | null>(null)
   const [agents, setAgents] = useState<Agent[]>([])
+  const activeTab = readEnumParam(
+    searchParams,
+    WORKSPACE_DETAIL_PARAM_KEYS.workspaceTab,
+    ['activity', 'sandboxes'] as const,
+    'activity',
+  )
   const selectedAgentId = readStringParam(searchParams, WORKSPACE_DETAIL_PARAM_KEYS.agentId)
   const setSelectedAgentId = useCallback(
     (agentId: string | null) => {
@@ -193,8 +250,12 @@ export default function WorkspaceDetailPage() {
   const chatRef = useAutoResize(chatInput, 144)
   const promptRef = useAutoResize(formPrompt, 234, 60)
   const [targetAgentId, setTargetAgentId] = useState<string>('new')
+  // Reset target if the selected agent gets dismissed
+  const effectiveTargetId = targetAgentId === 'new' ? 'new'
+    : agents.find((a) => a.id === targetAgentId && !a.dismissed) ? targetAgentId
+    : 'new'
   const [userMessages, setUserMessages] = useState<
-    { agentId: string; prompt: string; timestamp: string }[]
+    { agentId: string; prompt: string; timestamp: string; isDispatch?: boolean }[]
   >(() => {
     try {
       const stored = localStorage.getItem(`user-messages-${id}`)
@@ -221,6 +282,9 @@ export default function WorkspaceDetailPage() {
   const [agentWaiting, setAgentWaiting] = useState<Record<string, boolean>>({})
   const [resolvedFeedback, setResolvedFeedback] = useState<Record<string, string>>({})
   const [graphWidth, setGraphWidth] = useState(340)
+  const [sandboxDebug, setSandboxDebug] = useState<SandboxDebugSummary | null>(null)
+  const [sandboxDebugLoading, setSandboxDebugLoading] = useState(false)
+  const [hideFailedWorkers, setHideFailedWorkers] = useState(false)
   const isDragging = useRef(false)
   const dragStartX = useRef(0)
   const dragStartWidth = useRef(0)
@@ -347,12 +411,14 @@ export default function WorkspaceDetailPage() {
   // Initialize list/feed visibility params if absent
   useEffect(() => {
     if (
+      searchParams.get(WORKSPACE_DETAIL_PARAM_KEYS.workspaceTab) == null ||
       searchParams.get(WORKSPACE_DETAIL_PARAM_KEYS.showDeadMessages) == null ||
       searchParams.get(WORKSPACE_DETAIL_PARAM_KEYS.showDismissedAgents) == null
     ) {
       setSearchParams(
         (prev) =>
           mergeSearchParams(prev, {
+            [WORKSPACE_DETAIL_PARAM_KEYS.workspaceTab]: 'activity',
             [WORKSPACE_DETAIL_PARAM_KEYS.showDeadMessages]: '1',
             [WORKSPACE_DETAIL_PARAM_KEYS.showDismissedAgents]: '1',
           }),
@@ -366,20 +432,44 @@ export default function WorkspaceDetailPage() {
     feedBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [eventMap, userMessages])
 
+  const loadSandboxDebug = useCallback(async () => {
+    if (!id) return
+    setSandboxDebugLoading(true)
+    try {
+      setSandboxDebug(await getSandboxDebugSummary(id))
+    } finally {
+      setSandboxDebugLoading(false)
+    }
+  }, [id])
+
+  useEffect(() => {
+    if (!id || activeTab !== 'sandboxes') return
+    loadSandboxDebug().catch(() => {})
+    const interval = window.setInterval(() => {
+      loadSandboxDebug().catch(() => {})
+    }, 5000)
+    return () => window.clearInterval(interval)
+  }, [activeTab, id, loadSandboxDebug])
+
   // ── Feed building ─────────────────────────────────────────────────────────
 
   // Dead agent IDs for filter (must be before `feed` which depends on it)
-  const deadAgentIds = useMemo(() => {
-    const ids = new Set<string>()
-    for (const agent of agents) {
-      if (TERMINAL_STATUSES.includes(agent.status)) ids.add(agent.id)
-    }
-    // Agents that were deleted but still have events
-    for (const sourceId of Object.keys(eventMap)) {
-      if (!agents.find((a) => a.id === sourceId)) ids.add(sourceId)
-    }
-    return ids
-  }, [agents, eventMap])
+  const dismissedAgentIds = useMemo(() => {
+    return new Set(agents.filter((a) => a.dismissed).map((a) => a.id))
+  }, [agents])
+
+  const agentColorMap = useMemo(() => {
+    const map: Record<string, string> = {}
+    const sorted = [...agents].sort((a, b) => a.created_at.localeCompare(b.created_at))
+    sorted.forEach((agent, i) => {
+      map[agent.id] = AGENT_COLORS[i % AGENT_COLORS.length]
+    })
+    return map
+  }, [agents])
+
+  function agentColor(agentId: string, event?: AgentEvent): string {
+    return event?.display_color ?? agentColorMap[agentId] ?? 'var(--accent)'
+  }
 
   const feed = useMemo((): FeedItem[] => {
     const allRaw: { event: AgentEvent; streamKey: string }[] = []
@@ -394,7 +484,7 @@ export default function WorkspaceDetailPage() {
           session_id: '',
           type: 'user.message',
           timestamp: msg.timestamp,
-          data: { prompt: msg.prompt },
+          data: { prompt: msg.prompt, isDispatch: msg.isDispatch },
         },
       })
     }
@@ -413,7 +503,7 @@ export default function WorkspaceDetailPage() {
 
     for (const { event, streamKey } of allRaw) {
       const agentId = event.agent_id ?? (streamKey.startsWith('agent:') ? streamKey.slice('agent:'.length) : null)
-      if (!showDeadMessages && agentId && deadAgentIds.has(agentId)) continue
+      if (!showDeadMessages && agentId && dismissedAgentIds.has(agentId)) continue
       if (event.type === 'text.delta') {
         const key = String(event.data.message_id ?? event.data.session_id ?? agentId)
         const partKey = String(event.data.part_id ?? event.id)
@@ -452,6 +542,7 @@ export default function WorkspaceDetailPage() {
           key: event.id,
           prompt: String(event.data.prompt ?? ''),
           timestamp: event.timestamp,
+          isDispatch: !!event.data.isDispatch,
         })
         delete activityIdx[streamKey]
       } else if (event.type === 'feedback.request') {
@@ -488,7 +579,7 @@ export default function WorkspaceDetailPage() {
     }
 
     return items
-  }, [eventMap, userMessages, showDeadMessages, deadAgentIds, resolvedFeedback])
+  }, [eventMap, userMessages, showDeadMessages, dismissedAgentIds, resolvedFeedback])
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -598,6 +689,10 @@ export default function WorkspaceDetailPage() {
             },
       )
       setAgents((prev) => [...prev, agent])
+      setUserMessages((prev) => [
+        ...prev,
+        { agentId: agent.id, prompt: prompt.trim(), timestamp: new Date().toISOString(), isDispatch: true },
+      ])
       setSelectedAgentId(agent.id)
       setShowForm(false)
       setFormPrompt('')
@@ -615,15 +710,15 @@ export default function WorkspaceDetailPage() {
     if (!id || !chatInput.trim()) return
     setCreating(true)
     try {
-      if (targetAgentId === 'new') {
+      if (effectiveTargetId === 'new') {
         await handleCreateAgent(chatInput.trim(), DEFAULT_MODEL_BY_AGENT_TYPE.opencode, '')
       } else {
         setUserMessages((prev) => [
           ...prev,
-          { agentId: targetAgentId, prompt: chatInput.trim(), timestamp: new Date().toISOString() },
+          { agentId: effectiveTargetId, prompt: chatInput.trim(), timestamp: new Date().toISOString() },
         ])
-        await sendMessage(id, targetAgentId, chatInput.trim())
-        setAgentTerminal((prev) => ({ ...prev, [targetAgentId]: false }))
+        await sendMessage(id, effectiveTargetId, chatInput.trim())
+        setAgentTerminal((prev) => ({ ...prev, [effectiveTargetId]: false }))
       }
       setChatInput('')
     } finally {
@@ -632,6 +727,16 @@ export default function WorkspaceDetailPage() {
   }
 
   const workspaceName = workspace?.name ?? '…'
+
+  const setActiveTab = useCallback(
+    (tab: WorkspaceDetailTab) => {
+      setSearchParams(
+        (prev) => mergeSearchParams(prev, { [WORKSPACE_DETAIL_PARAM_KEYS.workspaceTab]: tab }),
+        { replace: false },
+      )
+    },
+    [setSearchParams],
+  )
 
   // ── Graph panel resize ────────────────────────────────────────────────────
 
@@ -672,7 +777,25 @@ export default function WorkspaceDetailPage() {
       <div style={styles.body}>
         {/* Sidebar */}
         <div style={styles.sidebar}>
-          <div style={styles.sidebarLabel}>Agents</div>
+          <div style={styles.sidebarHeader}>
+            <span style={styles.sidebarLabel}>Agents</span>
+            <label style={styles.sidebarDismissedToggle}>
+              <input
+                type="checkbox"
+                checked={showDismissedAgents}
+                onChange={(e) => {
+                  setSearchParams(
+                    (prev) =>
+                      mergeSearchParams(prev, {
+                        [WORKSPACE_DETAIL_PARAM_KEYS.showDismissedAgents]: e.target.checked ? '1' : '0',
+                      }),
+                    { replace: false },
+                  )
+                }}
+              />
+              dismissed
+            </label>
+          </div>
 
           <button style={styles.newAgentBtn} onClick={() => setShowForm((v) => !v)}>
             {showForm ? '✕ Close' : '+ New agent'}
@@ -769,30 +892,13 @@ export default function WorkspaceDetailPage() {
           )}
 
           <div style={styles.agentList}>
-            <label style={styles.sidebarToggle}>
-              <input
-                type="checkbox"
-                checked={showDismissedAgents}
-                onChange={(e) => {
-                  setSearchParams(
-                    (prev) =>
-                      mergeSearchParams(prev, {
-                        [WORKSPACE_DETAIL_PARAM_KEYS.showDismissedAgents]: e.target.checked ? '1' : '0',
-                      }),
-                    { replace: false },
-                  )
-                }}
-                style={{ marginRight: 6 }}
-              />
-              Show dismissed
-            </label>
-
             {visibleAdHocAgents.map((agent) => (
               <AgentCard
                 key={agent.id}
                 agent={agent}
                 selected={selectedAgentId === agent.id}
                 isRunning={!agentTerminal[agent.id]}
+                color={agentColorMap[agent.id]}
                 onClick={() => setSelectedAgentId(agent.id)}
                 onDismiss={async () => {
                   if (!id) return
@@ -831,6 +937,7 @@ export default function WorkspaceDetailPage() {
                     selected={selectedAgentId === agent.id}
                     isRunning={!agentTerminal[agent.id]}
                     isRunAgent
+                    color={agentColorMap[agent.id]}
                     onClick={() => setSelectedAgentId(agent.id)}
                     onDismiss={async () => {
                       if (!id) return
@@ -854,146 +961,331 @@ export default function WorkspaceDetailPage() {
 
         {/* Main feed */}
         <div style={styles.main}>
-          <div style={styles.filterBar}>
-            <label style={styles.filterLabel}>
-              <input
-                type="checkbox"
-                checked={showDeadMessages}
-                onChange={(e) => {
-                  setSearchParams(
-                    (prev) =>
-                      mergeSearchParams(prev, {
-                        [WORKSPACE_DETAIL_PARAM_KEYS.showDeadMessages]: e.target.checked ? '1' : '0',
-                      }),
-                    { replace: false },
-                  )
-                }}
-                style={{ marginRight: 6 }}
-              />
-              Show completed agent messages
-            </label>
-          </div>
-          <div style={styles.feed}>
-            {feed.length === 0 && (
-              <div style={styles.empty}>
-                No events yet. Dispatch an agent to get started.
-              </div>
-            )}
-
-            {feed.map((item) => {
-              if (item.kind === 'user') {
-                return (
-                  <div key={item.key} style={styles.userRow}>
-                    <span style={styles.userPrefix}>you → {agentName(item.agentId)}:</span>
-                    <span style={styles.userText}>{item.prompt}</span>
-                  </div>
-                )
-              }
-
-              if (item.kind === 'message') {
-                return (
-                  <div key={item.key} style={styles.msgRow}>
-                    <span style={styles.msgPrefix}>{agentName(item.agentId)}:</span>
-                    <span style={styles.msgText}>
-                      {String(item.event.data.accumulated ?? item.event.data.delta ?? '')}
-                    </span>
-                  </div>
-                )
-              }
-
-              if (item.kind === 'feedback') {
-                return (
-                  <FeedbackRequest
-                    key={item.key}
-                    event={item.event}
-                    agentLabel={agentName(item.agentId)}
-                    resolved={item.resolved}
-                    resolvedResponse={item.resolvedResponse}
-                    disabled={!!agentTerminal[item.agentId]}
-                    onRespond={async (feedbackId, feedbackType, response) => {
-                      if (!id) return
-                      await sendFeedback(id, item.agentId, feedbackId, feedbackType, response)
-                      setResolvedFeedback((prev) => ({ ...prev, [feedbackId]: response }))
-                      setAgentWaiting((prev) => ({ ...prev, [item.agentId]: false }))
-                    }}
-                  />
-                )
-              }
-
-              return (
-                <ActivityLine
-                  key={item.block.blockId}
-                  block={item.block}
-                  expanded={expandedBlocks.has(item.block.blockId)}
-                  onToggle={() => toggleBlock(item.block.blockId)}
-                  sourceLabel={eventLabel(item.block.latest).replace(/:$/, '')}
-                />
-              )
-            })}
-
-            <div ref={feedBottomRef} />
-          </div>
-
-          {/* Agent status indicators */}
-          {agents.some((a) => !agentTerminal[a.id]) && (
-            <div style={styles.statusBar}>
-              {agents
-                .filter((a) => !agentTerminal[a.id])
-                .map((a) => (
-                  <span key={a.id} style={styles.statusItem}>
-                    <span style={styles.statusName}>{agentName(a.id)}</span>
-                    {agentWaiting[a.id] ? (
-                      <span style={styles.statusWaiting}>awaiting input</span>
-                    ) : agentBusy[a.id] ? (
-                      <span style={styles.statusDots}>
-                        <span className="pulse-dot-1">·</span>
-                        <span className="pulse-dot-2">·</span>
-                        <span className="pulse-dot-3">·</span>
-                      </span>
-                    ) : (
-                      <span style={styles.statusDotsIdle}>···</span>
-                    )}
-                  </span>
-                ))}
-            </div>
-          )}
-
-          {/* Input bar */}
-          <div style={styles.inputBar}>
-            <select
-              style={styles.targetSelect}
-              value={targetAgentId}
-              onChange={(e) => setTargetAgentId(e.target.value)}
-            >
-              <option value="new">+ New agent</option>
-              {agents.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {(a.name ?? `${a.agent_type}/${a.model.split('/')[1]}`) + (a.dismissed ? ' (dismissed)' : '')}
-                </option>
-              ))}
-            </select>
-            <textarea
-              ref={chatRef}
-              rows={1}
-              style={styles.chatInput}
-              value={chatInput}
-              onChange={(e) => setChatInput(e.target.value)}
-              placeholder={targetAgentId === 'new' ? 'Dispatch a new agent…' : 'Send a message…'}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  handleChatSend()
-                }
-              }}
-            />
+          <div style={styles.tabBar}>
             <button
-              style={{ ...styles.sendBtn, opacity: creating || !chatInput.trim() ? 0.4 : 1 }}
-              disabled={creating || !chatInput.trim()}
-              onClick={handleChatSend}
+              style={{
+                ...styles.tabButton,
+                ...(activeTab === 'activity' ? styles.tabButtonActive : {}),
+              }}
+              onClick={() => setActiveTab('activity')}
             >
-              Send
+              Activity
+            </button>
+            <button
+              style={{
+                ...styles.tabButton,
+                ...(activeTab === 'sandboxes' ? styles.tabButtonActive : {}),
+              }}
+              onClick={() => setActiveTab('sandboxes')}
+            >
+              Sandboxes
             </button>
           </div>
+
+          {activeTab === 'activity' ? (
+            <>
+              <div style={styles.filterBar}>
+                <label style={styles.filterLabel}>
+                  <input
+                    type="checkbox"
+                    checked={showDeadMessages}
+                    onChange={(e) => {
+                      setSearchParams(
+                        (prev) =>
+                          mergeSearchParams(prev, {
+                            [WORKSPACE_DETAIL_PARAM_KEYS.showDeadMessages]: e.target.checked ? '1' : '0',
+                          }),
+                        { replace: false },
+                      )
+                    }}
+                    style={{ marginRight: 6 }}
+                  />
+                  Show dismissed agent messages
+                </label>
+              </div>
+              <div style={styles.feed}>
+                {feed.length === 0 && (
+                  <div style={styles.empty}>
+                    No events yet. Dispatch an agent to get started.
+                  </div>
+                )}
+
+                {feed.map((item) => {
+                  if (item.kind === 'user') {
+                    return (
+                      <div key={item.key} style={styles.userBubbleWrap}>
+                        <div style={styles.userBubble}>
+                          <div style={styles.userBubbleHeader}>
+                            you → {agentName(item.agentId)}
+                            {item.isDispatch && <span style={styles.dispatchBadge}>prompt</span>}
+                          </div>
+                          {item.prompt}
+                        </div>
+                      </div>
+                    )
+                  }
+
+                  if (item.kind === 'message') {
+                    const agent = agents.find((a) => a.id === item.agentId)
+                    const color = agentColor(item.agentId, item.event)
+                    const isDismissed = agent?.dismissed ?? false
+                    return (
+                      <div key={item.key} style={{ ...styles.agentBubbleWrap, opacity: isDismissed ? 0.45 : 1 }}>
+                        <div style={{ ...styles.agentBubble, borderLeft: `3px solid ${color}` }}>
+                          <div style={{ ...styles.agentBubbleHeader, color }}>
+                            {agentName(item.agentId)}
+                          </div>
+                          <span style={styles.agentBubbleText}>
+                            {String(item.event.data.accumulated ?? item.event.data.delta ?? '')}
+                          </span>
+                        </div>
+                      </div>
+                    )
+                  }
+
+                  if (item.kind === 'feedback') {
+                    return (
+                      <FeedbackRequest
+                        key={item.key}
+                        event={item.event}
+                        agentLabel={agentName(item.agentId)}
+                        color={agentColor(item.agentId)}
+                        resolved={item.resolved}
+                        resolvedResponse={item.resolvedResponse}
+                        disabled={!!agentTerminal[item.agentId]}
+                        onRespond={async (feedbackId, feedbackType, response) => {
+                          if (!id) return
+                          await sendFeedback(id, item.agentId, feedbackId, feedbackType, response)
+                          setResolvedFeedback((prev) => ({ ...prev, [feedbackId]: response }))
+                          setAgentWaiting((prev) => ({ ...prev, [item.agentId]: false }))
+                        }}
+                      />
+                    )
+                  }
+
+                  return (
+                    <ActivityLine
+                      key={item.block.blockId}
+                      block={item.block}
+                      expanded={expandedBlocks.has(item.block.blockId)}
+                      onToggle={() => toggleBlock(item.block.blockId)}
+                      sourceLabel={eventLabel(item.block.latest).replace(/:$/, '')}
+                      color={agentColorMap[item.block.latest.agent_id ?? ''] ?? undefined}
+                    />
+                  )
+                })}
+
+                <div ref={feedBottomRef} />
+              </div>
+
+              {agents.some((a) => !agentTerminal[a.id]) && (
+                <div style={styles.statusBar}>
+                  {agents
+                    .filter((a) => !agentTerminal[a.id])
+                    .map((a) => (
+                      <span key={a.id} style={styles.statusItem}>
+                        <span style={styles.statusName}>{agentName(a.id)}</span>
+                        {agentWaiting[a.id] ? (
+                          <span style={styles.statusWaiting}>awaiting input</span>
+                        ) : agentBusy[a.id] ? (
+                          <span style={styles.statusDots}>
+                            <span className="pulse-dot-1">·</span>
+                            <span className="pulse-dot-2">·</span>
+                            <span className="pulse-dot-3">·</span>
+                          </span>
+                        ) : (
+                          <span style={styles.statusDotsIdle}>···</span>
+                        )}
+                      </span>
+                    ))}
+                </div>
+              )}
+
+              <div style={styles.inputBar}>
+                <select
+                  style={styles.targetSelect}
+                  value={effectiveTargetId}
+                  onChange={(e) => setTargetAgentId(e.target.value)}
+                >
+                  <option value="new">+ New agent</option>
+                  {agents.filter((a) => !a.dismissed).map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name ?? `${a.agent_type}/${a.model.split('/')[1]}`}
+                    </option>
+                  ))}
+                </select>
+                <textarea
+                  ref={chatRef}
+                  rows={1}
+                  style={styles.chatInput}
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  placeholder={effectiveTargetId === 'new' ? 'Dispatch a new agent…' : 'Send a message…'}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      handleChatSend()
+                    }
+                  }}
+                />
+                <button
+                  style={{ ...styles.sendBtn, opacity: creating || !chatInput.trim() ? 0.4 : 1 }}
+                  disabled={creating || !chatInput.trim()}
+                  onClick={handleChatSend}
+                >
+                  Send
+                </button>
+              </div>
+            </>
+          ) : (
+            <div style={styles.debugPane}>
+              <div style={styles.debugHeader}>
+                <div style={styles.debugSummaryGrid}>
+                  <div style={styles.debugMetricCard}>
+                    <div style={styles.debugMetricValue}>{sandboxDebug?.worker_count ?? '—'}</div>
+                    <div style={styles.debugMetricLabel}>workers</div>
+                  </div>
+                  <div style={styles.debugMetricCard}>
+                    <div style={styles.debugMetricValue}>{sandboxDebug?.attached_worker_count ?? '—'}</div>
+                    <div style={styles.debugMetricLabel}>attached</div>
+                  </div>
+                  <div style={styles.debugMetricCard}>
+                    <div style={styles.debugMetricValue}>{sandboxDebug?.sandbox_count ?? '—'}</div>
+                    <div style={styles.debugMetricLabel}>sandboxes</div>
+                  </div>
+                  <div style={styles.debugMetricCard}>
+                    <div style={styles.debugMetricValue}>{sandboxDebug?.active_agent_count ?? '—'}</div>
+                    <div style={styles.debugMetricLabel}>live agents</div>
+                  </div>
+                  <div style={styles.debugMetricCard}>
+                    <div style={styles.debugMetricValue}>{sandboxDebug?.dismissed_agent_count ?? '—'}</div>
+                    <div style={styles.debugMetricLabel}>dismissed agents</div>
+                  </div>
+                </div>
+                <button style={styles.refreshButton} onClick={() => loadSandboxDebug()}>
+                  {sandboxDebugLoading ? 'Refreshing…' : 'Refresh'}
+                </button>
+              </div>
+
+              <div style={styles.debugScroll}>
+                <section style={styles.debugSection}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <h3 style={styles.debugSectionTitle}>Workers</h3>
+                    <label style={styles.sidebarDismissedToggle}>
+                      <input
+                        type="checkbox"
+                        checked={hideFailedWorkers}
+                        onChange={(e) => setHideFailedWorkers(e.target.checked)}
+                      />
+                      hide failed
+                    </label>
+                  </div>
+                  <div style={styles.debugTable}>
+                    <div style={styles.debugTableHeader}>
+                      <span>worker</span>
+                      <span>status</span>
+                      <span>lease</span>
+                      <span>agents</span>
+                      <span>heartbeat</span>
+                    </div>
+                    {(sandboxDebug?.workers ?? [])
+                      .filter((w) => !hideFailedWorkers || w.is_healthy)
+                      .sort((a, b) => {
+                        const aTime = a.last_heartbeat_at ?? ''
+                        const bTime = b.last_heartbeat_at ?? ''
+                        return bTime.localeCompare(aTime)
+                      })
+                      .map((worker) => (
+                      <div key={worker.id} style={styles.debugTableRow}>
+                        <div>
+                          <div style={styles.debugPrimary}>{worker.pod_name ?? worker.id.slice(0, 8)}</div>
+                          <div style={styles.debugSecondary}>{worker.worker_url ?? worker.id}</div>
+                        </div>
+                        <div>
+                          <span style={{
+                            ...styles.debugBadge,
+                            background: worker.is_healthy ? 'rgba(47, 133, 90, 0.18)' : 'rgba(220, 38, 38, 0.18)',
+                            color: worker.is_healthy ? '#7dd3a6' : '#fca5a5',
+                          }}>
+                            {worker.status}
+                          </span>
+                        </div>
+                        <div>
+                          <div style={styles.debugPrimary}>{worker.sandbox_name ?? 'idle'}</div>
+                          <div style={styles.debugSecondary}>{worker.active_lease_id ? worker.active_lease_id.slice(0, 8) : 'no lease'}</div>
+                        </div>
+                        <div>
+                          <div style={styles.debugPrimary}>{worker.live_agent_count} live</div>
+                          <div style={styles.debugSecondary}>{worker.dismissed_agent_count} dismissed</div>
+                        </div>
+                        <div style={styles.debugSecondary}>{worker.last_heartbeat_at ?? 'never'}</div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+
+                <section style={styles.debugSection}>
+                  <h3 style={styles.debugSectionTitle}>Sandboxes</h3>
+                  {(sandboxDebug?.sandboxes ?? []).map((sandbox) => (
+                    <div key={sandbox.id} style={styles.debugCard}>
+                      <div style={styles.debugCardHeader}>
+                        <div>
+                          <div style={styles.debugPrimary}>{sandbox.name}</div>
+                          <div style={styles.debugSecondary}>
+                            worker {sandbox.worker_id ? sandbox.worker_id.slice(0, 8) : 'none'} · lease {sandbox.current_lease_id ? sandbox.current_lease_id.slice(0, 8) : 'none'}
+                          </div>
+                        </div>
+                        <div style={styles.debugCounts}>
+                          <span style={styles.debugBadge}>{sandbox.active_agent_count} live</span>
+                          <span style={styles.debugBadgeMuted}>{sandbox.dismissed_agent_count} dismissed</span>
+                        </div>
+                      </div>
+                      {sandbox.agents.length > 0 ? (
+                        <div style={styles.debugAgentList}>
+                          {sandbox.agents.map((agent) => (
+                            <div key={agent.id} style={styles.debugAgentRow}>
+                              <div>
+                                <div style={styles.debugPrimary}>{agent.name}</div>
+                                <div style={styles.debugSecondary}>{agent.agent_type} · {agent.model}</div>
+                              </div>
+                              <div style={styles.debugCounts}>
+                                <span style={agent.dismissed ? styles.debugBadgeMuted : styles.debugBadge}>{agent.status}</span>
+                                <span style={styles.debugSecondary}>{agent.session_id ? agent.session_id.slice(0, 8) : 'no session'}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div style={styles.debugEmptyRow}>No agents in this sandbox.</div>
+                      )}
+                    </div>
+                  ))}
+                </section>
+
+                <section style={styles.debugSection}>
+                  <h3 style={styles.debugSectionTitle}>Unassigned Agents</h3>
+                  {(sandboxDebug?.unassigned_agents ?? []).length > 0 ? (
+                    <div style={styles.debugCard}>
+                      {(sandboxDebug?.unassigned_agents ?? []).map((agent) => (
+                        <div key={agent.id} style={styles.debugAgentRow}>
+                          <div>
+                            <div style={styles.debugPrimary}>{agent.name}</div>
+                            <div style={styles.debugSecondary}>{agent.agent_type} · {agent.model}</div>
+                          </div>
+                          <div style={styles.debugCounts}>
+                            <span style={agent.dismissed ? styles.debugBadgeMuted : styles.debugBadge}>{agent.status}</span>
+                            <span style={styles.debugSecondary}>{agent.dismissed ? 'dismissed' : 'no sandbox'}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={styles.debugEmptyRow}>No unassigned agents.</div>
+                  )}
+                </section>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Drag handle */}
@@ -1059,22 +1351,27 @@ const styles: Record<string, React.CSSProperties> = {
     overflowY: 'auto',
     gap: '4px',
   },
+  sidebarHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '0 6px',
+    marginBottom: '4px',
+  },
   sidebarLabel: {
     color: 'var(--text-muted)',
     fontSize: '11px',
     fontWeight: 600,
-    textTransform: 'uppercase',
+    textTransform: 'uppercase' as const,
     letterSpacing: '0.08em',
-    padding: '0 6px',
-    marginBottom: '4px',
   },
-  sidebarToggle: {
+  sidebarDismissedToggle: {
     display: 'flex',
     alignItems: 'center',
-    fontSize: '12px',
+    fontSize: '11px',
     color: 'var(--text-muted)',
     cursor: 'pointer',
-    padding: '2px 6px 8px 6px',
+    gap: '3px',
   },
   newAgentBtn: {
     width: '100%',
@@ -1164,6 +1461,28 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     background: 'var(--bg)',
   },
+  tabBar: {
+    display: 'flex',
+    gap: '8px',
+    padding: '10px 16px 8px',
+    borderBottom: '1px solid var(--border)',
+    background: 'var(--surface)',
+    flexShrink: 0,
+  },
+  tabButton: {
+    padding: '6px 10px',
+    background: 'transparent',
+    border: '1px solid var(--border)',
+    borderRadius: '999px',
+    color: 'var(--text-muted)',
+    fontSize: '12px',
+    cursor: 'pointer',
+  },
+  tabButtonActive: {
+    background: 'rgba(196, 169, 107, 0.14)',
+    borderColor: 'rgba(196, 169, 107, 0.34)',
+    color: 'var(--text)',
+  },
   filterBar: {
     display: 'flex',
     alignItems: 'center',
@@ -1185,7 +1504,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '16px 20px',
     display: 'flex',
     flexDirection: 'column',
-    gap: '10px',
+    gap: '6px',
   },
   empty: {
     color: 'var(--text-muted)',
@@ -1193,15 +1512,56 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: '3rem',
   },
 
-  // User message row
-  userRow: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'baseline' },
-  userPrefix: { color: 'var(--user-color)', fontSize: '12px', flexShrink: 0, opacity: 0.8 },
-  userText: { color: 'var(--user-color)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
+  // User message bubble (right-aligned, same shape as agent bubbles)
+  userBubbleWrap: { display: 'flex', justifyContent: 'flex-end' },
+  userBubble: {
+    maxWidth: '85%',
+    padding: '8px 12px',
+    background: 'var(--surface)',
+    borderLeft: '3px solid var(--user-color)',
+    borderRadius: '3px',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    fontSize: '14px',
+  },
+  userBubbleHeader: {
+    fontSize: '11px',
+    fontWeight: 600,
+    color: 'var(--user-color)',
+    marginBottom: '2px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+  },
+  dispatchBadge: {
+    fontSize: '9px',
+    fontWeight: 600,
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.05em',
+    color: 'var(--user-color)',
+    background: 'rgba(196, 169, 107, 0.18)',
+    padding: '1px 5px',
+    borderRadius: '2px',
+    opacity: 1,
+  },
 
-  // Agent text message row
-  msgRow: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'baseline' },
-  msgPrefix: { color: 'var(--accent)', fontSize: '12px', fontWeight: 600, flexShrink: 0 },
-  msgText: { color: 'var(--text)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', flex: 1 },
+  // Agent message bubble (left-aligned)
+  agentBubbleWrap: { display: 'flex', justifyContent: 'flex-start' },
+  agentBubble: {
+    maxWidth: '85%',
+    padding: '8px 12px',
+    background: 'var(--surface)',
+    borderRadius: '3px',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    fontSize: '14px',
+  },
+  agentBubbleHeader: {
+    fontSize: '11px',
+    fontWeight: 600,
+    marginBottom: '2px',
+  },
+  agentBubbleText: { color: 'var(--text)' },
 
   // Activity block
   activityWrap: { display: 'flex', flexDirection: 'column' },
@@ -1236,6 +1596,171 @@ const styles: Record<string, React.CSSProperties> = {
   statusDots: { color: 'var(--text)', letterSpacing: '2px', fontSize: '12px' },
   statusDotsIdle: { color: 'var(--text-muted)', letterSpacing: '2px', fontSize: '12px' },
   statusWaiting: { color: '#e0a855', fontSize: '12px', fontStyle: 'italic' },
+
+  debugPane: {
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
+  },
+  debugHeader: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: '12px',
+    padding: '16px 20px 12px',
+    borderBottom: '1px solid var(--border)',
+    background: 'var(--bg)',
+    flexShrink: 0,
+  },
+  debugSummaryGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))',
+    gap: '10px',
+    flex: 1,
+  },
+  debugMetricCard: {
+    padding: '10px 12px',
+    border: '1px solid var(--border)',
+    borderRadius: '6px',
+    background: 'var(--surface)',
+  },
+  debugMetricValue: {
+    fontSize: '20px',
+    fontWeight: 700,
+    color: 'var(--text)',
+    lineHeight: 1.1,
+  },
+  debugMetricLabel: {
+    marginTop: '4px',
+    fontSize: '11px',
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.06em',
+  },
+  refreshButton: {
+    padding: '7px 10px',
+    border: '1px solid var(--border)',
+    borderRadius: '6px',
+    background: 'var(--surface)',
+    color: 'var(--text)',
+    cursor: 'pointer',
+    flexShrink: 0,
+  },
+  debugScroll: {
+    flex: 1,
+    overflowY: 'auto',
+    padding: '16px 20px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '18px',
+  },
+  debugSection: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+  },
+  debugSectionTitle: {
+    margin: 0,
+    fontSize: '12px',
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.08em',
+  },
+  debugTable: {
+    display: 'flex',
+    flexDirection: 'column',
+    border: '1px solid var(--border)',
+    borderRadius: '8px',
+    overflow: 'hidden',
+    background: 'var(--surface)',
+  },
+  debugTableHeader: {
+    display: 'grid',
+    gridTemplateColumns: '2.2fr 1fr 1.3fr 1fr 1.6fr',
+    gap: '12px',
+    padding: '10px 12px',
+    background: 'var(--surface-2)',
+    color: 'var(--text-muted)',
+    fontSize: '11px',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.06em',
+  },
+  debugTableRow: {
+    display: 'grid',
+    gridTemplateColumns: '2.2fr 1fr 1.3fr 1fr 1.6fr',
+    gap: '12px',
+    padding: '12px',
+    borderTop: '1px solid var(--border)',
+    alignItems: 'center',
+  },
+  debugCard: {
+    border: '1px solid var(--border)',
+    borderRadius: '8px',
+    background: 'var(--surface)',
+    overflow: 'hidden',
+  },
+  debugCardHeader: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: '12px',
+    padding: '12px',
+    borderBottom: '1px solid var(--border)',
+  },
+  debugPrimary: {
+    fontSize: '13px',
+    color: 'var(--text)',
+    fontWeight: 600,
+  },
+  debugSecondary: {
+    fontSize: '12px',
+    color: 'var(--text-muted)',
+    wordBreak: 'break-all',
+  },
+  debugCounts: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+  },
+  debugBadge: {
+    padding: '3px 7px',
+    borderRadius: '999px',
+    background: 'rgba(196, 169, 107, 0.14)',
+    color: 'var(--text)',
+    fontSize: '11px',
+    fontWeight: 600,
+  },
+  debugBadgeMuted: {
+    padding: '3px 7px',
+    borderRadius: '999px',
+    background: 'rgba(148, 163, 184, 0.16)',
+    color: 'var(--text-muted)',
+    fontSize: '11px',
+    fontWeight: 600,
+  },
+  debugAgentList: {
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  debugAgentRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    gap: '12px',
+    padding: '10px 12px',
+    borderTop: '1px solid var(--border)',
+    alignItems: 'center',
+  },
+  debugEmptyRow: {
+    padding: '12px',
+    color: 'var(--text-muted)',
+    fontSize: '13px',
+    border: '1px dashed var(--border)',
+    borderRadius: '8px',
+    background: 'var(--surface)',
+  },
 
   // Input bar
   inputBar: {

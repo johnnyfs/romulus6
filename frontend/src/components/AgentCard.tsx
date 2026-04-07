@@ -6,6 +6,7 @@ interface Props {
   selected: boolean
   isRunning?: boolean
   isRunAgent?: boolean
+  color?: string
   onClick: () => void
   onDismiss: () => void
   onDelete: () => void
@@ -16,6 +17,7 @@ export default function AgentCard({
   selected,
   isRunning,
   isRunAgent,
+  color,
   onClick,
   onDismiss,
   onDelete,
@@ -44,7 +46,7 @@ export default function AgentCard({
       <span
         style={{
           ...styles.dot,
-          color: running ? 'var(--accent)' : 'var(--text-muted)',
+          color: running ? (color ?? 'var(--accent)') : 'var(--text-muted)',
         }}
       >
         ●

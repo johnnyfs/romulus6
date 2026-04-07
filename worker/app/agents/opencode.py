@@ -124,6 +124,8 @@ class OpenCodeRunner(AgentRunner):
         self.opencode_session_id: str | None = None
         self._queue: asyncio.Queue | None = None
         self._text_by_part_id: dict[str, str] = {}
+        self._user_message_ids: set[str] = set()
+        self._pending_prompt: str | None = None
 
     async def start(self, *, prompt: str, session: Session) -> None:
         client = self._server.client
@@ -142,12 +144,21 @@ class OpenCodeRunner(AgentRunner):
         # Subscribe before sending so we don't miss early events
         self._queue = self._server.subscribe(self.opencode_session_id)
 
+        self._pending_prompt = prompt
         provider_id, model_id = model.split("/", 1) if "/" in model else ("anthropic", model)
         r = await client.post(f"/session/{self.opencode_session_id}/message", json={
             "parts": [{"type": "text", "text": prompt}],
             "model": {"providerID": provider_id, "modelID": model_id},
         })
         r.raise_for_status()
+        # Track user message ID so we can filter its echo from the event stream
+        try:
+            resp_data = r.json()
+            if isinstance(resp_data, dict) and resp_data.get("id"):
+                self._user_message_ids.add(resp_data["id"])
+                logger.debug("tracking user message id %s", resp_data["id"])
+        except Exception:
+            pass
         logger.debug("sent message to opencode session %s", self.opencode_session_id)
 
     async def events(self) -> AsyncIterator[Event]:
@@ -185,6 +196,36 @@ class OpenCodeRunner(AgentRunner):
         oc_type = payload.get("type", "")
         props = payload.get("properties", {})
         part = props.get("part", {}) if isinstance(props.get("part"), dict) else {}
+
+        # Skip user message events — only translate assistant responses.
+        # OpenCode emits events for both user and assistant messages; filter out
+        # user messages so prompts don't appear as agent messages in the feed.
+        # Strategy: check role field, tracked message IDs, and prompt text matching.
+        msg_role = props.get("role") or part.get("role")
+        msg_id = props.get("messageID") or part.get("messageID")
+        if msg_role == "user":
+            if msg_id:
+                self._user_message_ids.add(msg_id)
+            logger.debug("skipping user-role event: %s", oc_type)
+            return None
+        if msg_id and msg_id in self._user_message_ids:
+            logger.debug("skipping user message id %s event: %s", msg_id, oc_type)
+            return None
+        # Detect prompt echo by text content: if a text part matches the prompt
+        # we just sent, mark that message ID as a user message and skip it.
+        if self._pending_prompt and oc_type in (
+            "message.part.delta", "message.part.updated", "message.part.done",
+        ):
+            text_content = (
+                str(props.get("delta", "")) or
+                str(part.get("text", ""))
+            ).strip()
+            if text_content and text_content == self._pending_prompt.strip():
+                if msg_id:
+                    self._user_message_ids.add(msg_id)
+                self._pending_prompt = None
+                logger.debug("skipping prompt echo event: %s", oc_type)
+                return None
 
         if oc_type == "session.status":
             status = props.get("status", {}).get("type")

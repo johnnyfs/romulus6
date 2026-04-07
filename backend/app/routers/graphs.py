@@ -12,6 +12,7 @@ from app.models.graph import Graph, NodeType
 from app.models.run import GraphRun
 from app.models.workspace import Workspace
 from app.services import graphs as svc
+from app.services import graph_transfer as transfer_svc
 from app.services import runs as run_svc
 from app.services.graphs import EdgeInput, NodeInput
 
@@ -45,6 +46,10 @@ class CreateGraphRequest(BaseModel):
     name: str
     nodes: list[NodeInputSchema] = []
     edges: list[EdgeInputSchema] = []
+
+
+class ImportGraphBundleRequest(BaseModel):
+    bundle: dict[str, Any]
 
 
 class AddNodeRequest(BaseModel):
@@ -116,6 +121,13 @@ class GraphDetailResponse(BaseModel):
     edges: list[GraphEdgeResponse]
 
     model_config = {"from_attributes": True}
+
+
+class GraphImportResponse(BaseModel):
+    graph: GraphDetailResponse
+    warnings: list[str]
+    imported_format: str
+    imported_version: int
 
 
 class GraphRunNodeResponse(BaseModel):
@@ -333,6 +345,38 @@ def get_graph(workspace_id: uuid.UUID, graph_id: uuid.UUID, session: SessionDep)
     _require_workspace(workspace_id, session)
     graph = _require_graph(workspace_id, graph_id, session)
     return _to_detail(graph)
+
+
+@router.get("/{graph_id}/export")
+def export_graph(
+    workspace_id: uuid.UUID,
+    graph_id: uuid.UUID,
+    session: SessionDep,
+) -> Any:
+    _require_workspace(workspace_id, session)
+    try:
+        return transfer_svc.export_graph_bundle(session, workspace_id, graph_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
+@router.post("/import", response_model=GraphImportResponse, status_code=status.HTTP_201_CREATED)
+def import_graph(
+    workspace_id: uuid.UUID,
+    body: ImportGraphBundleRequest,
+    session: SessionDep,
+) -> Any:
+    _require_workspace(workspace_id, session)
+    try:
+        graph, warnings = transfer_svc.import_graph_bundle(session, workspace_id, body.bundle)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    return GraphImportResponse(
+        graph=_to_detail(graph),
+        warnings=warnings,
+        imported_format=str(body.bundle.get("format") or "unknown"),
+        imported_version=int(body.bundle.get("version") or 0),
+    )
 
 
 @router.put("/{graph_id}", response_model=GraphDetailResponse)

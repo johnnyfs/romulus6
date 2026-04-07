@@ -14,6 +14,209 @@ async function deleteWorkspace(request: any, workspaceId: string) {
 
 test.describe('Graph API', () => {
 
+  test('GET /graphs/{id}/export and POST /graphs/import round-trip a graph with dependent templates', async ({ request }) => {
+    const sourceWid = await createWorkspace(request);
+    const targetWid = await createWorkspace(request);
+    try {
+      const taskTemplateRes = await request.post(`/api/v1/workspaces/${sourceWid}/task-templates`, {
+        data: {
+          name: 'shared-task',
+          task_type: 'agent',
+          agent_type: 'opencode',
+          model: 'anthropic/claude-haiku-4-5',
+          prompt: 'Use {{ tone }}',
+          arguments: [{ name: 'tone', arg_type: 'string', default_value: 'calm' }],
+        },
+      });
+      expect(taskTemplateRes.status()).toBe(201);
+      const taskTemplate = await taskTemplateRes.json();
+
+      const childSubgraphRes = await request.post(`/api/v1/workspaces/${sourceWid}/subgraph-templates`, {
+        data: {
+          name: 'child-subgraph',
+          nodes: [
+            {
+              node_type: 'task_template',
+              name: 'child-task',
+              task_template_id: taskTemplate.id,
+              argument_bindings: { tone: 'friendly' },
+            },
+          ],
+          edges: [],
+        },
+      });
+      expect(childSubgraphRes.status()).toBe(201);
+      const childSubgraph = await childSubgraphRes.json();
+
+      const parentSubgraphRes = await request.post(`/api/v1/workspaces/${sourceWid}/subgraph-templates`, {
+        data: {
+          name: 'parent-subgraph',
+          nodes: [
+            {
+              node_type: 'subgraph_template',
+              name: 'nested-child',
+              ref_subgraph_template_id: childSubgraph.id,
+              argument_bindings: { tone: 'nested' },
+            },
+          ],
+          edges: [],
+        },
+      });
+      expect(parentSubgraphRes.status()).toBe(201);
+      const parentSubgraph = await parentSubgraphRes.json();
+
+      const graphRes = await request.post(`/api/v1/workspaces/${sourceWid}/graphs`, {
+        data: {
+          name: 'portable-graph',
+          nodes: [
+            {
+              node_type: 'task_template',
+              name: 'top-task',
+              task_template_id: taskTemplate.id,
+              argument_bindings: { tone: 'direct' },
+            },
+            {
+              node_type: 'subgraph_template',
+              name: 'top-subgraph',
+              subgraph_template_id: parentSubgraph.id,
+              argument_bindings: { tone: 'recursive' },
+              output_schema: { result: 'string' },
+            },
+          ],
+          edges: [{ from_index: 0, to_index: 1 }],
+        },
+      });
+      expect(graphRes.status()).toBe(201);
+      const graph = await graphRes.json();
+
+      const exportRes = await request.get(`/api/v1/workspaces/${sourceWid}/graphs/${graph.id}/export`);
+      expect(exportRes.status()).toBe(200);
+      const bundle = await exportRes.json();
+      expect(bundle.format).toBe('romulus.graph-bundle');
+      expect(bundle.graph.name).toBe('portable-graph');
+      expect(bundle.task_templates).toHaveLength(1);
+      expect(bundle.subgraph_templates).toHaveLength(2);
+      expect(bundle.graph.nodes[0].task_template_name).toBe('shared-task');
+      expect(bundle.graph.nodes[1].subgraph_template_name).toBe('parent-subgraph');
+
+      const importRes = await request.post(`/api/v1/workspaces/${targetWid}/graphs/import`, {
+        data: { bundle },
+      });
+      expect(importRes.status()).toBe(201);
+      const imported = await importRes.json();
+      expect(imported.warnings).toEqual([]);
+      expect(imported.graph.name).toBe('portable-graph');
+      expect(imported.graph.nodes).toHaveLength(2);
+      expect(imported.graph.edges).toHaveLength(1);
+
+      const importedTaskTemplatesRes = await request.get(`/api/v1/workspaces/${targetWid}/task-templates`);
+      expect(importedTaskTemplatesRes.status()).toBe(200);
+      const importedTaskTemplates = await importedTaskTemplatesRes.json();
+      expect(importedTaskTemplates).toHaveLength(1);
+      expect(importedTaskTemplates[0].name).toBe('shared-task');
+
+      const importedSubgraphsRes = await request.get(`/api/v1/workspaces/${targetWid}/subgraph-templates`);
+      expect(importedSubgraphsRes.status()).toBe(200);
+      const importedSubgraphs = await importedSubgraphsRes.json();
+      expect(importedSubgraphs).toHaveLength(2);
+      expect(importedSubgraphs.map((item: any) => item.name).sort()).toEqual(['child-subgraph', 'parent-subgraph']);
+    } finally {
+      await deleteWorkspace(request, sourceWid);
+      await deleteWorkspace(request, targetWid);
+    }
+  });
+
+  test('POST /graphs/import tolerates extra fields and falls back to template names when ids do not match', async ({ request }) => {
+    const sourceWid = await createWorkspace(request);
+    const targetWid = await createWorkspace(request);
+    try {
+      const taskTemplateRes = await request.post(`/api/v1/workspaces/${sourceWid}/task-templates`, {
+        data: {
+          name: 'portable-task',
+          task_type: 'command',
+          command: 'echo {{ value }}',
+        },
+      });
+      expect(taskTemplateRes.status()).toBe(201);
+      const taskTemplate = await taskTemplateRes.json();
+
+      const subgraphRes = await request.post(`/api/v1/workspaces/${sourceWid}/subgraph-templates`, {
+        data: {
+          name: 'portable-subgraph',
+          nodes: [
+            {
+              node_type: 'task_template',
+              name: 'inner-task',
+              task_template_id: taskTemplate.id,
+            },
+          ],
+          edges: [],
+        },
+      });
+      expect(subgraphRes.status()).toBe(201);
+      const subgraph = await subgraphRes.json();
+
+      const graphRes = await request.post(`/api/v1/workspaces/${sourceWid}/graphs`, {
+        data: {
+          name: 'tolerant-graph',
+          nodes: [
+            {
+              node_type: 'task_template',
+              name: 'graph-task',
+              task_template_id: taskTemplate.id,
+            },
+            {
+              node_type: 'subgraph_template',
+              name: 'graph-subgraph',
+              subgraph_template_id: subgraph.id,
+            },
+          ],
+          edges: [{ from_index: 0, to_index: 1 }],
+        },
+      });
+      expect(graphRes.status()).toBe(201);
+      const graph = await graphRes.json();
+
+      const exportRes = await request.get(`/api/v1/workspaces/${sourceWid}/graphs/${graph.id}/export`);
+      expect(exportRes.status()).toBe(200);
+      const bundle = await exportRes.json();
+
+      bundle.version = 999;
+      bundle.unrecognized_top_level = { keep: 'going' };
+      bundle.task_templates[0].extra_field = 'ignored';
+      bundle.subgraph_templates[0].nodes[0].task_template_id = '00000000-0000-4000-8000-000000000000';
+      bundle.graph.nodes[0].task_template_id = '00000000-0000-4000-8000-000000000000';
+      bundle.graph.nodes[1].subgraph_template_id = '00000000-0000-4000-8000-000000000000';
+      bundle.graph.nodes.push({ id: crypto.randomUUID(), node_type: 'mystery_type', name: 'bad-node' });
+      bundle.graph.edges.push({
+        id: crypto.randomUUID(),
+        from_node_id: bundle.graph.nodes.at(-1)!.id,
+        to_node_id: bundle.graph.nodes[0].id,
+      });
+
+      const importRes = await request.post(`/api/v1/workspaces/${targetWid}/graphs/import`, {
+        data: { bundle },
+      });
+      expect(importRes.status()).toBe(201);
+      const imported = await importRes.json();
+      expect(imported.graph.name).toBe('tolerant-graph');
+      expect(imported.graph.nodes).toHaveLength(2);
+      expect(imported.graph.edges).toHaveLength(1);
+      expect(imported.warnings.some((warning: string) => warning.includes('newer than supported version'))).toBe(true);
+      expect(imported.warnings.some((warning: string) => warning.includes("unknown node_type 'mystery_type'"))).toBe(true);
+      expect(imported.warnings.some((warning: string) => warning.includes('skipped edge referencing a skipped node'))).toBe(true);
+
+      const importedTaskTemplatesRes = await request.get(`/api/v1/workspaces/${targetWid}/task-templates`);
+      expect(importedTaskTemplatesRes.status()).toBe(200);
+      const importedTaskTemplates = await importedTaskTemplatesRes.json();
+      expect(importedTaskTemplates).toHaveLength(1);
+      expect(importedTaskTemplates[0].name).toBe('portable-task');
+    } finally {
+      await deleteWorkspace(request, sourceWid);
+      await deleteWorkspace(request, targetWid);
+    }
+  });
+
   // --- Graph CRUD ---
 
   test('POST /graphs creates an empty graph and returns 201', async ({ request }) => {

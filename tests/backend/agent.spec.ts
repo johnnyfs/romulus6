@@ -167,6 +167,19 @@ test.describe('Agent API', () => {
       expect(followUpSlice.length).toBeGreaterThan(0);
       expect(followUpSlice.every((event) => new Date(event.received_at).toString() !== 'Invalid Date')).toBe(true);
 
+      const directDeleteRes = await request.delete(`/api/v1/workspaces/${workspaceId}/agents/${agent.id}`);
+      expect(directDeleteRes.status()).toBe(409);
+
+      const dismissRes = await request.post(`/api/v1/workspaces/${workspaceId}/agents/${agent.id}/dismiss`, {
+        data: { dismissed: true },
+      });
+      expect(dismissRes.status()).toBe(200);
+      const dismissedAgent = await dismissRes.json();
+      expect(dismissedAgent.dismissed).toBe(true);
+      expect(dismissedAgent.sandbox_id).toBe(null);
+      expect(dismissedAgent.session_id).toBe(null);
+      expect(dismissedAgent.status).toBe('interrupted');
+
       expect((await request.delete(`/api/v1/workspaces/${workspaceId}/agents/${agent.id}`)).status()).toBe(204);
       expect((await request.get(`/api/v1/workspaces/${workspaceId}/agents/${agent.id}`)).status()).toBe(404);
     } finally {
