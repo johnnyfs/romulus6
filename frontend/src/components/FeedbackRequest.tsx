@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useAutoResize } from '../hooks/useAutoResize'
 import type { AgentEvent } from '../api/agents'
 
 interface FeedbackRequestProps {
@@ -159,11 +160,11 @@ function SelectControls({
 
   return (
     <div style={fbStyles.optionList}>
-      {options.map((opt, i) => {
+      {options.map((opt) => {
         const isSelected = resolved && resolvedResponse === opt
         return (
           <button
-            key={i}
+            key={opt}
             style={{
               ...fbStyles.btn,
               ...fbStyles.optionBtn,
@@ -200,6 +201,7 @@ function InputControls({
   onInputChange: (v: string) => void
   onRespond: (response: string) => void
 }) {
+  const fbRef = useAutoResize(inputValue, 90)
   const question = context.question ? String(context.question) : null
 
   return (
@@ -209,14 +211,16 @@ function InputControls({
         <div style={fbStyles.resolvedLabel}>{resolvedResponse}</div>
       ) : (
         <div style={fbStyles.inputRow}>
-          <input
+          <textarea
+            ref={fbRef}
+            rows={1}
             style={fbStyles.textInput}
             value={inputValue}
             onChange={(e) => onInputChange(e.target.value)}
             placeholder="Type your response..."
             disabled={disabled}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && inputValue.trim()) {
+              if (e.key === 'Enter' && !e.shiftKey && inputValue.trim()) {
                 e.preventDefault()
                 onRespond(inputValue.trim())
               }
@@ -336,6 +340,7 @@ const fbStyles: Record<string, React.CSSProperties> = {
   },
   inputRow: {
     display: 'flex',
+    alignItems: 'flex-end',
     gap: '8px',
     marginTop: '4px',
   },
@@ -349,6 +354,8 @@ const fbStyles: Record<string, React.CSSProperties> = {
     outline: 'none',
     fontSize: '13px',
     fontFamily: 'inherit',
+    resize: 'none' as const,
+    lineHeight: '1.4',
   },
   submitBtn: {
     background: 'var(--accent)',

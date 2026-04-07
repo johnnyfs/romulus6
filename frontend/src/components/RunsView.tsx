@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   type Graph,
@@ -37,10 +37,12 @@ export default function RunsView({ workspaceId, onNavigateToGraphNode, onNavigat
   const [searchParams, setSearchParams] = useSearchParams()
   const [graphs, setGraphs] = useState<Graph[]>([])
   const [runs, setRuns] = useState<GraphRun[]>([])
-  const [activeRun, setActiveRun] = useState<GraphRun | null>(null)
   const [runPath, setRunPath] = useState<GraphRun[]>([])
+  const activeRun = runPath.length > 0 ? runPath[runPath.length - 1] : null
   const [creating, setCreating] = useState(false)
   const selectedGraphId = readStringParam(searchParams, WORKSPACE_DETAIL_PARAM_KEYS.runGraphId)
+  const selectedGraphIdRef = useRef(selectedGraphId)
+  useEffect(() => { selectedGraphIdRef.current = selectedGraphId }, [selectedGraphId])
   const selectedRunId = readStringParam(searchParams, WORKSPACE_DETAIL_PARAM_KEYS.runId)
   const selectedRunNodeId = readStringParam(searchParams, WORKSPACE_DETAIL_PARAM_KEYS.runNodeId)
 
@@ -89,11 +91,12 @@ export default function RunsView({ workspaceId, onNavigateToGraphNode, onNavigat
   const loadGraphs = useCallback(async () => {
     const gs = await listGraphs(workspaceId)
     setGraphs(gs)
-    const hasSelectedGraph = !!selectedGraphId && gs.some((graph) => graph.id === selectedGraphId)
+    const currentSelected = selectedGraphIdRef.current
+    const hasSelectedGraph = !!currentSelected && gs.some((graph) => graph.id === currentSelected)
     if (!hasSelectedGraph) {
       setSelectedGraphId(gs[0]?.id ?? null, true)
     }
-  }, [workspaceId, selectedGraphId])
+  }, [workspaceId, setSelectedGraphId])
 
   useEffect(() => { loadGraphs() }, [loadGraphs])
 
@@ -119,13 +122,11 @@ export default function RunsView({ workspaceId, onNavigateToGraphNode, onNavigat
   // Load run detail when selection changes
   useEffect(() => {
     if (!selectedRunId || !selectedGraphId) {
-      setActiveRun(null)
       setRunPath([])
       return
     }
     const run = runs.find(r => r.id === selectedRunId)
     if (run) {
-      setActiveRun(run)
       setRunPath([run])
     }
   }, [selectedRunId, runs, selectedGraphId])
@@ -148,7 +149,6 @@ export default function RunsView({ workspaceId, onNavigateToGraphNode, onNavigat
           activeRun.graph_id && selectedGraphId && activeRun.graph_id === selectedGraphId
             ? await getRun(workspaceId, selectedGraphId, activeRun.id)
             : await getRunById(workspaceId, activeRun.id)
-        setActiveRun(updated)
         setRunPath(prev => {
           if (prev.length === 0) return [updated]
           return prev.map((run, index) => (index === prev.length - 1 ? updated : run))
@@ -196,17 +196,11 @@ export default function RunsView({ workspaceId, onNavigateToGraphNode, onNavigat
 
   const handleOpenChildRun = useCallback(async (childRunId: string) => {
     const childRun = await getRunById(workspaceId, childRunId)
-    setActiveRun(childRun)
     setRunPath(prev => [...prev, childRun])
   }, [workspaceId])
 
-  const handleSelectRunAtDepth = useCallback(async (index: number) => {
-    setRunPath(prev => {
-      const next = prev.slice(0, index + 1)
-      const selected = next[next.length - 1] ?? null
-      setActiveRun(selected)
-      return next
-    })
+  const handleSelectRunAtDepth = useCallback((index: number) => {
+    setRunPath(prev => prev.slice(0, index + 1))
   }, [])
 
   const runStateColor = (state: string) => {
@@ -248,7 +242,6 @@ export default function RunsView({ workspaceId, onNavigateToGraphNode, onNavigat
   }, [selectedRunNode, runPath, activeRun, onNavigateToGraphNode, onNavigateToTemplateNode])
 
   const applyRunUpdate = useCallback((updated: GraphRun) => {
-    setActiveRun(updated)
     setRunPath(prev => {
       if (prev.length === 0) return [updated]
       return prev.map((run, index) => (index === prev.length - 1 ? updated : run))
@@ -284,7 +277,7 @@ export default function RunsView({ workspaceId, onNavigateToGraphNode, onNavigat
           value={selectedGraphId ?? ''}
           onChange={(e) => {
             setSelectedGraphId(e.target.value || null)
-            setActiveRun(null)
+            setRunPath([])
           }}
         >
           {graphs.length === 0 && <option value="">-- no graphs --</option>}

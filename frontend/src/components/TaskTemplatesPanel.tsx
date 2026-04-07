@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useAutoResize } from '../hooks/useAutoResize'
 import { useSearchParams } from 'react-router-dom'
 import type { NodeType } from '../api/graphs'
 import { SUPPORTED_MODELS_BY_AGENT_TYPE } from '../api/models'
@@ -34,8 +35,11 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
   const [editModel, setEditModel] = useState(MODEL_OPTIONS[0].value)
   const [editPrompt, setEditPrompt] = useState('')
   const [editCommand, setEditCommand] = useState('')
+  const promptRef = useAutoResize(editPrompt, 300, 50)
+  const commandRef = useAutoResize(editCommand, 300, 50)
   const [editGraphTools, setEditGraphTools] = useState(false)
-  const [editArgs, setEditArgs] = useState<{ name: string; arg_type: TaskTemplateArgType; default_value: string; model_constraint: string[]; min_value: string; max_value: string; enum_options: string[] }[]>([])
+  const argIdCounter = useRef(0)
+  const [editArgs, setEditArgs] = useState<{ _id: number; name: string; arg_type: TaskTemplateArgType; default_value: string; model_constraint: string[]; min_value: string; max_value: string; enum_options: string[] }[]>([])
 
   const loadList = useCallback(async () => {
     const ts = await listTaskTemplates(workspaceId)
@@ -62,13 +66,19 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
     [setSearchParams],
   )
 
+  // Load templates on mount / workspace change
   useEffect(() => {
-    loadList().then((ts) => {
-      const hasActiveTemplate = !!activeId && ts.some((template) => template.id === activeId)
-      if (hasActiveTemplate) return
-      setActiveId(ts[0]?.id ?? null, true)
-    })
-  }, [activeId, loadList, setActiveId])
+    loadList()
+  }, [loadList])
+
+  // Auto-select first template if current selection is invalid
+  useEffect(() => {
+    if (templates.length === 0) return
+    const hasActive = !!activeId && templates.some((t) => t.id === activeId)
+    if (!hasActive) {
+      setActiveId(templates[0]?.id ?? null, true)
+    }
+  }, [templates, activeId, setActiveId])
 
   useEffect(() => {
     if (activeId && templates.some((template) => template.id === activeId)) {
@@ -83,6 +93,7 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
         setEditGraphTools(t.graph_tools)
         setEditArgs(
           t.arguments.map((a) => ({
+            _id: argIdCounter.current++,
             name: a.name,
             arg_type: a.arg_type,
             default_value: a.default_value ?? '',
@@ -155,7 +166,7 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
   }
 
   function addArg() {
-    setEditArgs([...editArgs, { name: '', arg_type: 'string', default_value: '', model_constraint: [], min_value: '', max_value: '', enum_options: [] }])
+    setEditArgs([...editArgs, { _id: argIdCounter.current++, name: '', arg_type: 'string', default_value: '', model_constraint: [], min_value: '', max_value: '', enum_options: [] }])
   }
 
   function removeArg(idx: number) {
@@ -226,7 +237,8 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
               <div style={s.row}>
                 <span style={s.label}>Prompt</span>
                 <textarea
-                  style={{ ...s.input, minHeight: 50, resize: 'vertical', fontFamily: 'inherit' }}
+                  ref={promptRef}
+                  style={{ ...s.input, minHeight: 50, resize: 'none', fontFamily: 'inherit' }}
                   value={editPrompt}
                   onChange={(e) => setEditPrompt(e.target.value)}
                 />
@@ -244,7 +256,8 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
             <div style={s.row}>
               <span style={s.label}>Cmd</span>
               <textarea
-                style={{ ...s.input, minHeight: 50, resize: 'vertical', fontFamily: 'monospace' }}
+                ref={commandRef}
+                style={{ ...s.input, minHeight: 50, resize: 'none', fontFamily: 'monospace' }}
                 value={editCommand}
                 onChange={(e) => setEditCommand(e.target.value)}
               />
@@ -254,7 +267,7 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
           {/* Arguments */}
           <div style={{ ...s.sectionTitle, marginTop: '8px' }}>Arguments</div>
           {editArgs.map((arg, i) => (
-            <div key={i} style={{ ...s.row, flexWrap: 'wrap', gap: '4px', marginBottom: '6px' }}>
+            <div key={arg._id} style={{ ...s.row, flexWrap: 'wrap', gap: '4px', marginBottom: '6px' }}>
               <input
                 style={{ ...s.input, flex: '1 1 60px' }}
                 placeholder="name"

@@ -89,6 +89,7 @@ class Agent(RomulusBase, table=True):
     model: str
     session_id: Optional[str] = SQLField(default=None)
     status: AgentStatus = SQLField(default=AgentStatus.starting)
+    dismissed: bool = SQLField(default=False)
     name: str
     prompt: str
     graph_tools: bool = SQLField(default=False)

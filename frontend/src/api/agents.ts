@@ -18,6 +18,7 @@ export interface Agent {
   model: string
   session_id: string | null
   status: AgentStatus
+  dismissed: boolean
   name: string | null
   prompt: string
   graph_run_id: string | null
@@ -102,6 +103,20 @@ export async function deleteAgent(workspaceId: string, agentId: string): Promise
     method: 'DELETE',
   })
   if (!res.ok) throw new Error('Failed to delete agent')
+}
+
+export async function dismissAgent(
+  workspaceId: string,
+  agentId: string,
+  dismissed: boolean = true,
+): Promise<Agent> {
+  const res = await fetch(`/api/workspaces/${workspaceId}/agents/${agentId}/dismiss`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dismissed }),
+  })
+  if (!res.ok) throw new Error('Failed to dismiss agent')
+  return res.json()
 }
 
 export async function getAgentEvents(

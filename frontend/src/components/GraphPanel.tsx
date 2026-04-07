@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useAutoResize } from '../hooks/useAutoResize'
 import { useSearchParams } from 'react-router-dom'
 import {
   type Graph,
@@ -51,6 +52,8 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
   const [editModel, setEditModel] = useState(DEFAULT_MODEL_BY_AGENT_TYPE.opencode)
   const [editPrompt, setEditPrompt] = useState('')
   const [editCommand, setEditCommand] = useState('')
+  const promptRef = useAutoResize(editPrompt, 300, 60)
+  const commandRef = useAutoResize(editCommand, 300, 80)
   const [editGraphTools, setEditGraphTools] = useState(false)
   const [editTaskTemplateId, setEditTaskTemplateId] = useState('')
   const [editSubgraphTemplateId, setEditSubgraphTemplateId] = useState('')
@@ -60,6 +63,8 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
   const [taskTemplates, setTaskTemplates] = useState<TaskTemplate[]>([])
   const [subgraphTemplates, setSubgraphTemplates] = useState<SubgraphTemplate[]>([])
   const [sgDetailCache, setSgDetailCache] = useState<Record<string, SubgraphTemplateDetail>>({})
+  const sgDetailCacheRef = useRef(sgDetailCache)
+  useEffect(() => { sgDetailCacheRef.current = sgDetailCache }, [sgDetailCache])
 
   const activeTab = readEnumParam(
     searchParams,
@@ -123,21 +128,27 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
     }
   }, [workspaceId])
 
+  // Load graphs and templates on mount / workspace change
   useEffect(() => {
-    loadGraphs().then((gs) => {
-      const hasActiveGraph = !!activeGraphId && gs.some((g) => g.id === activeGraphId)
-      if (hasActiveGraph) return
+    loadGraphs()
+    listTaskTemplates(workspaceId).then(setTaskTemplates)
+    listSubgraphTemplates(workspaceId).then(setSubgraphTemplates)
+  }, [loadGraphs, workspaceId])
+
+  // Auto-select first graph if current selection is invalid
+  useEffect(() => {
+    if (graphs.length === 0) return
+    const hasActiveGraph = !!activeGraphId && graphs.some((g) => g.id === activeGraphId)
+    if (!hasActiveGraph) {
       setPanelState(
         {
-          [WORKSPACE_DETAIL_PARAM_KEYS.graphId]: gs[0]?.id ?? null,
+          [WORKSPACE_DETAIL_PARAM_KEYS.graphId]: graphs[0]?.id ?? null,
           [WORKSPACE_DETAIL_PARAM_KEYS.graphNodeId]: null,
         },
         true,
       )
-    })
-    listTaskTemplates(workspaceId).then(setTaskTemplates)
-    listSubgraphTemplates(workspaceId).then(setSubgraphTemplates)
-  }, [activeGraphId, loadGraphs, setPanelState, workspaceId])
+    }
+  }, [graphs, activeGraphId, setPanelState])
 
   useEffect(() => {
     if (activeGraphId && graphs.some((graph) => graph.id === activeGraphId)) {
@@ -189,12 +200,12 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
 
   // Fetch subgraph template detail for argument bindings
   useEffect(() => {
-    if (editSubgraphTemplateId && !sgDetailCache[editSubgraphTemplateId]) {
+    if (editSubgraphTemplateId && !sgDetailCacheRef.current[editSubgraphTemplateId]) {
       getSubgraphTemplate(workspaceId, editSubgraphTemplateId).then(d => {
         setSgDetailCache(prev => ({ ...prev, [d.id]: d }))
       }).catch(() => {})
     }
-  }, [editSubgraphTemplateId, workspaceId, sgDetailCache])
+  }, [editSubgraphTemplateId, workspaceId])
 
   // ── Layout ───────────────────────────────────────────────────────────────
 
@@ -823,7 +834,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
               </div>
               <div style={{ ...s.inspectorRow, alignItems: 'flex-start' }}>
                 <label style={{ ...s.inspectorLabel, marginTop: 4 }} htmlFor="graph-node-prompt">Prompt:</label>
-                <textarea style={{ ...s.inspectorInput, minHeight: 60, resize: 'vertical', fontFamily: 'inherit' }}
+                <textarea ref={promptRef} style={{ ...s.inspectorInput, minHeight: 60, resize: 'none', fontFamily: 'inherit' }}
                   id="graph-node-prompt"
                   value={editPrompt} onChange={(e) => markDirty(setEditPrompt)(e.target.value)}
                   placeholder="Enter agent prompt..." />
@@ -843,7 +854,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
           {editType === 'command' && (
             <div style={{ ...s.inspectorRow, alignItems: 'flex-start' }}>
               <label style={{ ...s.inspectorLabel, marginTop: 4 }}>Command:</label>
-              <textarea style={{ ...s.inspectorInput, minHeight: 80, resize: 'vertical', fontFamily: 'monospace' }}
+              <textarea ref={commandRef} style={{ ...s.inspectorInput, minHeight: 80, resize: 'none', fontFamily: 'monospace' }}
                 value={editCommand} onChange={(e) => markDirty(setEditCommand)(e.target.value)}
                 placeholder="Enter bash command(s)..." />
             </div>
