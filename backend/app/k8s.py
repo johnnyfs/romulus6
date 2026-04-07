@@ -1,6 +1,9 @@
 import os
+import shutil
+import socket
 import subprocess
 from functools import lru_cache
+from urllib.parse import urlparse
 
 from kubernetes import client, config
 from kubernetes.client import AppsV1Api, CoreV1Api
@@ -16,14 +19,92 @@ SANDBOX_NODEPORT_MAX = 32767
 
 
 @lru_cache(maxsize=1)
-def _get_minikube_ip() -> str:
-    explicit = os.environ.get("MINIKUBE_IP")
+def _is_host_available(host: str) -> bool:
+    try:
+        socket.getaddrinfo(host, None)
+        return True
+    except socket.gaierror:
+        return False
+
+
+def _normalize_host(value: str) -> str:
+    parsed = urlparse(value)
+    if parsed.scheme:
+        if parsed.hostname:
+            return parsed.hostname
+        return value
+    return value.split(":", 1)[0]
+
+
+def _current_kube_server_host() -> str | None:
+    try:
+        contexts, active_context = config.list_kube_config_contexts()
+    except Exception:
+        return None
+
+    if not active_context:
+        return None
+
+    active_cluster = active_context.get("context", {}).get("cluster")
+    if not active_cluster:
+        return None
+
+    for entry in contexts:
+        context = entry.get("context", {})
+        if context.get("cluster") != active_cluster:
+            continue
+        server = entry.get("cluster", {}).get("server")
+        if not server:
+            return None
+        return urlparse(server).hostname
+    return None
+
+
+def _bootstrap_local_cluster_host() -> str | None:
+    if shutil.which("minikube") is None:
+        return None
+    try:
+        subprocess.run(
+            ["minikube", "start"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        result = subprocess.run(
+            ["minikube", "ip"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    host = result.stdout.strip()
+    return host or None
+
+
+def _get_k8s_node_host() -> str:
+    explicit = os.environ.get("K8S_NODE_HOST")
     if explicit:
-        return explicit
-    result = subprocess.run(
-        ["minikube", "ip"], capture_output=True, text=True, check=True
+        normalized_explicit = _normalize_host(explicit)
+        if _is_host_available(normalized_explicit):
+            return normalized_explicit
+
+    kube_host = _current_kube_server_host()
+    if kube_host and _is_host_available(kube_host):
+        return kube_host
+
+    bootstrapped_host = _bootstrap_local_cluster_host()
+    if bootstrapped_host and _is_host_available(bootstrapped_host):
+        return bootstrapped_host
+
+    if explicit:
+        raise RuntimeError(
+            f"K8S_NODE_HOST={explicit!r} is not reachable and no local cluster host could be resolved"
+        )
+    raise RuntimeError(
+        "Could not resolve a reachable Kubernetes node host. "
+        "Set K8S_NODE_HOST or configure a local kube context."
     )
-    return result.stdout.strip()
 
 
 def init_k8s() -> None:
@@ -62,8 +143,8 @@ def worker_url_kubernetes(worker_id: str) -> str:
 
 
 def worker_url_local(node_port: int) -> str:
-    ip = _get_minikube_ip()
-    return f"http://{ip}:{node_port}"
+    host = _get_k8s_node_host()
+    return f"http://{host}:{node_port}"
 
 
 # ── NodePort allocation ───────────────────────────────────────────────────────

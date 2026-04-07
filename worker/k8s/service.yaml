@@ -12,7 +12,7 @@ spec:
       protocol: TCP
   type: ClusterIP
 ---
-# NodePort for local minikube development access
+# NodePort for local Kubernetes development access
 apiVersion: v1
 kind: Service
 metadata:

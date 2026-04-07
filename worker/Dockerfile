@@ -1,11 +1,10 @@
 FROM python:3.12-slim AS final
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ripgrep tar libicu76 \
+    nodejs npm ripgrep tar libicu76 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY opencode /usr/bin/opencode
-RUN chmod +x /usr/bin/opencode
+RUN npm install -g opencode-ai
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
