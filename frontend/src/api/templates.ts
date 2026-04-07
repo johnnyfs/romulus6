@@ -2,7 +2,7 @@ import type { AgentConfig, CommandConfig, NodeType } from './graphs'
 
 const BASE = '/api'
 
-export type TaskTemplateArgType = 'string' | 'model_type'
+export type TaskTemplateArgType = 'string' | 'model_type' | 'boolean' | 'number' | 'enum'
 export type SubgraphTemplateNodeType = 'agent' | 'command' | 'task_template' | 'subgraph_template'
 
 export interface TaskTemplateArgument {
@@ -11,6 +11,9 @@ export interface TaskTemplateArgument {
   arg_type: TaskTemplateArgType
   default_value: string | null
   model_constraint: string[] | null
+  min_value: number | null
+  max_value: number | null
+  enum_options: string[] | null
   created_at: string
 }
 
@@ -18,6 +21,7 @@ export interface TaskTemplate {
   id: string
   workspace_id: string
   name: string
+  label: string | null
   task_type: NodeType
   agent_type: string | null
   model: string | null
@@ -54,6 +58,7 @@ export interface SubgraphTemplate {
   id: string
   workspace_id: string
   name: string
+  label: string | null
   created_at: string
   updated_at: string
 }
@@ -84,13 +89,14 @@ export async function createTaskTemplate(
   workspaceId: string,
   body: {
     name: string
+    label?: string
     task_type: NodeType
     agent_type?: string
     model?: string
     prompt?: string
     command?: string
     graph_tools?: boolean
-    arguments?: { name: string; arg_type?: TaskTemplateArgType; default_value?: string; model_constraint?: string[] }[]
+    arguments?: { name: string; arg_type?: TaskTemplateArgType; default_value?: string; model_constraint?: string[]; min_value?: number; max_value?: number; enum_options?: string[] }[]
   },
 ): Promise<TaskTemplate> {
   const res = await fetch(`${BASE}/workspaces/${workspaceId}/task-templates`, {
@@ -113,13 +119,14 @@ export async function updateTaskTemplate(
   templateId: string,
   body: {
     name: string
+    label?: string
     task_type: NodeType
     agent_type?: string
     model?: string
     prompt?: string
     command?: string
     graph_tools?: boolean
-    arguments?: { name: string; arg_type?: TaskTemplateArgType; default_value?: string; model_constraint?: string[] }[]
+    arguments?: { name: string; arg_type?: TaskTemplateArgType; default_value?: string; model_constraint?: string[]; min_value?: number; max_value?: number; enum_options?: string[] }[]
   },
 ): Promise<TaskTemplate> {
   const res = await fetch(`${BASE}/workspaces/${workspaceId}/task-templates/${templateId}`, {
@@ -150,9 +157,10 @@ export async function createSubgraphTemplate(
   workspaceId: string,
   body: {
     name: string
+    label?: string
     nodes?: { node_type: SubgraphTemplateNodeType; name?: string; task_template_id?: string; ref_subgraph_template_id?: string; argument_bindings?: Record<string, string> }[]
     edges?: { from_index: number; to_index: number }[]
-    arguments?: { name: string; arg_type?: TaskTemplateArgType; default_value?: string; model_constraint?: string[] }[]
+    arguments?: { name: string; arg_type?: TaskTemplateArgType; default_value?: string; model_constraint?: string[]; min_value?: number; max_value?: number; enum_options?: string[] }[]
   },
 ): Promise<SubgraphTemplateDetail> {
   const res = await fetch(`${BASE}/workspaces/${workspaceId}/subgraph-templates`, {
@@ -175,9 +183,10 @@ export async function updateSubgraphTemplate(
   templateId: string,
   body: {
     name: string
+    label?: string
     nodes?: { node_type: SubgraphTemplateNodeType; name?: string; task_template_id?: string; ref_subgraph_template_id?: string; argument_bindings?: Record<string, string> }[]
     edges?: { from_index: number; to_index: number }[]
-    arguments?: { name: string; arg_type?: TaskTemplateArgType; default_value?: string; model_constraint?: string[] }[]
+    arguments?: { name: string; arg_type?: TaskTemplateArgType; default_value?: string; model_constraint?: string[]; min_value?: number; max_value?: number; enum_options?: string[] }[]
   },
 ): Promise<SubgraphTemplateDetail> {
   const res = await fetch(`${BASE}/workspaces/${workspaceId}/subgraph-templates/${templateId}`, {

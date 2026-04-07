@@ -66,6 +66,10 @@ class PatchNodeRequest(BaseModel):
     argument_bindings: Optional[dict[str, str]] = None
 
 
+class PatchRunNodeRequest(BaseModel):
+    state: Optional[str] = None
+
+
 class AddEdgeRequest(BaseModel):
     from_node_id: uuid.UUID
     to_node_id: uuid.UUID
@@ -145,6 +149,7 @@ class GraphRunResponse(BaseModel):
     state: str = "pending"
     sandbox_id: Optional[uuid.UUID] = None
     parent_run_node_id: Optional[uuid.UUID] = None
+    source_template_id: Optional[uuid.UUID] = None
     created_at: datetime.datetime
     run_nodes: list[GraphRunNodeResponse]
     run_edges: list[GraphRunEdgeResponse]
@@ -548,3 +553,54 @@ def get_run_by_id(
     if run is None or run.workspace_id != workspace_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     return _run_response(run)
+
+
+@runs_router.post(
+    "/{run_id}/nodes/{node_id}/sync",
+    response_model=GraphRunResponse,
+)
+def sync_run_node(
+    workspace_id: uuid.UUID,
+    run_id: uuid.UUID,
+    node_id: uuid.UUID,
+    session: SessionDep,
+) -> Any:
+    _require_workspace(workspace_id, session)
+    run = session.get(GraphRun, run_id)
+    if run is None or run.workspace_id != workspace_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    try:
+        updated = run_svc.sync_run_node(session, run_id, node_id)
+    except ValueError as e:
+        detail = str(e)
+        if "not found" in detail:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
+    return _run_response(updated)
+
+
+@runs_router.patch(
+    "/{run_id}/nodes/{node_id}",
+    response_model=GraphRunResponse,
+)
+def patch_run_node(
+    workspace_id: uuid.UUID,
+    run_id: uuid.UUID,
+    node_id: uuid.UUID,
+    body: PatchRunNodeRequest,
+    session: SessionDep,
+) -> Any:
+    _require_workspace(workspace_id, session)
+    run = session.get(GraphRun, run_id)
+    if run is None or run.workspace_id != workspace_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    if body.state is None:
+        return _run_response(run)
+    try:
+        updated = run_svc.patch_run_node_state(session, run_id, node_id, body.state)
+    except ValueError as e:
+        detail = str(e)
+        if "not found" in detail:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
+    return _run_response(updated)

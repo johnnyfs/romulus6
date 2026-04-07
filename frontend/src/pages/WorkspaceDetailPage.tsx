@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 import {
   ANTHROPIC_MODELS,
   DEFAULT_MODEL,
@@ -18,6 +18,11 @@ import { getWorkspace, type Workspace } from '../api/workspaces'
 import AgentCard from '../components/AgentCard'
 import FeedbackRequest from '../components/FeedbackRequest'
 import GraphPanel from '../components/GraphPanel'
+import {
+  WORKSPACE_DETAIL_PARAM_KEYS,
+  mergeSearchParams,
+  readBooleanParam,
+} from '../components/workspaceDetailSearchParams'
 
 // ─── Feed item types ────────────────────────────────────────────────────────
 
@@ -135,6 +140,7 @@ function ActivityLine({
 
 export default function WorkspaceDetailPage() {
   const { id } = useParams<{ id: string }>()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [workspace, setWorkspace] = useState<Workspace | null>(null)
   const [agents, setAgents] = useState<Agent[]>([])
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
@@ -164,14 +170,11 @@ export default function WorkspaceDetailPage() {
   const workspaceStreamController = useRef<AbortController | null>(null)
   const seenEventIds = useRef<Set<string>>(new Set())
   const eventCursor = useRef(0)
-  const [showDeadMessages, setShowDeadMessages] = useState<boolean>(() => {
-    try {
-      const stored = localStorage.getItem(`show-dead-messages-${id}`)
-      return stored !== null ? JSON.parse(stored) : true
-    } catch {
-      return true
-    }
-  })
+  const showDeadMessages = readBooleanParam(
+    searchParams,
+    WORKSPACE_DETAIL_PARAM_KEYS.showDeadMessages,
+    true,
+  )
   const [collapsedRuns, setCollapsedRuns] = useState<Set<string>>(new Set())
   const [agentWaiting, setAgentWaiting] = useState<Record<string, boolean>>({})
   const [resolvedFeedback, setResolvedFeedback] = useState<Record<string, string>>({})
@@ -300,8 +303,17 @@ export default function WorkspaceDetailPage() {
   }, [id, userMessages])
 
   useEffect(() => {
-    if (id) localStorage.setItem(`show-dead-messages-${id}`, JSON.stringify(showDeadMessages))
-  }, [id, showDeadMessages])
+    const current = searchParams.get(WORKSPACE_DETAIL_PARAM_KEYS.showDeadMessages)
+    const next = showDeadMessages ? '1' : '0'
+    if (current === next) return
+    setSearchParams(
+      (prev) =>
+        mergeSearchParams(prev, {
+          [WORKSPACE_DETAIL_PARAM_KEYS.showDeadMessages]: next,
+        }),
+      { replace: true },
+    )
+  }, [searchParams, setSearchParams, showDeadMessages])
 
   useEffect(() => {
     feedBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -677,7 +689,15 @@ export default function WorkspaceDetailPage() {
               <input
                 type="checkbox"
                 checked={showDeadMessages}
-                onChange={(e) => setShowDeadMessages(e.target.checked)}
+                onChange={(e) => {
+                  setSearchParams(
+                    (prev) =>
+                      mergeSearchParams(prev, {
+                        [WORKSPACE_DETAIL_PARAM_KEYS.showDeadMessages]: e.target.checked ? '1' : '0',
+                      }),
+                    { replace: false },
+                  )
+                }}
                 style={{ marginRight: 6 }}
               />
               Show completed agent messages

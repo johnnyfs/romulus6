@@ -15,6 +15,9 @@ if TYPE_CHECKING:
 class TemplateArgType(str, Enum):
     string = "string"
     model_type = "model_type"
+    boolean = "boolean"
+    number = "number"
+    enum = "enum"
 
 
 class SubgraphTemplateNodeType(str, Enum):
@@ -47,6 +50,7 @@ class TaskTemplate(RomulusBase, table=True):
     prompt: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     command: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     graph_tools: bool = Field(default=False)
+    label: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
 
     workspace: Optional["Workspace"] = Relationship(back_populates="task_templates")
     arguments: List["TaskTemplateArgument"] = Relationship(
@@ -72,6 +76,9 @@ class TaskTemplateArgument(RomulusBase, table=True):
     arg_type: TemplateArgType = Field(default=TemplateArgType.string)
     default_value: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     model_constraint: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    min_value: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    max_value: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    enum_options: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
 
     task_template: Optional[TaskTemplate] = Relationship(back_populates="arguments")
 
@@ -93,6 +100,7 @@ class SubgraphTemplate(RomulusBase, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     workspace_id: uuid.UUID = Field(foreign_key="workspace.id", index=True)
     name: str
+    label: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
 
     workspace: Optional["Workspace"] = Relationship(back_populates="subgraph_templates")
     nodes: List["SubgraphTemplateNode"] = Relationship(
@@ -129,6 +137,9 @@ class SubgraphTemplateArgument(RomulusBase, table=True):
     arg_type: TemplateArgType = Field(default=TemplateArgType.string)
     default_value: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     model_constraint: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    min_value: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    max_value: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    enum_options: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
 
     subgraph_template: Optional[SubgraphTemplate] = Relationship(back_populates="arguments")
 

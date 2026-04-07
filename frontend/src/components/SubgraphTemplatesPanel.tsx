@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import type { TaskTemplate, TaskTemplateArgument, SubgraphTemplate, SubgraphTemplateDetail, SubgraphTemplateNodeType } from '../api/templates'
 import {
   addSubgraphTemplateEdge,
@@ -13,6 +14,11 @@ import {
   patchSubgraphTemplateNode,
   updateSubgraphTemplate,
 } from '../api/templates'
+import {
+  WORKSPACE_DETAIL_PARAM_KEYS,
+  mergeSearchParams,
+  readStringParam,
+} from './workspaceDetailSearchParams'
 
 const NODE_W = 130
 const NODE_H = 32
@@ -70,11 +76,11 @@ function computeLayout(nodes: { id: string }[], edges: { from_node_id: string; t
 }
 
 export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: string }) {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [templates, setTemplates] = useState<SubgraphTemplate[]>([])
-  const [activeId, setActiveId] = useState<string | null>(null)
   const [detail, setDetail] = useState<SubgraphTemplateDetail | null>(null)
+  const [editLabel, setEditLabel] = useState('')
   const [mutating, setMutating] = useState(false)
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
   const [taskTemplates, setTaskTemplates] = useState<TaskTemplate[]>([])
   const [allSubgraphs, setAllSubgraphs] = useState<SubgraphTemplate[]>([])
@@ -92,12 +98,14 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
   const [nodeDirty, setNodeDirty] = useState(false)
 
   // Draft state for subgraph template arguments
-  const [editArgs, setEditArgs] = useState<{ name: string; arg_type: 'string' | 'model_type'; default_value: string }[]>([])
+  const [editArgs, setEditArgs] = useState<{ name: string; arg_type: TaskTemplateArgument['arg_type']; default_value: string; min_value: string; max_value: string; enum_options: string[] }[]>([])
   const [showArgs, setShowArgs] = useState(false)
   const [argsDirty, setArgsDirty] = useState(false)
 
   // Cache of fetched subgraph template details (for argument lists)
   const [sgDetailCache, setSgDetailCache] = useState<Record<string, SubgraphTemplateDetail>>({})
+  const activeId = readStringParam(searchParams, WORKSPACE_DETAIL_PARAM_KEYS.subgraphTemplateId)
+  const selectedNodeId = readStringParam(searchParams, WORKSPACE_DETAIL_PARAM_KEYS.templateNodeId)
 
   const loadList = useCallback(async () => {
     const ts = await listSubgraphTemplates(workspaceId)
@@ -112,29 +120,71 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
     return d
   }, [workspaceId])
 
-  useEffect(() => {
-    loadList().then((ts) => { if (ts.length > 0) setActiveId(ts[0].id) })
-    listTaskTemplates(workspaceId).then(setTaskTemplates)
-  }, [loadList, workspaceId])
+  const updateUrlState = useCallback(
+    (updates: Record<string, string | null>, replace = false) => {
+      setSearchParams((prev) => mergeSearchParams(prev, updates), { replace })
+    },
+    [setSearchParams],
+  )
+
+  const setActiveId = useCallback(
+    (templateId: string | null, replace = false) => {
+      updateUrlState(
+        {
+          [WORKSPACE_DETAIL_PARAM_KEYS.subgraphTemplateId]: templateId,
+          [WORKSPACE_DETAIL_PARAM_KEYS.templateNodeId]: null,
+        },
+        replace,
+      )
+    },
+    [updateUrlState],
+  )
+
+  const setSelectedNodeId = useCallback(
+    (nodeId: string | null) => {
+      updateUrlState({ [WORKSPACE_DETAIL_PARAM_KEYS.templateNodeId]: nodeId })
+    },
+    [updateUrlState],
+  )
 
   useEffect(() => {
-    if (activeId) {
-      setSelectedNodeId(null)
+    loadList().then((ts) => {
+      const hasActiveTemplate = !!activeId && ts.some((template) => template.id === activeId)
+      if (hasActiveTemplate) return
+      setActiveId(ts[0]?.id ?? null, true)
+    })
+    listTaskTemplates(workspaceId).then(setTaskTemplates)
+  }, [activeId, loadList, setActiveId, workspaceId])
+
+  useEffect(() => {
+    if (activeId && templates.some((template) => template.id === activeId)) {
       setNodeDirty(false)
       loadDetail(activeId).then(d => {
         if (d) {
+          setEditLabel(d.label ?? '')
           setEditArgs(d.arguments.filter(a => !(a as any).deleted).map(a => ({
             name: a.name, arg_type: a.arg_type, default_value: a.default_value ?? '',
+            min_value: a.min_value != null ? String(a.min_value) : '',
+            max_value: a.max_value != null ? String(a.max_value) : '',
+            enum_options: a.enum_options ?? [],
           })))
           setArgsDirty(false)
         }
       })
     } else {
       setDetail(null)
+      setEditLabel('')
       setEditArgs([])
       setArgsDirty(false)
     }
-  }, [activeId, loadDetail])
+  }, [activeId, loadDetail, templates])
+
+  useEffect(() => {
+    if (!selectedNodeId || !detail) return
+    if (!detail.nodes.some((node) => node.id === selectedNodeId)) {
+      setSelectedNodeId(null)
+    }
+  }, [detail, selectedNodeId, setSelectedNodeId])
 
   // Seed inspector draft when selection changes
   useEffect(() => {
@@ -289,6 +339,7 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
     try {
       await updateSubgraphTemplate(workspaceId, activeId, {
         name: detail.name,
+        label: editLabel || undefined,
         nodes: detail.nodes.map((n) => ({
           node_type: n.node_type,
           name: n.name ?? undefined,
@@ -306,6 +357,9 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
           name: a.name.trim(),
           arg_type: a.arg_type,
           default_value: a.default_value || undefined,
+          min_value: a.min_value ? parseFloat(a.min_value) : undefined,
+          max_value: a.max_value ? parseFloat(a.max_value) : undefined,
+          enum_options: a.enum_options.length > 0 ? a.enum_options : undefined,
         })),
       })
       await loadDetail(activeId)
@@ -329,6 +383,16 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
         <button style={{ ...s.iconBtn, opacity: activeId ? 1 : 0.4 }} onClick={handleDelete} disabled={!activeId || mutating} title="Delete">x</button>
       </div>
 
+      {/* Label */}
+      {detail && (
+        <div style={{ padding: '4px 8px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', whiteSpace: 'nowrap' }}>Label</span>
+            <input style={s.input} value={editLabel} onChange={(e) => { setEditLabel(e.target.value); setArgsDirty(true) }} placeholder="e.g. Process {{ item }}" />
+          </div>
+        </div>
+      )}
+
       {/* Arguments section (collapsible) */}
       {detail && (
         <div style={{ borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
@@ -342,23 +406,39 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
           {showArgs && (
             <div style={{ padding: '0 8px 6px' }}>
               {editArgs.map((arg, i) => (
-                <div key={i} style={{ display: 'flex', gap: 4, marginBottom: 3, alignItems: 'center' }}>
+                <div key={i} style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 3, alignItems: 'center' }}>
                   <input style={{ ...s.input, flex: 2 }} value={arg.name} placeholder="name"
                     onChange={(e) => { const a = [...editArgs]; a[i] = { ...a[i], name: e.target.value }; setEditArgs(a); setArgsDirty(true) }} />
                   <select style={{ ...s.sel, flex: 1 }} value={arg.arg_type}
                     onChange={(e) => { const a = [...editArgs]; a[i] = { ...a[i], arg_type: e.target.value as any }; setEditArgs(a); setArgsDirty(true) }}>
                     <option value="string">string</option>
                     <option value="model_type">model</option>
+                    <option value="boolean">boolean</option>
+                    <option value="number">number</option>
+                    <option value="enum">enum</option>
                   </select>
                   <input style={{ ...s.input, flex: 2 }} value={arg.default_value} placeholder="default"
                     onChange={(e) => { const a = [...editArgs]; a[i] = { ...a[i], default_value: e.target.value }; setEditArgs(a); setArgsDirty(true) }} />
                   <button style={{ ...s.iconBtn, padding: '2px 6px', fontSize: '11px' }}
                     onClick={() => { const a = [...editArgs]; a.splice(i, 1); setEditArgs(a); setArgsDirty(true) }}>x</button>
+                  {arg.arg_type === 'number' && (
+                    <div style={{ display: 'flex', gap: 4, width: '100%' }}>
+                      <input style={{ ...s.input, flex: 1 }} type="number" value={arg.min_value} placeholder="min"
+                        onChange={(e) => { const a = [...editArgs]; a[i] = { ...a[i], min_value: e.target.value }; setEditArgs(a); setArgsDirty(true) }} />
+                      <input style={{ ...s.input, flex: 1 }} type="number" value={arg.max_value} placeholder="max"
+                        onChange={(e) => { const a = [...editArgs]; a[i] = { ...a[i], max_value: e.target.value }; setEditArgs(a); setArgsDirty(true) }} />
+                    </div>
+                  )}
+                  {arg.arg_type === 'enum' && (
+                    <input style={{ ...s.input, width: '100%' }} placeholder="options (comma-separated)"
+                      value={arg.enum_options.join(', ')}
+                      onChange={(e) => { const a = [...editArgs]; a[i] = { ...a[i], enum_options: e.target.value.split(',').map(s => s.trim()).filter(Boolean) }; setEditArgs(a); setArgsDirty(true) }} />
+                  )}
                 </div>
               ))}
               <div style={{ display: 'flex', gap: 4, marginTop: 2 }}>
                 <button style={{ ...s.addBtn, flex: 1 }}
-                  onClick={() => { setEditArgs([...editArgs, { name: '', arg_type: 'string', default_value: '' }]); setArgsDirty(true) }}>
+                  onClick={() => { setEditArgs([...editArgs, { name: '', arg_type: 'string', default_value: '', min_value: '', max_value: '', enum_options: [] }]); setArgsDirty(true) }}>
                   + Add
                 </button>
                 {argsDirty && (

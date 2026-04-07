@@ -29,6 +29,9 @@ class ArgumentSchema(BaseModel):
     arg_type: TemplateArgType = TemplateArgType.string
     default_value: Optional[str] = None
     model_constraint: Optional[list[str]] = None
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
+    enum_options: Optional[list[str]] = None
 
 
 class ArgumentResponse(BaseModel):
@@ -37,6 +40,9 @@ class ArgumentResponse(BaseModel):
     arg_type: TemplateArgType
     default_value: Optional[str] = None
     model_constraint: Optional[list[str]] = None
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
+    enum_options: Optional[list[str]] = None
     created_at: datetime.datetime
 
     model_config = {"from_attributes": True}
@@ -59,6 +65,9 @@ def _to_arg_inputs(args: list[ArgumentSchema]) -> list[ArgumentInput]:
             arg_type=a.arg_type,
             default_value=a.default_value,
             model_constraint=a.model_constraint,
+            min_value=a.min_value,
+            max_value=a.max_value,
+            enum_options=a.enum_options,
         )
         for a in args
     ]
@@ -71,12 +80,21 @@ def _arg_response(obj: Any) -> ArgumentResponse:
             mc = json.loads(obj.model_constraint)
         except (json.JSONDecodeError, TypeError):
             mc = None
+    eo = None
+    if obj.enum_options:
+        try:
+            eo = json.loads(obj.enum_options)
+        except (json.JSONDecodeError, TypeError):
+            eo = None
     return ArgumentResponse(
         id=obj.id,
         name=obj.name,
         arg_type=obj.arg_type,
         default_value=obj.default_value,
         model_constraint=mc,
+        min_value=float(obj.min_value) if obj.min_value is not None else None,
+        max_value=float(obj.max_value) if obj.max_value is not None else None,
+        enum_options=eo,
         created_at=obj.created_at,
     )
 
@@ -102,6 +120,7 @@ class CreateTaskTemplateRequest(BaseModel):
     prompt: Optional[str] = None
     command: Optional[str] = None
     graph_tools: bool = False
+    label: Optional[str] = None
     arguments: list[ArgumentSchema] = []
 
 
@@ -115,6 +134,7 @@ class TaskTemplateResponse(BaseModel):
     prompt: Optional[str] = None
     command: Optional[str] = None
     graph_tools: bool
+    label: Optional[str] = None
     arguments: list[ArgumentResponse]
     created_at: datetime.datetime
     updated_at: datetime.datetime
@@ -133,6 +153,7 @@ def _task_tmpl_response(t: Any) -> TaskTemplateResponse:
         prompt=t.prompt,
         command=t.command,
         graph_tools=t.graph_tools,
+        label=t.label,
         arguments=[_arg_response(a) for a in t.arguments if not a.deleted],
         created_at=t.created_at,
         updated_at=t.updated_at,
@@ -156,6 +177,7 @@ def create_task_template(
         prompt=body.prompt,
         command=body.command,
         graph_tools=body.graph_tools,
+        label=body.label,
         arguments=_to_arg_inputs(body.arguments),
     )
     return _task_tmpl_response(tmpl)
@@ -197,6 +219,7 @@ def update_task_template(
         prompt=body.prompt,
         command=body.command,
         graph_tools=body.graph_tools,
+        label=body.label,
         arguments=_to_arg_inputs(body.arguments),
     )
     return _task_tmpl_response(tmpl)
@@ -242,6 +265,7 @@ class SubgraphEdgeInputSchema(BaseModel):
 
 class CreateSubgraphTemplateRequest(BaseModel):
     name: str
+    label: Optional[str] = None
     nodes: list[SubgraphNodeInputSchema] = []
     edges: list[SubgraphEdgeInputSchema] = []
     arguments: list[ArgumentSchema] = []
@@ -301,6 +325,7 @@ class SubgraphTemplateDetailResponse(BaseModel):
     id: uuid.UUID
     workspace_id: uuid.UUID
     name: str
+    label: Optional[str] = None
     nodes: list[SubgraphNodeResponse]
     edges: list[SubgraphEdgeResponse]
     arguments: list[ArgumentResponse]
@@ -314,6 +339,7 @@ class SubgraphTemplateListResponse(BaseModel):
     id: uuid.UUID
     workspace_id: uuid.UUID
     name: str
+    label: Optional[str] = None
     created_at: datetime.datetime
     updated_at: datetime.datetime
 
@@ -372,6 +398,7 @@ def _to_detail(t: Any) -> SubgraphTemplateDetailResponse:
         id=t.id,
         workspace_id=t.workspace_id,
         name=t.name,
+        label=t.label,
         nodes=[_node_response(n) for n in t.nodes if not n.deleted],
         edges=[SubgraphEdgeResponse.model_validate(e) for e in t.edges if not e.deleted],
         arguments=[_arg_response(a) for a in t.arguments if not a.deleted],
@@ -415,6 +442,7 @@ def create_subgraph_template(
             nodes=_to_node_inputs(body.nodes),
             edges=[SubgraphEdgeInput(from_index=e.from_index, to_index=e.to_index) for e in body.edges],
             arguments=_to_arg_inputs(body.arguments),
+            label=body.label,
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
@@ -454,6 +482,7 @@ def update_subgraph_template(
             nodes=_to_node_inputs(body.nodes),
             edges=[SubgraphEdgeInput(from_index=e.from_index, to_index=e.to_index) for e in body.edges],
             arguments=_to_arg_inputs(body.arguments),
+            label=body.label,
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))

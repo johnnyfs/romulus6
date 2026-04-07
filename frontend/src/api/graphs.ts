@@ -79,6 +79,7 @@ export interface GraphRun {
   state: RunState
   sandbox_id: string | null
   parent_run_node_id: string | null
+  source_template_id: string | null
   created_at: string
   run_nodes: GraphRunNode[]
   run_edges: GraphRunEdge[]
@@ -230,6 +231,37 @@ export async function getRun(workspaceId: string, graphId: string, runId: string
 
 export async function getRunById(workspaceId: string, runId: string): Promise<GraphRun> {
   const res = await fetch(`${BASE}/workspaces/${workspaceId}/runs/${runId}`)
+  await _check(res)
+  return res.json()
+}
+
+export async function syncRunNode(
+  workspaceId: string,
+  runId: string,
+  nodeId: string,
+): Promise<GraphRun> {
+  const res = await fetch(
+    `${BASE}/workspaces/${workspaceId}/runs/${runId}/nodes/${nodeId}/sync`,
+    { method: 'POST' },
+  )
+  await _check(res)
+  return res.json()
+}
+
+export async function patchRunNode(
+  workspaceId: string,
+  runId: string,
+  nodeId: string,
+  patch: { state?: RunNodeState },
+): Promise<GraphRun> {
+  const res = await fetch(
+    `${BASE}/workspaces/${workspaceId}/runs/${runId}/nodes/${nodeId}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    },
+  )
   await _check(res)
   return res.json()
 }

@@ -1,10 +1,10 @@
 import datetime
 import json
-import re
 import uuid
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
+import jinja2
 from sqlmodel import Session, select
 
 from app.models.graph import Graph, GraphEdge, GraphNode, NodeType
@@ -16,6 +16,7 @@ from app.models.template import (
     SubgraphTemplateNodeType,
     TaskTemplate,
     TaskTemplateArgument,
+    TemplateArgType,
 )
 
 
@@ -70,28 +71,85 @@ def _has_cycle(
     return False
 
 
-def _substitute_args(text: Optional[str], bindings: dict[str, str]) -> Optional[str]:
-    """Replace {{ arg_name }} patterns in text with bound values."""
+class _PreserveUndefined(jinja2.Undefined):
+    """Render unresolved variables back as {{ name }} instead of raising."""
+
+    def __str__(self) -> str:
+        return "{{ " + self._undefined_name + " }}"
+
+    def __bool__(self) -> bool:
+        return False
+
+
+_jinja_env = jinja2.Environment(
+    loader=jinja2.BaseLoader(),
+    undefined=_PreserveUndefined,
+    trim_blocks=True,
+    lstrip_blocks=True,
+    keep_trailing_newline=True,
+)
+
+
+def _substitute_args(text: Optional[str], bindings: dict[str, Any]) -> Optional[str]:
+    """Render Jinja2 template text with the given bindings."""
     if text is None:
         return None
-    return re.sub(
-        r"\{\{\s*(\w+)\s*\}\}",
-        lambda m: bindings.get(m.group(1), m.group(0)),
-        text,
-    )
+    return _jinja_env.from_string(text).render(bindings)
+
+
+def _coerce_boolean_bindings(
+    bindings: dict[str, Any], template_args: list
+) -> None:
+    """Convert string 'true'/'false' to Python bool for boolean-typed args (in-place)."""
+    for arg in template_args:
+        if arg.arg_type == TemplateArgType.boolean and arg.name in bindings:
+            val = bindings[arg.name]
+            if isinstance(val, str):
+                bindings[arg.name] = val.lower() == "true"
+
+
+def _coerce_number_bindings(
+    bindings: dict[str, Any], template_args: list
+) -> None:
+    """Convert string numeric values to Python float for number-typed args (in-place)."""
+    for arg in template_args:
+        if arg.arg_type == TemplateArgType.number and arg.name in bindings:
+            val = bindings[arg.name]
+            if isinstance(val, str):
+                try:
+                    bindings[arg.name] = float(val)
+                except ValueError:
+                    raise ValueError(
+                        f"argument '{arg.name}' value '{val}' is not a valid number"
+                    )
+
+
+def _validate_enum_bindings(
+    bindings: dict[str, Any], template_args: list
+) -> None:
+    """Validate that enum-typed arg values are within allowed options."""
+    for arg in template_args:
+        if arg.arg_type == TemplateArgType.enum and arg.name in bindings:
+            val = bindings[arg.name]
+            if arg.enum_options:
+                allowed = json.loads(arg.enum_options)
+                if val not in allowed:
+                    raise ValueError(
+                        f"argument '{arg.name}' value '{val}' not in allowed options: {allowed}"
+                    )
 
 
 def _resolve_bindings(
     node_bindings: dict[str, str],
-    parent_bindings: dict[str, str],
+    parent_bindings: dict[str, Any],
     template_args: list,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Resolve argument bindings for a template node.
 
     node_bindings may reference parent args via {{ parent_arg }}.
     Unbound args fall back to template argument defaults.
     """
-    resolved: dict[str, str] = {}
+    resolved: dict[str, Any] = {}
     # First, substitute parent bindings into node-level binding values
     for key, value in node_bindings.items():
         resolved[key] = _substitute_args(value, parent_bindings) or value
@@ -101,6 +159,9 @@ def _resolve_bindings(
         if arg.name not in resolved and arg.default_value is not None:
             resolved[arg.name] = arg.default_value
 
+    _coerce_boolean_bindings(resolved, template_args)
+    _coerce_number_bindings(resolved, template_args)
+    _validate_enum_bindings(resolved, template_args)
     return resolved
 
 
@@ -439,7 +500,7 @@ def _materialize_task_template(
     session: Session,
     run: GraphRun,
     task_template: TaskTemplate,
-    bindings: dict[str, str],
+    bindings: dict[str, Any],
     source_node_id: Optional[uuid.UUID] = None,
 ) -> GraphRunNode:
     """Resolve a TaskTemplate into a concrete GraphRunNode."""
@@ -447,13 +508,14 @@ def _materialize_task_template(
     for arg in task_template.arguments:
         if arg.name not in bindings and arg.default_value is not None:
             bindings[arg.name] = arg.default_value
+    _coerce_boolean_bindings(bindings, task_template.arguments)
 
     rn = GraphRunNode(
         run_id=run.id,
         source_node_id=source_node_id or task_template.id,
         source_type="template_node",
         node_type=task_template.task_type.value,
-        name=_substitute_args(task_template.name, bindings),
+        name=_substitute_args(task_template.label or task_template.name, bindings),
         state="pending",
         agent_type=_substitute_args(task_template.agent_type, bindings),
         model=_substitute_args(task_template.model, bindings),
@@ -491,7 +553,7 @@ def _materialize_subgraph(
     session: Session,
     parent_run: GraphRun,
     subgraph_template: SubgraphTemplate,
-    bindings: dict[str, str],
+    bindings: dict[str, Any],
     seen: set[uuid.UUID],
 ) -> GraphRun:
     """Recursively materialize a SubgraphTemplate into a child GraphRun."""
@@ -499,6 +561,7 @@ def _materialize_subgraph(
         graph_id=None,
         workspace_id=parent_run.workspace_id,
         sandbox_id=parent_run.sandbox_id,
+        source_template_id=subgraph_template.id,
     )
     session.add(child_run)
     session.flush()
@@ -571,7 +634,7 @@ def _materialize_subgraph(
                 source_node_id=tmpl_node.id,
                 source_type="template_node",
                 node_type="subgraph",
-                name=tmpl_node.name or ref_sg.name,
+                name=tmpl_node.name or _substitute_args(ref_sg.label, bindings) or ref_sg.name,
                 state="pending",
             )
             session.add(rn)
@@ -643,13 +706,14 @@ def create_run(session: Session, graph: Graph) -> GraphRun:
             for arg in sg_tmpl.arguments:
                 if arg.name not in bindings and arg.default_value is not None:
                     bindings[arg.name] = arg.default_value
+            _coerce_boolean_bindings(bindings, sg_tmpl.arguments)
 
             rn = GraphRunNode(
                 run_id=run.id,
                 source_node_id=node.id,
                 source_type="graph_node",
                 node_type="subgraph",
-                name=node.name or sg_tmpl.name,
+                name=node.name or _substitute_args(sg_tmpl.label, bindings) or sg_tmpl.name,
                 state="pending",
             )
             session.add(rn)

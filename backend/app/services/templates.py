@@ -29,6 +29,9 @@ class ArgumentInput:
     arg_type: TemplateArgType = TemplateArgType.string
     default_value: Optional[str] = None
     model_constraint: Optional[list[str]] = None
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
+    enum_options: Optional[list[str]] = None
 
 
 @dataclass
@@ -119,6 +122,53 @@ def _build_subgraph_node(
     )
 
 
+def _validate_arguments(arguments: list[ArgumentInput]) -> None:
+    for arg in arguments:
+        if arg.arg_type == TemplateArgType.boolean:
+            if arg.model_constraint is not None:
+                raise ValueError(f"boolean argument '{arg.name}' cannot have model_constraint")
+            if arg.default_value is not None and arg.default_value not in ("true", "false"):
+                raise ValueError(
+                    f"boolean argument '{arg.name}' default_value must be 'true' or 'false'"
+                )
+        elif arg.arg_type == TemplateArgType.number:
+            if arg.model_constraint is not None:
+                raise ValueError(f"number argument '{arg.name}' cannot have model_constraint")
+            if arg.enum_options is not None:
+                raise ValueError(f"number argument '{arg.name}' cannot have enum_options")
+            if arg.min_value is not None and arg.max_value is not None:
+                if arg.min_value > arg.max_value:
+                    raise ValueError(
+                        f"number argument '{arg.name}' min_value must be <= max_value"
+                    )
+            if arg.default_value is not None:
+                try:
+                    val = float(arg.default_value)
+                except ValueError:
+                    raise ValueError(
+                        f"number argument '{arg.name}' default_value must be a valid number"
+                    )
+                if arg.min_value is not None and val < arg.min_value:
+                    raise ValueError(
+                        f"number argument '{arg.name}' default_value is below min_value"
+                    )
+                if arg.max_value is not None and val > arg.max_value:
+                    raise ValueError(
+                        f"number argument '{arg.name}' default_value is above max_value"
+                    )
+        elif arg.arg_type == TemplateArgType.enum:
+            if arg.model_constraint is not None:
+                raise ValueError(f"enum argument '{arg.name}' cannot have model_constraint")
+            if arg.min_value is not None or arg.max_value is not None:
+                raise ValueError(f"enum argument '{arg.name}' cannot have min/max_value")
+            if not arg.enum_options:
+                raise ValueError(f"enum argument '{arg.name}' must have enum_options")
+            if arg.default_value is not None and arg.default_value not in arg.enum_options:
+                raise ValueError(
+                    f"enum argument '{arg.name}' default_value must be one of the enum_options"
+                )
+
+
 def _create_arguments(
     session: Session,
     arguments: list[ArgumentInput],
@@ -126,12 +176,20 @@ def _create_arguments(
     task_template_id: Optional[uuid.UUID] = None,
     subgraph_template_id: Optional[uuid.UUID] = None,
 ) -> None:
+    _validate_arguments(arguments)
     for arg_input in arguments:
         constraint_json = (
             json.dumps(arg_input.model_constraint)
             if arg_input.model_constraint
             else None
         )
+        enum_options_json = (
+            json.dumps(arg_input.enum_options)
+            if arg_input.enum_options
+            else None
+        )
+        min_val_str = str(arg_input.min_value) if arg_input.min_value is not None else None
+        max_val_str = str(arg_input.max_value) if arg_input.max_value is not None else None
         if task_template_id is not None:
             session.add(TaskTemplateArgument(
                 task_template_id=task_template_id,
@@ -139,6 +197,9 @@ def _create_arguments(
                 arg_type=arg_input.arg_type,
                 default_value=arg_input.default_value,
                 model_constraint=constraint_json,
+                min_value=min_val_str,
+                max_value=max_val_str,
+                enum_options=enum_options_json,
             ))
         elif subgraph_template_id is not None:
             session.add(SubgraphTemplateArgument(
@@ -147,6 +208,9 @@ def _create_arguments(
                 arg_type=arg_input.arg_type,
                 default_value=arg_input.default_value,
                 model_constraint=constraint_json,
+                min_value=min_val_str,
+                max_value=max_val_str,
+                enum_options=enum_options_json,
             ))
 
 
@@ -163,6 +227,7 @@ def create_task_template(
     prompt: Optional[str] = None,
     command: Optional[str] = None,
     graph_tools: bool = False,
+    label: Optional[str] = None,
     arguments: Optional[list[ArgumentInput]] = None,
 ) -> TaskTemplate:
     tmpl = TaskTemplate(
@@ -174,6 +239,7 @@ def create_task_template(
         prompt=prompt,
         command=command,
         graph_tools=graph_tools,
+        label=label,
     )
     session.add(tmpl)
     session.flush()
@@ -215,6 +281,7 @@ def update_task_template(
     prompt: Optional[str] = None,
     command: Optional[str] = None,
     graph_tools: bool = False,
+    label: Optional[str] = None,
     arguments: Optional[list[ArgumentInput]] = None,
 ) -> TaskTemplate:
     # Delete existing arguments
@@ -234,6 +301,7 @@ def update_task_template(
     tmpl.prompt = prompt
     tmpl.command = command
     tmpl.graph_tools = graph_tools
+    tmpl.label = label
     tmpl.updated_at = datetime.datetime.utcnow()
     session.add(tmpl)
     session.flush()
@@ -278,13 +346,14 @@ def create_subgraph_template(
     nodes: Optional[list[SubgraphNodeInput]] = None,
     edges: Optional[list[SubgraphEdgeInput]] = None,
     arguments: Optional[list[ArgumentInput]] = None,
+    label: Optional[str] = None,
 ) -> SubgraphTemplate:
     nodes = nodes or []
     edges = edges or []
 
     _validate_no_cycle_by_index(len(nodes), edges)
 
-    tmpl = SubgraphTemplate(workspace_id=workspace_id, name=name)
+    tmpl = SubgraphTemplate(workspace_id=workspace_id, name=name, label=label)
     session.add(tmpl)
     session.flush()
 
@@ -348,6 +417,7 @@ def update_subgraph_template(
     nodes: Optional[list[SubgraphNodeInput]] = None,
     edges: Optional[list[SubgraphEdgeInput]] = None,
     arguments: Optional[list[ArgumentInput]] = None,
+    label: Optional[str] = None,
 ) -> SubgraphTemplate:
     nodes = nodes or []
     edges = edges or []
@@ -407,6 +477,7 @@ def update_subgraph_template(
         _create_arguments(session, arguments, subgraph_template_id=tmpl.id)
 
     tmpl.name = name
+    tmpl.label = label
     tmpl.updated_at = datetime.datetime.utcnow()
     session.add(tmpl)
     session.commit()

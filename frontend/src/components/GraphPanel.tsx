@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   type Graph,
   type GraphDetail,
@@ -18,6 +19,12 @@ import { listTaskTemplates, listSubgraphTemplates, getSubgraphTemplate } from '.
 import { NODE_W, NODE_H, CANVAS_WIDTH, computeLayout, type Pos } from './graphLayout'
 import RunsView from './RunsView'
 import TemplatesView from './TemplatesView'
+import {
+  WORKSPACE_DETAIL_PARAM_KEYS,
+  mergeSearchParams,
+  readEnumParam,
+  readStringParam,
+} from './workspaceDetailSearchParams'
 
 const MODEL_OPTIONS = [
   { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
@@ -31,13 +38,11 @@ const MODEL_OPTIONS = [
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function GraphPanel({ workspaceId, width }: { workspaceId: string; width?: number }) {
-  const [activeTab, setActiveTab] = useState<'graph' | 'runs' | 'templates'>('graph')
+  const [searchParams, setSearchParams] = useSearchParams()
   const [graphs, setGraphs] = useState<Graph[]>([])
-  const [activeGraphId, setActiveGraphId] = useState<string | null>(null)
   const [detail, setDetail] = useState<GraphDetail | null>(null)
   const [loading, setLoading] = useState(false)
   const [mutating, setMutating] = useState(false)
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null)
   const [newDepFrom, setNewDepFrom] = useState<string>('')
@@ -55,6 +60,46 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
   const [taskTemplates, setTaskTemplates] = useState<TaskTemplate[]>([])
   const [subgraphTemplates, setSubgraphTemplates] = useState<SubgraphTemplate[]>([])
   const [sgDetailCache, setSgDetailCache] = useState<Record<string, SubgraphTemplateDetail>>({})
+
+  const activeTab = readEnumParam(
+    searchParams,
+    WORKSPACE_DETAIL_PARAM_KEYS.panelTab,
+    ['graph', 'runs', 'templates'] as const,
+    'graph',
+  )
+  const activeGraphId = readStringParam(searchParams, WORKSPACE_DETAIL_PARAM_KEYS.graphId)
+  const selectedNodeId = readStringParam(searchParams, WORKSPACE_DETAIL_PARAM_KEYS.graphNodeId)
+
+  const setPanelState = useCallback(
+    (updates: Record<string, string | null>, replace = false) => {
+      setSearchParams((prev) => mergeSearchParams(prev, updates), { replace })
+    },
+    [setSearchParams],
+  )
+
+  const setActiveTab = useCallback(
+    (tab: 'graph' | 'runs' | 'templates') => {
+      setPanelState({ [WORKSPACE_DETAIL_PARAM_KEYS.panelTab]: tab })
+    },
+    [setPanelState],
+  )
+
+  const setActiveGraphId = useCallback(
+    (graphId: string | null) => {
+      setPanelState({
+        [WORKSPACE_DETAIL_PARAM_KEYS.graphId]: graphId,
+        [WORKSPACE_DETAIL_PARAM_KEYS.graphNodeId]: null,
+      })
+    },
+    [setPanelState],
+  )
+
+  const setSelectedNodeId = useCallback(
+    (nodeId: string | null) => {
+      setPanelState({ [WORKSPACE_DETAIL_PARAM_KEYS.graphNodeId]: nodeId })
+    },
+    [setPanelState],
+  )
 
   function markDirty<T>(setter: (v: T) => void) {
     return (v: T) => { setter(v); setNodeDirty(true) }
@@ -80,20 +125,34 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
 
   useEffect(() => {
     loadGraphs().then((gs) => {
-      if (gs.length > 0) setActiveGraphId(gs[0].id)
+      const hasActiveGraph = !!activeGraphId && gs.some((g) => g.id === activeGraphId)
+      if (hasActiveGraph) return
+      setPanelState(
+        {
+          [WORKSPACE_DETAIL_PARAM_KEYS.graphId]: gs[0]?.id ?? null,
+          [WORKSPACE_DETAIL_PARAM_KEYS.graphNodeId]: null,
+        },
+        true,
+      )
     })
     listTaskTemplates(workspaceId).then(setTaskTemplates)
     listSubgraphTemplates(workspaceId).then(setSubgraphTemplates)
-  }, [loadGraphs, workspaceId])
+  }, [activeGraphId, loadGraphs, setPanelState, workspaceId])
 
   useEffect(() => {
-    if (activeGraphId) {
-      setSelectedNodeId(null)
+    if (activeGraphId && graphs.some((graph) => graph.id === activeGraphId)) {
       loadDetail(activeGraphId)
     } else {
       setDetail(null)
     }
-  }, [activeGraphId, loadDetail])
+  }, [activeGraphId, graphs, loadDetail])
+
+  useEffect(() => {
+    if (!selectedNodeId || !detail) return
+    if (!detail.nodes.some((node) => node.id === selectedNodeId)) {
+      setSelectedNodeId(null)
+    }
+  }, [detail, selectedNodeId, setSelectedNodeId])
 
   // Seed inspector when selection changes
   useEffect(() => {
@@ -363,6 +422,25 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
     }
   }
 
+  // ── Navigation callbacks (from RunsView) ──────────────────────────────────
+
+  const handleNavigateToGraphNode = useCallback((graphId: string, nodeId: string) => {
+    setPanelState({
+      [WORKSPACE_DETAIL_PARAM_KEYS.panelTab]: 'graph',
+      [WORKSPACE_DETAIL_PARAM_KEYS.graphId]: graphId,
+      [WORKSPACE_DETAIL_PARAM_KEYS.graphNodeId]: nodeId,
+    })
+  }, [setPanelState])
+
+  const handleNavigateToTemplateNode = useCallback((templateId: string, nodeId: string) => {
+    setPanelState({
+      [WORKSPACE_DETAIL_PARAM_KEYS.panelTab]: 'templates',
+      [WORKSPACE_DETAIL_PARAM_KEYS.templatesSubTab]: 'subgraphs',
+      [WORKSPACE_DETAIL_PARAM_KEYS.subgraphTemplateId]: templateId,
+      [WORKSPACE_DETAIL_PARAM_KEYS.templateNodeId]: nodeId,
+    })
+  }, [setPanelState])
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   const selectedNode = detail?.nodes.find((n) => n.id === selectedNodeId) ?? null
@@ -393,7 +471,11 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
       </div>
 
       {activeTab === 'runs' ? (
-        <RunsView workspaceId={workspaceId} />
+        <RunsView
+          workspaceId={workspaceId}
+          onNavigateToGraphNode={handleNavigateToGraphNode}
+          onNavigateToTemplateNode={handleNavigateToTemplateNode}
+        />
       ) : activeTab === 'templates' ? (
         <TemplatesView workspaceId={workspaceId} />
       ) : (

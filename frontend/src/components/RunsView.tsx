@@ -1,15 +1,24 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   type Graph,
   type GraphRun,
+  type GraphRunNode,
   type RunNodeState,
   listGraphs,
   listRuns,
   createRun,
   getRun,
   getRunById,
+  syncRunNode,
+  patchRunNode,
 } from '../api/graphs'
 import { NODE_W, NODE_H, PADDING_TOP, CANVAS_WIDTH, computeLayout } from './graphLayout'
+import {
+  WORKSPACE_DETAIL_PARAM_KEYS,
+  mergeSearchParams,
+  readStringParam,
+} from './workspaceDetailSearchParams'
 
 const STATE_COLORS: Record<RunNodeState, string> = {
   pending: 'var(--text-muted)',
@@ -18,32 +27,94 @@ const STATE_COLORS: Record<RunNodeState, string> = {
   error: '#ef4444',
 }
 
-export default function RunsView({ workspaceId }: { workspaceId: string }) {
+interface RunsViewProps {
+  workspaceId: string
+  onNavigateToGraphNode?: (graphId: string, nodeId: string) => void
+  onNavigateToTemplateNode?: (templateId: string, nodeId: string) => void
+}
+
+export default function RunsView({ workspaceId, onNavigateToGraphNode, onNavigateToTemplateNode }: RunsViewProps) {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [graphs, setGraphs] = useState<Graph[]>([])
-  const [selectedGraphId, setSelectedGraphId] = useState<string | null>(null)
   const [runs, setRuns] = useState<GraphRun[]>([])
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const [activeRun, setActiveRun] = useState<GraphRun | null>(null)
   const [runPath, setRunPath] = useState<GraphRun[]>([])
   const [creating, setCreating] = useState(false)
+  const selectedGraphId = readStringParam(searchParams, WORKSPACE_DETAIL_PARAM_KEYS.runGraphId)
+  const selectedRunId = readStringParam(searchParams, WORKSPACE_DETAIL_PARAM_KEYS.runId)
+  const selectedRunNodeId = readStringParam(searchParams, WORKSPACE_DETAIL_PARAM_KEYS.runNodeId)
+
+  const updateUrlState = useCallback(
+    (updates: Record<string, string | null>, replace = false) => {
+      setSearchParams((prev) => mergeSearchParams(prev, updates), { replace })
+    },
+    [setSearchParams],
+  )
+
+  const setSelectedGraphId = useCallback(
+    (graphId: string | null, replace = false) => {
+      updateUrlState(
+        {
+          [WORKSPACE_DETAIL_PARAM_KEYS.runGraphId]: graphId,
+          [WORKSPACE_DETAIL_PARAM_KEYS.runId]: null,
+          [WORKSPACE_DETAIL_PARAM_KEYS.runNodeId]: null,
+        },
+        replace,
+      )
+    },
+    [updateUrlState],
+  )
+
+  const setSelectedRunId = useCallback(
+    (runId: string | null, replace = false) => {
+      updateUrlState(
+        {
+          [WORKSPACE_DETAIL_PARAM_KEYS.runId]: runId,
+          [WORKSPACE_DETAIL_PARAM_KEYS.runNodeId]: null,
+        },
+        replace,
+      )
+    },
+    [updateUrlState],
+  )
+
+  const setSelectedRunNodeId = useCallback(
+    (runNodeId: string | null) => {
+      updateUrlState({ [WORKSPACE_DETAIL_PARAM_KEYS.runNodeId]: runNodeId })
+    },
+    [updateUrlState],
+  )
 
   // Load graphs
   const loadGraphs = useCallback(async () => {
     const gs = await listGraphs(workspaceId)
     setGraphs(gs)
-    if (gs.length > 0 && !selectedGraphId) setSelectedGraphId(gs[0].id)
+    const hasSelectedGraph = !!selectedGraphId && gs.some((graph) => graph.id === selectedGraphId)
+    if (!hasSelectedGraph) {
+      setSelectedGraphId(gs[0]?.id ?? null, true)
+    }
   }, [workspaceId, selectedGraphId])
 
   useEffect(() => { loadGraphs() }, [loadGraphs])
 
   // Load runs when graph changes
   const loadRuns = useCallback(async () => {
-    if (!selectedGraphId) { setRuns([]); return }
+    if (!selectedGraphId || !graphs.some((graph) => graph.id === selectedGraphId)) {
+      setRuns([])
+      return
+    }
     const rs = await listRuns(workspaceId, selectedGraphId)
     setRuns(rs)
-  }, [workspaceId, selectedGraphId])
+  }, [graphs, workspaceId, selectedGraphId])
 
   useEffect(() => { loadRuns() }, [loadRuns])
+
+  useEffect(() => {
+    if (!selectedRunId) return
+    if (!runs.some((run) => run.id === selectedRunId)) {
+      setSelectedRunId(null, true)
+    }
+  }, [runs, selectedRunId, setSelectedRunId])
 
   // Load run detail when selection changes
   useEffect(() => {
@@ -58,6 +129,13 @@ export default function RunsView({ workspaceId }: { workspaceId: string }) {
       setRunPath([run])
     }
   }, [selectedRunId, runs, selectedGraphId])
+
+  useEffect(() => {
+    if (!selectedRunNodeId || !activeRun) return
+    if (!activeRun.run_nodes.some((node) => node.id === selectedRunNodeId)) {
+      setSelectedRunNodeId(null)
+    }
+  }, [activeRun, selectedRunNodeId, setSelectedRunNodeId])
 
   // Poll active run if non-terminal
   useEffect(() => {
@@ -138,6 +216,65 @@ export default function RunsView({ workspaceId }: { workspaceId: string }) {
     return 'var(--text-muted)'
   }
 
+  // Selected node + edges
+  const selectedRunNode: GraphRunNode | null = activeRun?.run_nodes.find(rn => rn.id === selectedRunNodeId) ?? null
+
+  const selectedRunNodeEdges = useMemo(() => {
+    if (!activeRun || !selectedRunNodeId) return { incoming: [], outgoing: [] }
+    return {
+      incoming: activeRun.run_edges.filter(e => e.to_run_node_id === selectedRunNodeId),
+      outgoing: activeRun.run_edges.filter(e => e.from_run_node_id === selectedRunNodeId),
+    }
+  }, [activeRun, selectedRunNodeId])
+
+  const nodeNameById = useCallback((nodeId: string) => {
+    const node = activeRun?.run_nodes.find(rn => rn.id === nodeId)
+    return node?.name || node?.node_type || '?'
+  }, [activeRun])
+
+  // "Go to source" handler
+  const handleGoToSource = useCallback(() => {
+    if (!selectedRunNode?.source_node_id) return
+    if (selectedRunNode.source_type === 'graph_node') {
+      const rootRun = runPath[0]
+      if (rootRun?.graph_id && onNavigateToGraphNode) {
+        onNavigateToGraphNode(rootRun.graph_id, selectedRunNode.source_node_id)
+      }
+    } else if (selectedRunNode.source_type === 'template_node') {
+      if (activeRun?.source_template_id && onNavigateToTemplateNode) {
+        onNavigateToTemplateNode(activeRun.source_template_id, selectedRunNode.source_node_id)
+      }
+    }
+  }, [selectedRunNode, runPath, activeRun, onNavigateToGraphNode, onNavigateToTemplateNode])
+
+  const applyRunUpdate = useCallback((updated: GraphRun) => {
+    setActiveRun(updated)
+    setRunPath(prev => {
+      if (prev.length === 0) return [updated]
+      return prev.map((run, index) => (index === prev.length - 1 ? updated : run))
+    })
+    setRuns(prev => prev.map(r => r.id === updated.id ? updated : r))
+  }, [])
+
+  const handleSyncNode = useCallback(async () => {
+    if (!activeRun || !selectedRunNode) return
+    const updated = await syncRunNode(workspaceId, activeRun.id, selectedRunNode.id)
+    applyRunUpdate(updated)
+  }, [workspaceId, activeRun, selectedRunNode, applyRunUpdate])
+
+  const handlePatchNodeState = useCallback(async (newState: RunNodeState) => {
+    if (!activeRun || !selectedRunNode) return
+    const updated = await patchRunNode(workspaceId, activeRun.id, selectedRunNode.id, { state: newState })
+    applyRunUpdate(updated)
+  }, [workspaceId, activeRun, selectedRunNode, applyRunUpdate])
+
+  const canMutateNode = selectedRunNode != null
+    && selectedRunNode.state !== 'running'
+    && !selectedRunNode.child_run_id
+
+  const canSyncNode = canMutateNode
+    && selectedRunNode.source_type === 'graph_node'
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
       {/* Graph selector */}
@@ -147,7 +284,6 @@ export default function RunsView({ workspaceId }: { workspaceId: string }) {
           value={selectedGraphId ?? ''}
           onChange={(e) => {
             setSelectedGraphId(e.target.value || null)
-            setSelectedRunId(null)
             setActiveRun(null)
           }}
         >
@@ -253,17 +389,19 @@ export default function RunsView({ workspaceId }: { workspaceId: string }) {
               const pos = positions.get(rn.id)
               if (!pos) return null
               const color = STATE_COLORS[rn.state]
+              const isSelected = rn.id === selectedRunNodeId
               return (
                 <div
                   key={rn.id}
+                  onClick={() => setSelectedRunNodeId(selectedRunNodeId === rn.id ? null : rn.id)}
                   style={{
                     position: 'absolute',
                     left: pos.x,
                     top: pos.y,
                     width: NODE_W,
                     height: NODE_H,
-                    background: 'var(--surface)',
-                    border: `2px solid ${color}`,
+                    background: isSelected ? 'var(--surface-2)' : 'var(--surface)',
+                    border: `2px solid ${isSelected ? 'var(--accent)' : color}`,
                     borderRadius: '4px',
                     display: 'flex',
                     alignItems: 'center',
@@ -274,8 +412,9 @@ export default function RunsView({ workspaceId }: { workspaceId: string }) {
                     whiteSpace: 'nowrap',
                     textOverflow: 'ellipsis',
                     paddingInline: 8,
-                    color,
+                    color: isSelected ? 'var(--accent)' : color,
                     gap: 6,
+                    cursor: 'pointer',
                   }}
                   title={`${rn.name ?? rn.node_type} — ${rn.state}`}
                 >
@@ -298,6 +437,116 @@ export default function RunsView({ workspaceId }: { workspaceId: string }) {
           </div>
         )}
       </div>
+
+      {/* Read-only inspector */}
+      {selectedRunNode && (
+        <div style={rs.inspector}>
+          <div style={rs.inspectorTitle}>RUN NODE</div>
+          <div style={rs.inspectorRow}>
+            <span style={rs.inspectorLabel}>Name:</span>
+            <span style={rs.inspectorValue}>{selectedRunNode.name || selectedRunNode.node_type}</span>
+          </div>
+          <div style={rs.inspectorRow}>
+            <span style={rs.inspectorLabel}>Type:</span>
+            <span style={rs.inspectorValue}>{selectedRunNode.node_type}</span>
+          </div>
+          <div style={rs.inspectorRow}>
+            <span style={rs.inspectorLabel}>State:</span>
+            {canMutateNode ? (
+              <select
+                style={{ ...rs.inspectorSelect, color: STATE_COLORS[selectedRunNode.state] }}
+                value={selectedRunNode.state}
+                onChange={(e) => void handlePatchNodeState(e.target.value as RunNodeState)}
+              >
+                <option value="pending">pending</option>
+                <option value="completed">completed</option>
+                <option value="error">error</option>
+              </select>
+            ) : (
+              <span style={{ ...rs.inspectorValue, color: STATE_COLORS[selectedRunNode.state] }}>
+                {selectedRunNode.state}
+              </span>
+            )}
+          </div>
+
+          {selectedRunNode.agent_config && (
+            <>
+              <div style={{ ...rs.inspectorTitle, marginTop: 6 }}>AGENT CONFIG</div>
+              <div style={rs.inspectorRow}>
+                <span style={rs.inspectorLabel}>Agent:</span>
+                <span style={rs.inspectorValue}>{selectedRunNode.agent_config.agent_type}</span>
+              </div>
+              <div style={rs.inspectorRow}>
+                <span style={rs.inspectorLabel}>Model:</span>
+                <span style={rs.inspectorValue}>{selectedRunNode.agent_config.model}</span>
+              </div>
+              {selectedRunNode.agent_config.prompt && (
+                <div style={{ ...rs.inspectorRow, alignItems: 'flex-start' }}>
+                  <span style={{ ...rs.inspectorLabel, marginTop: 2 }}>Prompt:</span>
+                  <span style={{ ...rs.inspectorValue, whiteSpace: 'pre-wrap', maxHeight: 80, overflowY: 'auto' }}>
+                    {selectedRunNode.agent_config.prompt}
+                  </span>
+                </div>
+              )}
+              {selectedRunNode.agent_config.graph_tools && (
+                <div style={rs.inspectorRow}>
+                  <span style={rs.inspectorLabel} />
+                  <span style={{ ...rs.inspectorValue, color: 'var(--text-dim)' }}>graph tools enabled</span>
+                </div>
+              )}
+            </>
+          )}
+
+          {selectedRunNode.command_config && (
+            <>
+              <div style={{ ...rs.inspectorTitle, marginTop: 6 }}>COMMAND</div>
+              <div style={{ ...rs.inspectorRow, alignItems: 'flex-start' }}>
+                <span style={{ ...rs.inspectorValue, fontFamily: 'monospace', whiteSpace: 'pre-wrap', maxHeight: 80, overflowY: 'auto' }}>
+                  {selectedRunNode.command_config.command}
+                </span>
+              </div>
+            </>
+          )}
+
+          {/* Dependencies */}
+          {selectedRunNodeEdges.incoming.length > 0 && (
+            <>
+              <div style={{ ...rs.inspectorTitle, marginTop: 6 }}>DEPENDENCIES</div>
+              {selectedRunNodeEdges.incoming.map((edge) => (
+                <div key={edge.id} style={rs.inspectorRow}>
+                  <span style={rs.inspectorValue}>{nodeNameById(edge.from_run_node_id)}</span>
+                </div>
+              ))}
+            </>
+          )}
+
+          {/* Dependents */}
+          {selectedRunNodeEdges.outgoing.length > 0 && (
+            <>
+              <div style={{ ...rs.inspectorTitle, marginTop: 6 }}>DEPENDENTS</div>
+              {selectedRunNodeEdges.outgoing.map((edge) => (
+                <div key={edge.id} style={rs.inspectorRow}>
+                  <span style={rs.inspectorValue}>{nodeNameById(edge.to_run_node_id)}</span>
+                </div>
+              ))}
+            </>
+          )}
+
+          {/* Action buttons */}
+          <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+            {selectedRunNode.source_node_id && (
+              <button style={rs.goToSourceBtn} onClick={handleGoToSource}>
+                Go to {selectedRunNode.source_type === 'graph_node' ? 'graph' : 'template'} →
+              </button>
+            )}
+            {canSyncNode && (
+              <button style={rs.syncBtn} onClick={() => void handleSyncNode()}>
+                Sync from source
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -395,5 +644,70 @@ const rs: Record<string, React.CSSProperties> = {
     lineHeight: 1,
     padding: '2px 4px',
     flexShrink: 0,
+  },
+  inspector: {
+    borderTop: '1px solid var(--border)',
+    padding: '8px 10px',
+    background: 'var(--surface)',
+    flexShrink: 0,
+    maxHeight: '45%',
+    overflowY: 'auto',
+  },
+  inspectorTitle: {
+    color: 'var(--text-muted)',
+    marginBottom: '6px',
+    fontSize: '11px',
+    fontWeight: 600,
+    textTransform: 'uppercase',
+    letterSpacing: '0.08em',
+  },
+  inspectorRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    marginBottom: '4px',
+  },
+  inspectorLabel: {
+    color: 'var(--text-dim)',
+    flexShrink: 0,
+    width: '42px',
+    fontSize: '12px',
+  },
+  inspectorValue: {
+    flex: 1,
+    fontSize: '12px',
+    color: 'var(--text)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  },
+  inspectorSelect: {
+    flex: 1,
+    padding: '2px 4px',
+    border: '1px solid var(--border)',
+    borderRadius: '4px',
+    background: 'var(--surface-2)',
+    fontSize: '12px',
+    outline: 'none',
+    fontWeight: 600,
+  },
+  goToSourceBtn: {
+    padding: '4px 10px',
+    background: 'var(--accent)',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '12px',
+    fontWeight: 600,
+  },
+  syncBtn: {
+    padding: '4px 10px',
+    background: 'var(--surface-2)',
+    color: 'var(--text)',
+    border: '1px solid var(--border)',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '12px',
+    fontWeight: 600,
   },
 }

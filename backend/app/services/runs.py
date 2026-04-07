@@ -435,3 +435,87 @@ def _maybe_release_run_sandbox(
         return
     status = worker_svc.WorkerLeaseStatus.failed if failure_reason else worker_svc.WorkerLeaseStatus.released
     worker_svc.release_sandbox_lease(session, sandbox, status=status, failure_reason=failure_reason)
+
+
+def _resume_run_if_terminal(session: Session, run: GraphRun) -> None:
+    """Set run back to 'running' if it was in a terminal state."""
+    if run.state in ("error", "completed"):
+        run.state = "running"
+        run.updated_at = datetime.datetime.utcnow()
+        session.add(run)
+
+
+SETTABLE_NODE_STATES = {"pending", "completed", "error"}
+
+
+def sync_run_node(session: Session, run_id: uuid.UUID, node_id: uuid.UUID) -> GraphRun:
+    from app.models.graph import GraphNode
+
+    node = session.get(GraphRunNode, node_id)
+    if node is None or node.run_id != run_id:
+        raise ValueError("run node not found")
+    if node.source_type != "graph_node":
+        raise ValueError("sync is only supported for graph_node source type")
+    if node.state in ("running", "dispatching"):
+        raise ValueError("cannot sync a node that is running or dispatching")
+    if node.child_run_id is not None:
+        raise ValueError("cannot sync subgraph nodes")
+
+    source = session.get(GraphNode, node.source_node_id)
+    if source is None or source.deleted:
+        raise ValueError("source graph node not found or deleted")
+
+    node.name = source.name
+    node.node_type = source.node_type.value
+    node.agent_type = source.agent_type
+    node.model = source.model
+    node.prompt = source.prompt
+    node.command = source.command
+    node.graph_tools = source.graph_tools
+    node.state = "pending"
+    node.agent_id = None
+    node.session_id = None
+    node.updated_at = datetime.datetime.utcnow()
+    session.add(node)
+
+    run = session.get(GraphRun, run_id)
+    if run is not None:
+        _resume_run_if_terminal(session, run)
+
+    session.commit()
+    if run is not None:
+        enqueue_run(session, run_id, reason="node synced")
+        session.refresh(run)
+    return run
+
+
+def patch_run_node_state(
+    session: Session, run_id: uuid.UUID, node_id: uuid.UUID, new_state: str
+) -> GraphRun:
+    if new_state not in SETTABLE_NODE_STATES:
+        raise ValueError(f"state must be one of {SETTABLE_NODE_STATES}")
+
+    node = session.get(GraphRunNode, node_id)
+    if node is None or node.run_id != run_id:
+        raise ValueError("run node not found")
+    if node.state in ("running", "dispatching"):
+        raise ValueError("cannot change state of a node that is running or dispatching")
+    if node.child_run_id is not None:
+        raise ValueError("cannot change state of subgraph nodes")
+
+    node.state = new_state
+    node.updated_at = datetime.datetime.utcnow()
+    if new_state == "pending":
+        node.agent_id = None
+        node.session_id = None
+    session.add(node)
+
+    run = session.get(GraphRun, run_id)
+    if run is not None and new_state == "pending":
+        _resume_run_if_terminal(session, run)
+
+    session.commit()
+    if run is not None:
+        enqueue_run(session, run_id, reason="node state patched")
+        session.refresh(run)
+    return run

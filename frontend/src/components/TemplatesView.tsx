@@ -1,9 +1,33 @@
-import { useState } from 'react'
+import { useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import TaskTemplatesPanel from './TaskTemplatesPanel'
 import SubgraphTemplatesPanel from './SubgraphTemplatesPanel'
+import {
+  WORKSPACE_DETAIL_PARAM_KEYS,
+  mergeSearchParams,
+  readEnumParam,
+} from './workspaceDetailSearchParams'
 
 export default function TemplatesView({ workspaceId }: { workspaceId: string }) {
-  const [subTab, setSubTab] = useState<'tasks' | 'subgraphs'>('tasks')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const subTab = readEnumParam(
+    searchParams,
+    WORKSPACE_DETAIL_PARAM_KEYS.templatesSubTab,
+    ['tasks', 'subgraphs'] as const,
+    'tasks',
+  )
+  const setSubTab = useCallback(
+    (nextTab: 'tasks' | 'subgraphs') => {
+      setSearchParams(
+        (prev) =>
+          mergeSearchParams(prev, {
+            [WORKSPACE_DETAIL_PARAM_KEYS.templatesSubTab]: nextTab,
+          }),
+        { replace: false },
+      )
+    },
+    [setSearchParams],
+  )
 
   return (
     <div style={s.wrap}>

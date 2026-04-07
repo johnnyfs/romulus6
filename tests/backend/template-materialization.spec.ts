@@ -1105,6 +1105,105 @@ test.describe('Edge cases', () => {
     }
   });
 
+  test('POST /runs uses task template label for run node name when set', async ({ request }) => {
+    const wid = await createWorkspace(request);
+    try {
+      const tmpl = await createTaskTemplate(request, wid, {
+        name: 'say_something',
+        task_type: 'command',
+        command: 'echo {{ message }}',
+        label: 'Say {{ message }}',
+        arguments: [{ name: 'message', arg_type: 'string' }],
+      });
+
+      const graph = await createGraph(request, wid, {
+        name: 'label-graph',
+        nodes: [
+          {
+            node_type: 'task_template',
+            task_template_id: tmpl.id,
+            argument_bindings: { message: 'Hello' },
+          },
+        ],
+        edges: [],
+      });
+
+      const run = await createRun(request, wid, graph.id);
+      expect(run.run_nodes).toHaveLength(1);
+      expect(run.run_nodes[0].name).toBe('Say Hello');
+    } finally {
+      await deleteWorkspace(request, wid);
+    }
+  });
+
+  test('POST /runs falls back to template name when label is not set', async ({ request }) => {
+    const wid = await createWorkspace(request);
+    try {
+      const tmpl = await createTaskTemplate(request, wid, {
+        name: 'no-label-tmpl',
+        task_type: 'command',
+        command: 'echo ok',
+      });
+
+      const graph = await createGraph(request, wid, {
+        name: 'no-label-graph',
+        nodes: [
+          { node_type: 'task_template', task_template_id: tmpl.id },
+        ],
+        edges: [],
+      });
+
+      const run = await createRun(request, wid, graph.id);
+      expect(run.run_nodes[0].name).toBe('no-label-tmpl');
+    } finally {
+      await deleteWorkspace(request, wid);
+    }
+  });
+
+  test('POST /runs uses subgraph template label for run node name when set', async ({ request }) => {
+    const wid = await createWorkspace(request);
+    try {
+      const taskTmpl = await createTaskTemplate(request, wid, {
+        name: 'sg-label-task',
+        task_type: 'command',
+        command: 'echo {{ item }}',
+        arguments: [{ name: 'item', arg_type: 'string' }],
+      });
+
+      const sg = await createSubgraphTemplate(request, wid, {
+        name: 'process_sg',
+        label: 'Process {{ item }}',
+        arguments: [{ name: 'item', arg_type: 'string' }],
+        nodes: [
+          {
+            node_type: 'task_template',
+            task_template_id: taskTmpl.id,
+            argument_bindings: { item: '{{ item }}' },
+          },
+        ],
+        edges: [],
+      });
+
+      const graph = await createGraph(request, wid, {
+        name: 'sg-label-graph',
+        nodes: [
+          {
+            node_type: 'subgraph_template',
+            subgraph_template_id: sg.id,
+            argument_bindings: { item: 'Widget' },
+          },
+        ],
+        edges: [],
+      });
+
+      const run = await createRun(request, wid, graph.id);
+      expect(run.run_nodes).toHaveLength(1);
+      expect(run.run_nodes[0].name).toBe('Process Widget');
+    } finally {
+      await deleteWorkspace(request, wid);
+    }
+  });
+
   test('POST /runs preserves edges between mixed node types', async ({ request }) => {
     const wid = await createWorkspace(request);
     try {

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import type { NodeType } from '../api/graphs'
+import { ANTHROPIC_MODELS, OPENAI_MODELS } from '../api/agents'
 import {
   type TaskTemplate,
   type TaskTemplateArgType,
@@ -9,31 +11,31 @@ import {
   listTaskTemplates,
   updateTaskTemplate,
 } from '../api/templates'
+import {
+  WORKSPACE_DETAIL_PARAM_KEYS,
+  mergeSearchParams,
+  readStringParam,
+} from './workspaceDetailSearchParams'
 
-const MODEL_OPTIONS = [
-  { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-  { value: 'anthropic/claude-opus-4-6', label: 'Claude Opus 4.6' },
-  { value: 'anthropic/claude-haiku-4-5', label: 'Claude Haiku 4.5' },
-  { value: 'openai/gpt-4o', label: 'GPT-4o' },
-  { value: 'openai/gpt-4o-mini', label: 'GPT-4o Mini' },
-  { value: 'openai/o3-mini', label: 'o3 Mini' },
-]
+const MODEL_OPTIONS = [...ANTHROPIC_MODELS, ...OPENAI_MODELS]
 
 export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: string }) {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [templates, setTemplates] = useState<TaskTemplate[]>([])
-  const [activeId, setActiveId] = useState<string | null>(null)
   const [detail, setDetail] = useState<TaskTemplate | null>(null)
   const [mutating, setMutating] = useState(false)
+  const activeId = readStringParam(searchParams, WORKSPACE_DETAIL_PARAM_KEYS.taskTemplateId)
 
   // Edit state
   const [editName, setEditName] = useState('')
+  const [editLabel, setEditLabel] = useState('')
   const [editTaskType, setEditTaskType] = useState<NodeType>('agent')
   const [editAgentType, setEditAgentType] = useState('opencode')
   const [editModel, setEditModel] = useState(MODEL_OPTIONS[0].value)
   const [editPrompt, setEditPrompt] = useState('')
   const [editCommand, setEditCommand] = useState('')
   const [editGraphTools, setEditGraphTools] = useState(false)
-  const [editArgs, setEditArgs] = useState<{ name: string; arg_type: TaskTemplateArgType; default_value: string; model_constraint: string[] }[]>([])
+  const [editArgs, setEditArgs] = useState<{ name: string; arg_type: TaskTemplateArgType; default_value: string; model_constraint: string[]; min_value: string; max_value: string; enum_options: string[] }[]>([])
 
   const loadList = useCallback(async () => {
     const ts = await listTaskTemplates(workspaceId)
@@ -47,16 +49,32 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
     return t
   }, [workspaceId])
 
-  useEffect(() => {
-    loadList().then((ts) => {
-      if (ts.length > 0) setActiveId(ts[0].id)
-    })
-  }, [loadList])
+  const setActiveId = useCallback(
+    (templateId: string | null, replace = false) => {
+      setSearchParams(
+        (prev) =>
+          mergeSearchParams(prev, {
+            [WORKSPACE_DETAIL_PARAM_KEYS.taskTemplateId]: templateId,
+          }),
+        { replace },
+      )
+    },
+    [setSearchParams],
+  )
 
   useEffect(() => {
-    if (activeId) {
+    loadList().then((ts) => {
+      const hasActiveTemplate = !!activeId && ts.some((template) => template.id === activeId)
+      if (hasActiveTemplate) return
+      setActiveId(ts[0]?.id ?? null, true)
+    })
+  }, [activeId, loadList, setActiveId])
+
+  useEffect(() => {
+    if (activeId && templates.some((template) => template.id === activeId)) {
       loadDetail(activeId).then((t) => {
         setEditName(t.name)
+        setEditLabel(t.label ?? '')
         setEditTaskType(t.task_type)
         setEditAgentType(t.agent_type ?? 'opencode')
         setEditModel(t.model ?? MODEL_OPTIONS[0].value)
@@ -69,13 +87,16 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
             arg_type: a.arg_type,
             default_value: a.default_value ?? '',
             model_constraint: a.model_constraint ?? [],
+            min_value: a.min_value != null ? String(a.min_value) : '',
+            max_value: a.max_value != null ? String(a.max_value) : '',
+            enum_options: a.enum_options ?? [],
           })),
         )
       })
     } else {
       setDetail(null)
     }
-  }, [activeId, loadDetail])
+  }, [activeId, loadDetail, templates])
 
   async function handleCreate() {
     const name = window.prompt('Template name:')
@@ -109,6 +130,7 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
     try {
       await updateTaskTemplate(workspaceId, activeId, {
         name: editName,
+        label: editLabel || undefined,
         task_type: editTaskType,
         agent_type: editTaskType === 'agent' ? editAgentType : undefined,
         model: editTaskType === 'agent' ? editModel : undefined,
@@ -120,6 +142,9 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
           arg_type: a.arg_type,
           default_value: a.default_value || undefined,
           model_constraint: a.model_constraint.length > 0 ? a.model_constraint : undefined,
+          min_value: a.min_value ? parseFloat(a.min_value) : undefined,
+          max_value: a.max_value ? parseFloat(a.max_value) : undefined,
+          enum_options: a.enum_options.length > 0 ? a.enum_options : undefined,
         })),
       })
       await loadList()
@@ -130,7 +155,7 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
   }
 
   function addArg() {
-    setEditArgs([...editArgs, { name: '', arg_type: 'string', default_value: '', model_constraint: [] }])
+    setEditArgs([...editArgs, { name: '', arg_type: 'string', default_value: '', model_constraint: [], min_value: '', max_value: '', enum_options: [] }])
   }
 
   function removeArg(idx: number) {
@@ -176,6 +201,11 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
           </div>
 
           <div style={s.row}>
+            <span style={s.label}>Label</span>
+            <input style={s.input} value={editLabel} onChange={(e) => setEditLabel(e.target.value)} placeholder="e.g. Process {{ item }}" />
+          </div>
+
+          <div style={s.row}>
             <span style={s.label}>Type</span>
             <select style={s.sel} value={editTaskType} onChange={(e) => setEditTaskType(e.target.value as NodeType)}>
               <option value="agent">agent</option>
@@ -187,10 +217,18 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
             <>
               <div style={s.row}>
                 <span style={s.label}>Model</span>
-                <input style={s.input} value={editModel} onChange={(e) => setEditModel(e.target.value)} list="model-opts" />
-                <datalist id="model-opts">
-                  {MODEL_OPTIONS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
-                </datalist>
+                <select style={s.sel} value={editModel} onChange={(e) => setEditModel(e.target.value)}>
+                  <optgroup label="Anthropic">
+                    {ANTHROPIC_MODELS.map((m) => (
+                      <option key={m.value} value={m.value}>{m.label}</option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="OpenAI">
+                    {OPENAI_MODELS.map((m) => (
+                      <option key={m.value} value={m.value}>{m.label}</option>
+                    ))}
+                  </optgroup>
+                </select>
               </div>
               <div style={s.row}>
                 <span style={s.label}>Prompt</span>
@@ -237,6 +275,9 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
               >
                 <option value="string">string</option>
                 <option value="model_type">model_type</option>
+                <option value="boolean">boolean</option>
+                <option value="number">number</option>
+                <option value="enum">enum</option>
               </select>
               <input
                 style={{ ...s.input, flex: '1 1 60px' }}
@@ -245,6 +286,32 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
                 onChange={(e) => updateArg(i, 'default_value', e.target.value)}
               />
               <button style={s.removeBtn} onClick={() => removeArg(i)}>x</button>
+              {arg.arg_type === 'number' && (
+                <div style={{ display: 'flex', gap: '4px', width: '100%' }}>
+                  <input
+                    style={{ ...s.input, flex: 1 }}
+                    placeholder="min"
+                    type="number"
+                    value={arg.min_value}
+                    onChange={(e) => updateArg(i, 'min_value', e.target.value)}
+                  />
+                  <input
+                    style={{ ...s.input, flex: 1 }}
+                    placeholder="max"
+                    type="number"
+                    value={arg.max_value}
+                    onChange={(e) => updateArg(i, 'max_value', e.target.value)}
+                  />
+                </div>
+              )}
+              {arg.arg_type === 'enum' && (
+                <input
+                  style={{ ...s.input, width: '100%' }}
+                  placeholder="options (comma-separated)"
+                  value={arg.enum_options.join(', ')}
+                  onChange={(e) => updateArg(i, 'enum_options', e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
+                />
+              )}
             </div>
           ))}
           <button style={s.addBtn} onClick={addArg}>+ Add Argument</button>

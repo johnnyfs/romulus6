@@ -15,6 +15,9 @@ class GraphRun(RomulusBase, table=True):
     graph_id: Optional[uuid.UUID] = Field(default=None, foreign_key="graph.id", index=True)
     workspace_id: uuid.UUID = Field(foreign_key="workspace.id", index=True)
     sandbox_id: Optional[uuid.UUID] = Field(default=None, foreign_key="sandbox.id")
+    source_template_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="subgraphtemplate.id"
+    )
     state: str = Field(default="pending")
     parent_run_node_id: Optional[uuid.UUID] = Field(
         default=None,
