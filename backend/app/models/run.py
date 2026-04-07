@@ -57,6 +57,8 @@ class GraphRunNode(RomulusBase, table=True):
     agent_id: Optional[uuid.UUID] = Field(default=None, foreign_key="agent.id")
     session_id: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     graph_tools: bool = Field(default=False)
+    output_schema: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    output: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     child_run_id: Optional[uuid.UUID] = Field(default=None, foreign_key="graphrun.id")
 
     run: Optional[GraphRun] = Relationship(

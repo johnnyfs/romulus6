@@ -46,6 +46,7 @@ class SessionManager:
         workspace_id: str | None = None,
         sandbox_id: str | None = None,
         schema_id: str | None = None,
+        output_schema: dict[str, str] | None = None,
     ) -> Session:
         session_id = str(uuid.uuid4())
         workspace_name = workspace_name or session_id
@@ -63,6 +64,7 @@ class SessionManager:
             agent_type=agent_type,
             model=model,
             schema_id=schema_id,
+            output_schema=output_schema,
             workspace_dir=workspace_dir,
         )
         self._sessions[session_id] = session

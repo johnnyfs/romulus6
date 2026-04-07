@@ -1,14 +1,13 @@
 import uuid
 from enum import Enum
-from typing import TYPE_CHECKING, Literal, Optional
+from typing import TYPE_CHECKING, Annotated, Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field as PydanticField, model_validator
 from sqlalchemy import Index, text
-from sqlmodel import Field, Relationship
+from sqlmodel import Field as SQLField, Relationship
 
 from .base import RomulusBase
-from .pydantic_agent import PydanticSchemaId
-from .supported_models import SupportedModel
+from .supported_models import SupportedModel, validate_supported_model_for_agent_type
 
 if TYPE_CHECKING:
     from .sandbox import Sandbox
@@ -30,23 +29,39 @@ class AgentStatus(str, Enum):
     interrupted = "interrupted"
 
 
-class AgentConfig(BaseModel):
-    """Shared agent configuration used by both ad hoc dispatch and graph agent nodes."""
+class OpenCodeAgentConfig(BaseModel):
+    """OpenCode configuration used by graph and template agent nodes."""
     agent_type: Literal["opencode"] = "opencode"
     model: SupportedModel
     prompt: str
     graph_tools: bool = False
 
+    @model_validator(mode="after")
+    def validate_model(self) -> "OpenCodeAgentConfig":
+        validate_supported_model_for_agent_type(self.agent_type, self.model.value)
+        return self
+
     model_config = {"from_attributes": True}
 
 
 class PydanticAgentConfig(BaseModel):
+    """Pydantic configuration used by graph and template agent nodes."""
     agent_type: Literal["pydantic"] = "pydantic"
     model: SupportedModel
     prompt: str
-    schema_id: PydanticSchemaId
+
+    @model_validator(mode="after")
+    def validate_model(self) -> "PydanticAgentConfig":
+        validate_supported_model_for_agent_type(self.agent_type, self.model.value)
+        return self
 
     model_config = {"from_attributes": True}
+
+
+AgentConfig = Annotated[
+    OpenCodeAgentConfig | PydanticAgentConfig,
+    PydanticField(discriminator="agent_type"),
+]
 
 
 class CommandConfig(BaseModel):
@@ -67,17 +82,17 @@ class Agent(RomulusBase, table=True):
         ),
     )
 
-    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
-    workspace_id: uuid.UUID = Field(foreign_key="workspace.id", index=True, nullable=False)
-    sandbox_id: Optional[uuid.UUID] = Field(default=None, foreign_key="sandbox.id", nullable=True)
+    id: uuid.UUID = SQLField(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = SQLField(foreign_key="workspace.id", index=True, nullable=False)
+    sandbox_id: Optional[uuid.UUID] = SQLField(default=None, foreign_key="sandbox.id", nullable=True)
     agent_type: AgentType
     model: str
-    session_id: Optional[str] = Field(default=None)
-    status: AgentStatus = Field(default=AgentStatus.starting)
+    session_id: Optional[str] = SQLField(default=None)
+    status: AgentStatus = SQLField(default=AgentStatus.starting)
     name: str
     prompt: str
-    graph_tools: bool = Field(default=False)
-    graph_run_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    graph_tools: bool = SQLField(default=False)
+    graph_run_id: Optional[uuid.UUID] = SQLField(default=None, index=True)
 
     workspace: Optional["Workspace"] = Relationship(back_populates="agents")
     sandbox: Optional["Sandbox"] = Relationship(back_populates="agents")

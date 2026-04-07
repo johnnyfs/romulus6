@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import json
 import logging
 import uuid
 from typing import Any
@@ -16,6 +17,8 @@ from app.services import controller as controller_svc
 from app.services import events as event_svc
 from app.services import sandboxes as sandbox_svc
 from app.services import workers as worker_svc
+from app.utils.output_schema import validate_output_against_schema
+from app.utils.slugify import slugify
 
 logger = logging.getLogger(__name__)
 
@@ -24,17 +27,44 @@ import { tool } from "@opencode/tool";
 
 export default tool({
   name: "mark_node_complete",
-  description: "Call this tool when you have completed the task assigned to you. This signals the orchestrator that your work is done.",
+  description: "Call this tool when you have completed the task assigned to you. Pass your output as a JSON object matching the required output schema.",
   parameters: {
     type: "object",
-    properties: {},
+    properties: {
+      output: {
+        type: "object",
+        description: "The output data for this node. Must match the node's output schema if one is defined.",
+      },
+    },
     required: [],
   },
-  async execute() {
-    return "Node marked as complete. The orchestrator will continue the workflow.";
+  async execute(params) {
+    return JSON.stringify({ status: "complete", output: params.output ?? {} });
   },
 });
 """
+
+
+def _resolve_output_references(session: Session, run: GraphRun, node: GraphRunNode) -> str | None:
+    """Resolve {{ slug.field }} references in a node's prompt/command using completed predecessors."""
+    text = node.prompt if node.node_type == "agent" else node.command
+    if not text or "{{" not in text:
+        return text
+
+    predecessor_ids = {
+        e.from_run_node_id for e in run.run_edges if e.to_run_node_id == node.id
+    }
+    context: dict[str, Any] = {}
+    for pred_id in predecessor_ids:
+        pred = session.get(GraphRunNode, pred_id)
+        if pred and pred.state == "completed" and pred.name:
+            slug = slugify(pred.name)
+            output_data = json.loads(pred.output) if pred.output else {}
+            context[slug] = {**output_data, "output": output_data}
+
+    from app.services.graphs import _jinja_env
+
+    return _jinja_env.from_string(text).render(context)
 
 
 def enqueue_run(session: Session, run_id: uuid.UUID, reason: str | None = None) -> None:
@@ -288,13 +318,21 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
             session.commit()
             session.refresh(agent)
 
-            dispatch_prompt = node.prompt or ""
+            resolved_prompt = _resolve_output_references(session, run, node) or ""
+            dispatch_prompt = resolved_prompt
             if node.graph_tools:
                 dispatch_prompt = (
                     f"{dispatch_prompt}\n\n"
                     "IMPORTANT: When you have fully completed the task described above, "
                     "you MUST call the `mark_node_complete` tool to signal completion."
                 )
+                if node.output_schema:
+                    schema = json.loads(node.output_schema)
+                    fields_desc = ", ".join(f'"{k}" ({v})' for k, v in schema.items())
+                    dispatch_prompt += (
+                        f"\n\nWhen calling mark_node_complete, you MUST pass an 'output' "
+                        f"object with these fields: {fields_desc}."
+                    )
 
             data = await _post_session_with_retry(
                 worker.worker_url,
@@ -302,6 +340,7 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
                     "prompt": dispatch_prompt,
                     "agent_type": node.agent_type,
                     "model": node.model,
+                    "output_schema": json.loads(node.output_schema) if node.output_schema else None,
                     "workspace_name": str(run.workspace_id),
                     "graph_tools": node.graph_tools,
                     "workspace_id": str(run.workspace_id),
@@ -341,12 +380,13 @@ async def _dispatch_command_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_i
         session.commit()
 
         try:
+            resolved_command = _resolve_output_references(session, run, node) or node.command
             await _ensure_workspace_dir(worker.worker_url, f"/workspaces/{run.workspace_id}")
             async with httpx.AsyncClient() as client:
                 resp = await client.post(
                     f"{worker.worker_url}/commands",
                     json={
-                        "command": ["bash", "-c", node.command],
+                        "command": ["bash", "-c", resolved_command],
                         "cwd": f"/workspaces/{run.workspace_id}",
                         "timeout": 300,
                     },
@@ -378,7 +418,7 @@ async def _dispatch_command_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_i
             )
 
             if resp_data["exit_code"] == 0:
-                complete_node(session, run_id, node_id)
+                complete_node(session, run_id, node_id, output={"stdout": resp_data["stdout"]})
             else:
                 fail_node_and_run(session, run_id, node_id, f"command exited {resp_data['exit_code']}")
         except Exception:
@@ -386,10 +426,21 @@ async def _dispatch_command_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_i
             fail_node_and_run(session, run_id, node_id, "command dispatch failed")
 
 
-def complete_node(session: Session, run_id: uuid.UUID, node_id: uuid.UUID) -> None:
+def complete_node(
+    session: Session,
+    run_id: uuid.UUID,
+    node_id: uuid.UUID,
+    output: dict | None = None,
+) -> None:
     node = session.get(GraphRunNode, node_id)
     if node is None or node.state == "completed":
         return
+    schema = json.loads(node.output_schema) if node.output_schema else None
+    if output is None and node.output is not None:
+        output = json.loads(node.output)
+    validate_output_against_schema(output, schema)
+    if output is not None:
+        node.output = json.dumps(output)
     node.state = "completed"
     node.updated_at = datetime.datetime.utcnow()
     session.add(node)
@@ -472,6 +523,8 @@ def sync_run_node(session: Session, run_id: uuid.UUID, node_id: uuid.UUID) -> Gr
     node.prompt = source.prompt
     node.command = source.command
     node.graph_tools = source.graph_tools
+    node.output_schema = source.output_schema
+    node.output = None
     node.state = "pending"
     node.agent_id = None
     node.session_id = None
