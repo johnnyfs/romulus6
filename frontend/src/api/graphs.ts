@@ -23,6 +23,7 @@ export interface GraphNode {
   task_template_id: string | null
   subgraph_template_id: string | null
   argument_bindings: Record<string, string> | null
+  output_schema: Record<string, string> | null
   created_at: string
 }
 
@@ -61,6 +62,8 @@ export interface GraphRunNode {
   agent_config: AgentConfig | null
   command_config: CommandConfig | null
   child_run_id: string | null
+  output_schema: Record<string, string> | null
+  output: Record<string, unknown> | null
   created_at: string
 }
 
@@ -133,6 +136,7 @@ export async function addNode(
     task_template_id?: string
     subgraph_template_id?: string
     argument_bindings?: Record<string, string>
+    output_schema?: Record<string, string>
   },
 ): Promise<GraphNode> {
   const res = await fetch(`${BASE}/workspaces/${workspaceId}/graphs/${graphId}/nodes`, {
@@ -195,6 +199,7 @@ export async function patchNode(
     task_template_id?: string
     subgraph_template_id?: string
     argument_bindings?: Record<string, string>
+    output_schema?: Record<string, string>
   },
 ): Promise<GraphNode> {
   const res = await fetch(

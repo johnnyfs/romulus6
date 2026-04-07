@@ -29,6 +29,12 @@ import {
 
 const MODEL_OPTIONS = SUPPORTED_MODELS_BY_AGENT_TYPE.opencode
 
+function slugify(name: string): string {
+  return name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')
+}
+
+const OUTPUT_FIELD_TYPES = ['string', 'number', 'boolean'] as const
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function GraphPanel({ workspaceId, width }: { workspaceId: string; width?: number }) {
@@ -50,6 +56,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
   const [editTaskTemplateId, setEditTaskTemplateId] = useState('')
   const [editSubgraphTemplateId, setEditSubgraphTemplateId] = useState('')
   const [editBindings, setEditBindings] = useState<Record<string, string>>({})
+  const [editOutputSchema, setEditOutputSchema] = useState<Record<string, string>>({})
   const [nodeDirty, setNodeDirty] = useState(false)
   const [taskTemplates, setTaskTemplates] = useState<TaskTemplate[]>([])
   const [subgraphTemplates, setSubgraphTemplates] = useState<SubgraphTemplate[]>([])
@@ -174,6 +181,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
       setEditTaskTemplateId(node.task_template_id ?? '')
       setEditSubgraphTemplateId(node.subgraph_template_id ?? '')
       setEditBindings(node.argument_bindings ?? {})
+      setEditOutputSchema(node.output_schema ?? {})
       setNodeDirty(false)
     }
   }, [selectedNodeId, detail])
@@ -324,6 +332,16 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
     }
   }
 
+  const upstreamRefs = useMemo(() => {
+    if (!detail || !selectedNodeId) return []
+    const parentIds = detail.edges
+      .filter(e => e.to_node_id === selectedNodeId)
+      .map(e => e.from_node_id)
+    return detail.nodes
+      .filter(n => parentIds.includes(n.id) && n.name)
+      .map(n => ({ name: n.name!, slug: slugify(n.name!), hasSchema: !!n.output_schema }))
+  }, [detail, selectedNodeId])
+
   const refTemplateArgs = useMemo(() => {
     if (editType === 'task_template' && editTaskTemplateId) {
       return taskTemplates.find(t => t.id === editTaskTemplateId)?.arguments ?? []
@@ -343,8 +361,10 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
     }
     if (editType === 'agent') {
       patch.agent_config = { agent_type: 'opencode', model: editModel, prompt: editPrompt, graph_tools: editGraphTools }
+      if (Object.keys(editOutputSchema).length > 0) patch.output_schema = editOutputSchema
     } else if (editType === 'command') {
       patch.command_config = { command: editCommand }
+      if (Object.keys(editOutputSchema).length > 0) patch.output_schema = editOutputSchema
     } else if (editType === 'task_template') {
       patch.task_template_id = editTaskTemplateId || undefined
       if (Object.keys(editBindings).length > 0) patch.argument_bindings = editBindings
@@ -748,6 +768,12 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
               onChange={(e) => markDirty(setEditName)(e.target.value)}
               placeholder={selectedNode.node_type} />
           </div>
+          {editName && (
+            <div style={{ ...s.inspectorRow, opacity: 0.5, fontSize: '11px' }}>
+              <label style={s.inspectorLabel}>Slug:</label>
+              <span style={{ fontFamily: 'monospace' }}>{slugify(editName)}</span>
+            </div>
+          )}
           <div style={s.inspectorRow}>
             <label style={s.inspectorLabel}>Type:</label>
             <select style={s.inspectorSelect} value={editType}
@@ -842,6 +868,54 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
                 </>
               )}
             </>
+          )}
+          {/* Output Schema (agent + command) */}
+          {(editType === 'agent' || editType === 'command') && (
+            <>
+              <div style={{ ...s.inspectorTitle, marginTop: 8 }}>OUTPUT SCHEMA</div>
+              {Object.entries(editOutputSchema).map(([field, type]) => (
+                <div key={field} style={{ ...s.inspectorRow, gap: 4 }}>
+                  <input style={{ ...s.inspectorInput, flex: 2 }} value={field} readOnly
+                    title={field} />
+                  <select style={{ ...s.inspectorSelect, flex: 1 }} value={type}
+                    onChange={(e) => {
+                      setEditOutputSchema(prev => ({ ...prev, [field]: e.target.value }))
+                      setNodeDirty(true)
+                    }}>
+                    {OUTPUT_FIELD_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                  <button style={s.edgeDeleteBtn}
+                    onClick={() => {
+                      setEditOutputSchema(prev => {
+                        const next = { ...prev }
+                        delete next[field]
+                        return next
+                      })
+                      setNodeDirty(true)
+                    }}>x</button>
+                </div>
+              ))}
+              <button style={{ ...s.addFirstBtn, fontSize: '11px', marginTop: 2 }}
+                onClick={() => {
+                  const name = window.prompt('Field name:')
+                  if (!name?.trim()) return
+                  setEditOutputSchema(prev => ({ ...prev, [name.trim()]: 'string' }))
+                  setNodeDirty(true)
+                }}>
+                [ + Add Field ]
+              </button>
+            </>
+          )}
+          {/* Upstream output references */}
+          {(editType === 'agent' || editType === 'command') && upstreamRefs.length > 0 && (
+            <div style={{ marginTop: 6, fontSize: '11px', color: 'var(--text-muted)', padding: '0 4px' }}>
+              <div style={{ fontWeight: 600, marginBottom: 2 }}>Available refs:</div>
+              {upstreamRefs.map(ref => (
+                <div key={ref.slug} style={{ fontFamily: 'monospace', marginBottom: 1 }}>
+                  {'{{ '}{ref.slug}.output{' }}'}
+                </div>
+              ))}
+            </div>
           )}
           <div style={{ display: 'flex', gap: 4, marginTop: 6, marginBottom: 4 }}>
             <button style={{ ...s.saveNodeBtn, opacity: nodeDirty ? 1 : 0.5 }}

@@ -32,6 +32,7 @@ class NodeInput:
     task_template_id: Optional[uuid.UUID] = None
     subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
+    output_schema: Optional[dict[str, str]] = None
 
 
 @dataclass
@@ -199,6 +200,11 @@ def _build_graph_node(graph_id: uuid.UUID, node_input: NodeInput) -> GraphNode:
         if node_input.argument_bindings
         else None
     )
+    output_schema_json = (
+        json.dumps(node_input.output_schema)
+        if node_input.output_schema
+        else None
+    )
     return GraphNode(
         graph_id=graph_id,
         node_type=node_input.node_type,
@@ -211,6 +217,7 @@ def _build_graph_node(graph_id: uuid.UUID, node_input: NodeInput) -> GraphNode:
         task_template_id=node_input.task_template_id,
         subgraph_template_id=node_input.subgraph_template_id,
         argument_bindings=bindings_json,
+        output_schema=output_schema_json,
     )
 
 
@@ -344,11 +351,13 @@ def add_node(
     task_template_id: Optional[uuid.UUID] = None,
     subgraph_template_id: Optional[uuid.UUID] = None,
     argument_bindings: Optional[dict[str, str]] = None,
+    output_schema: Optional[dict[str, str]] = None,
 ) -> GraphNode:
     if node_type == NodeType.subgraph_template and subgraph_template_id is not None:
         _validate_no_materialization_cycle(session, subgraph_template_id, set())
 
     bindings_json = json.dumps(argument_bindings) if argument_bindings else None
+    output_schema_json = json.dumps(output_schema) if output_schema else None
     node = GraphNode(
         graph_id=graph.id,
         node_type=node_type,
@@ -361,6 +370,7 @@ def add_node(
         task_template_id=task_template_id,
         subgraph_template_id=subgraph_template_id,
         argument_bindings=bindings_json,
+        output_schema=output_schema_json,
     )
     session.add(node)
     session.commit()
@@ -382,6 +392,7 @@ def patch_node(
     task_template_id: Optional[uuid.UUID] = None,
     subgraph_template_id: Optional[uuid.UUID] = None,
     argument_bindings: Optional[dict[str, str]] = None,
+    output_schema: Optional[dict[str, str]] = None,
 ) -> Optional[GraphNode]:
     node = session.get(GraphNode, node_id)
     if node is None or node.graph_id != graph.id:
@@ -416,6 +427,8 @@ def patch_node(
         node.subgraph_template_id = subgraph_template_id
     if argument_bindings is not None:
         node.argument_bindings = json.dumps(argument_bindings)
+    if output_schema is not None:
+        node.output_schema = json.dumps(output_schema)
     session.add(node)
     session.commit()
     session.refresh(node)
@@ -741,6 +754,7 @@ def create_run(session: Session, graph: Graph) -> GraphRun:
                 prompt=node.prompt,
                 command=node.command,
                 graph_tools=node.graph_tools,
+                output_schema=node.output_schema,
             )
             session.add(rn)
             run_nodes.append((node.id, rn))

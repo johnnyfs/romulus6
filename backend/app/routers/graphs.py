@@ -33,6 +33,7 @@ class NodeInputSchema(BaseModel):
     task_template_id: Optional[uuid.UUID] = None
     subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
+    output_schema: Optional[dict[str, str]] = None
 
 
 class EdgeInputSchema(BaseModel):
@@ -54,6 +55,7 @@ class AddNodeRequest(BaseModel):
     task_template_id: Optional[uuid.UUID] = None
     subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
+    output_schema: Optional[dict[str, str]] = None
 
 
 class PatchNodeRequest(BaseModel):
@@ -64,6 +66,7 @@ class PatchNodeRequest(BaseModel):
     task_template_id: Optional[uuid.UUID] = None
     subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
+    output_schema: Optional[dict[str, str]] = None
 
 
 class PatchRunNodeRequest(BaseModel):
@@ -87,6 +90,7 @@ class GraphNodeResponse(BaseModel):
     task_template_id: Optional[uuid.UUID] = None
     subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
+    output_schema: Optional[dict[str, str]] = None
     created_at: datetime.datetime
 
     model_config = {"from_attributes": True}
@@ -127,6 +131,8 @@ class GraphRunNodeResponse(BaseModel):
     agent_id: Optional[uuid.UUID] = None
     session_id: Optional[str] = None
     child_run_id: Optional[uuid.UUID] = None
+    output_schema: Optional[dict[str, str]] = None
+    output: Optional[dict] = None
     created_at: datetime.datetime
 
     model_config = {"from_attributes": True}
@@ -196,14 +202,18 @@ def _command_config_from(obj: Any) -> Optional[CommandConfig]:
     return CommandConfig(command=obj.command)
 
 
-def _parse_bindings(obj: Any) -> Optional[dict[str, str]]:
-    raw = getattr(obj, "argument_bindings", None)
+def _parse_json_field(obj: Any, field: str) -> Optional[dict]:
+    raw = getattr(obj, field, None)
     if raw is None:
         return None
     if isinstance(raw, dict):
         return raw
     import json
     return json.loads(raw)
+
+
+def _parse_bindings(obj: Any) -> Optional[dict[str, str]]:
+    return _parse_json_field(obj, "argument_bindings")
 
 
 def _node_response(n: Any) -> GraphNodeResponse:
@@ -217,6 +227,7 @@ def _node_response(n: Any) -> GraphNodeResponse:
         task_template_id=getattr(n, "task_template_id", None),
         subgraph_template_id=getattr(n, "subgraph_template_id", None),
         argument_bindings=_parse_bindings(n),
+        output_schema=_parse_json_field(n, "output_schema"),
         created_at=n.created_at,
     )
 
@@ -235,6 +246,8 @@ def _run_node_response(rn: Any) -> GraphRunNodeResponse:
         agent_id=rn.agent_id,
         session_id=rn.session_id,
         child_run_id=getattr(rn, "child_run_id", None),
+        output_schema=_parse_json_field(rn, "output_schema"),
+        output=_parse_json_field(rn, "output"),
         created_at=rn.created_at,
     )
 
@@ -279,6 +292,7 @@ def _node_input(n: NodeInputSchema) -> NodeInput:
         task_template_id=n.task_template_id,
         subgraph_template_id=n.subgraph_template_id,
         argument_bindings=n.argument_bindings,
+        output_schema=n.output_schema,
     )
 
 
@@ -374,6 +388,7 @@ def add_node(
             task_template_id=body.task_template_id,
             subgraph_template_id=body.subgraph_template_id,
             argument_bindings=body.argument_bindings,
+            output_schema=body.output_schema,
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
@@ -426,6 +441,7 @@ def patch_node(
             task_template_id=body.task_template_id,
             subgraph_template_id=body.subgraph_template_id,
             argument_bindings=body.argument_bindings,
+            output_schema=body.output_schema,
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
