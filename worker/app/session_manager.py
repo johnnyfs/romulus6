@@ -79,7 +79,13 @@ class SessionManager:
 
     async def send_message(self, session_id: str, prompt: str) -> None:
         session = self._get_or_raise(session_id)
-        if session.status not in (SessionStatus.IDLE, SessionStatus.WAITING, SessionStatus.COMPLETED):
+        if session.status not in (
+            SessionStatus.IDLE,
+            SessionStatus.WAITING,
+            SessionStatus.COMPLETED,
+            SessionStatus.ERROR,
+            SessionStatus.INTERRUPTED,
+        ):
             raise ValueError(f"Session not idle (status={session.status})")
         session.status = SessionStatus.BUSY
         session.updated_at = datetime.now(UTC)

@@ -22,6 +22,14 @@ router = APIRouter(
 SessionDep = Annotated[Session, Depends(get_session)]
 
 
+def _raise_upstream_http_error(exc: httpx.HTTPStatusError) -> None:
+    response = exc.response
+    detail = response.text or str(exc)
+    if 400 <= response.status_code < 500:
+        raise HTTPException(status_code=response.status_code, detail=detail)
+    raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail)
+
+
 class CreateOpenCodeAgentRequest(BaseModel):
     agent_type: Literal["opencode"] = "opencode"
     model: SupportedModel
@@ -84,7 +92,7 @@ async def create_agent(
     except RuntimeError as e:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
     except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
+        _raise_upstream_http_error(e)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
 
@@ -127,10 +135,12 @@ async def send_message(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)
         )
-    except httpx.HTTPStatusError as e:
+    except httpx.TransportError as e:
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)
         )
+    except httpx.HTTPStatusError as e:
+        _raise_upstream_http_error(e)
     return {"accepted": True}
 
 
@@ -161,10 +171,12 @@ async def send_feedback(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)
         )
-    except httpx.HTTPStatusError as e:
+    except httpx.TransportError as e:
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)
         )
+    except httpx.HTTPStatusError as e:
+        _raise_upstream_http_error(e)
     return {"accepted": True}
 
 

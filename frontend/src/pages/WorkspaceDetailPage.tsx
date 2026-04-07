@@ -49,6 +49,23 @@ function isActivity(type: string): boolean {
   return ACTIVITY_TYPES.has(type)
 }
 
+function mergeDeltaText(previous: string, incoming: string): string {
+  if (!incoming) return previous
+  if (!previous) return incoming
+  if (incoming === previous) return previous
+  if (incoming.startsWith(previous)) return incoming
+  if (previous.endsWith(incoming)) return previous
+
+  const maxOverlap = Math.min(previous.length, incoming.length)
+  for (let size = maxOverlap; size > 0; size -= 1) {
+    if (previous.endsWith(incoming.slice(0, size))) {
+      return previous + incoming.slice(size)
+    }
+  }
+
+  return previous + incoming
+}
+
 // ─── Event rendering ─────────────────────────────────────────────────────────
 
 function renderActivityEvent(event: AgentEvent): string {
@@ -360,7 +377,14 @@ export default function WorkspaceDetailPage() {
     allRaw.sort((a, b) => a.event.timestamp.localeCompare(b.event.timestamp))
 
     const items: FeedItem[] = []
-    const textBuffers: Record<string, { idx: number; text: string }> = {}
+    const textBuffers: Record<
+      string,
+      {
+        idx: number
+        partOrder: string[]
+        partText: Record<string, string>
+      }
+    > = {}
     const activityIdx: Record<string, number> = {}
 
     for (const { event, streamKey } of allRaw) {
@@ -368,16 +392,24 @@ export default function WorkspaceDetailPage() {
       if (!showDeadMessages && agentId && deadAgentIds.has(agentId)) continue
       if (event.type === 'text.delta') {
         const key = String(event.data.message_id ?? event.data.session_id ?? agentId)
+        const partKey = String(event.data.part_id ?? event.id)
         const chunk = String(event.data.delta ?? '')
         if (textBuffers[key] !== undefined) {
-          textBuffers[key].text += chunk
-          const item = items[textBuffers[key].idx] as Extract<FeedItem, { kind: 'message' }>
+          const buffer = textBuffers[key]
+          if (!(partKey in buffer.partText)) buffer.partOrder.push(partKey)
+          buffer.partText[partKey] = mergeDeltaText(buffer.partText[partKey] ?? '', chunk)
+          const accumulated = buffer.partOrder.map((id) => buffer.partText[id] ?? '').join('')
+          const item = items[buffer.idx] as Extract<FeedItem, { kind: 'message' }>
           item.event = {
             ...item.event,
-            data: { ...item.event.data, accumulated: textBuffers[key].text },
+            data: { ...item.event.data, accumulated },
           }
         } else {
-          textBuffers[key] = { idx: items.length, text: chunk }
+          textBuffers[key] = {
+            idx: items.length,
+            partOrder: [partKey],
+            partText: { [partKey]: chunk },
+          }
           items.push({
             kind: 'message',
             agentId: agentId ?? 'unknown',

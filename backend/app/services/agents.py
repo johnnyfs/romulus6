@@ -116,7 +116,7 @@ async def send_message(session: Session, agent: Agent, prompt: str) -> None:
     sandbox = session.get(Sandbox, agent.sandbox_id)
     worker = worker_svc.get_worker_for_sandbox(session, sandbox)
     if worker is None or worker.worker_url is None:
-        raise RuntimeError("Worker URL not available")
+        raise RuntimeError("Agent session is no longer available; recreate the agent")
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{worker.worker_url}/sessions/{agent.session_id}/messages",

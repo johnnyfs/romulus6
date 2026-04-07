@@ -1,9 +1,9 @@
 include .env
 export
 
-MINIKUBE ?= minikube
 K8S_NAMESPACE ?= romulus
 K8S_DEV_DIR := k8s/dev
+K8S_NODE_HOST ?= localhost
 
 BACKEND_IMAGE ?= backend:latest
 WORKER_IMAGE ?= worker:latest
@@ -14,7 +14,7 @@ WORKER_POOL_MAX ?= 1
 .PHONY: \
 	dev dev-up dev-down dev-clean dev-restart-backend \
 	dev-restart-workers \
-	dev-namespace dev-config dev-secrets dev-db dev-db-migrate \
+	dev-namespace dev-check-cluster dev-config dev-secrets dev-db dev-db-migrate \
 	dev-backend dev-frontend dev-worker \
 	dev-build-images dev-build-backend-image dev-build-worker-image \
 	backend db frontend migrate stop-db worker worker-build worker-deploy \
@@ -22,21 +22,21 @@ WORKER_POOL_MAX ?= 1
 
 dev: dev-up dev-frontend
 
-dev-up: dev-namespace dev-build-images dev-config dev-secrets dev-db dev-db-migrate dev-backend dev-worker
+dev-up: dev-check-cluster dev-namespace dev-build-images dev-config dev-secrets dev-db dev-db-migrate dev-backend dev-worker
+
+dev-check-cluster:
+	kubectl cluster-info >/dev/null
 
 dev-namespace:
-	@$(MINIKUBE) status --format '{{.Host}}' 2>/dev/null | grep -q Running || $(MINIKUBE) start --driver=docker
 	kubectl apply -f $(K8S_DEV_DIR)/namespace.yaml
 
 dev-build-images: dev-build-backend-image dev-build-worker-image
 
 dev-build-backend-image:
-	eval $$($(MINIKUBE) docker-env) && docker build -t $(BACKEND_IMAGE) backend/
+	docker build -t $(BACKEND_IMAGE) backend/
 
 dev-build-worker-image:
-	cp /usr/bin/opencode worker/opencode
-	eval $$($(MINIKUBE) docker-env) && docker build -t $(WORKER_IMAGE) worker/
-	rm -f worker/opencode
+	docker build -t $(WORKER_IMAGE) worker/
 
 dev-config: dev-namespace
 	kubectl create configmap romulus-backend-config -n $(K8S_NAMESPACE) \
@@ -100,10 +100,16 @@ dev-restart-workers: dev-build-worker-image dev-config dev-secrets
 	kubectl rollout restart deployment/worker -n $(K8S_NAMESPACE)
 	kubectl rollout status deployment/worker -n $(K8S_NAMESPACE)
 
-dev-frontend:
+frontend/node_modules: frontend/package-lock.json frontend/package.json
+	cd frontend && npm ci
+
+tests/node_modules: tests/package-lock.json tests/package.json
+	cd tests && npm ci
+
+dev-frontend: frontend/node_modules
 	cd frontend && \
 		VITE_PORT=$(FRONTEND_PORT) \
-		VITE_BACKEND_TARGET=http://$$($(MINIKUBE) ip):$(BACKEND_NODEPORT) \
+		VITE_BACKEND_TARGET=http://$(K8S_NODE_HOST):$(BACKEND_NODEPORT) \
 		npm run dev -- --port $(FRONTEND_PORT)
 
 dev-restart-backend: dev-build-backend-image dev-config dev-secrets
@@ -148,13 +154,13 @@ makemigrations:
 	cd backend && uv run alembic revision --autogenerate -m "$(MSG)"
 
 install-frontend:
-	cd frontend && npm install
+	cd frontend && npm ci
 
 install-tests:
-	cd tests && npm install
+	cd tests && npm ci
 
-test-backend: dev-namespace
-	cd tests && PLAYWRIGHT_BASE_URL=http://$$($(MINIKUBE) ip):$(BACKEND_NODEPORT) npm run test -- $(ARGS)
+test-backend: dev-check-cluster dev-namespace tests/node_modules
+	cd tests && PLAYWRIGHT_BASE_URL=http://$(K8S_NODE_HOST):$(BACKEND_NODEPORT) npm run test -- $(ARGS)
 
 sandbox-delete-all:
 	kubectl get deployments -n $(K8S_NAMESPACE) -l app=worker -o name | xargs -r kubectl delete -n $(K8S_NAMESPACE)
