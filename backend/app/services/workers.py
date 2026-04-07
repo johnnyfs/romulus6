@@ -93,6 +93,15 @@ def get_worker(session: Session, worker_id: uuid.UUID) -> Worker | None:
     return worker
 
 
+def is_worker_healthy(worker: Worker | None) -> bool:
+    if worker is None or worker.deleted or worker.status != WorkerStatus.running:
+        return False
+    if worker.last_heartbeat_at is None or not worker.worker_url:
+        return False
+    cutoff = _utcnow() - datetime.timedelta(seconds=HEARTBEAT_TIMEOUT_SECONDS)
+    return worker.last_heartbeat_at >= cutoff
+
+
 def list_workers(session: Session) -> list[Worker]:
     return list(session.exec(Worker.active().order_by(Worker.created_at.asc())).all())
 
@@ -116,9 +125,14 @@ def get_worker_for_sandbox(session: Session, sandbox: Sandbox | None) -> Worker 
         return None
     lease = get_active_lease_for_sandbox(session, sandbox)
     if lease is not None:
-        return get_worker(session, lease.worker_id)
+        worker = get_worker(session, lease.worker_id)
+        if is_worker_healthy(worker):
+            return worker
+        return None
     if sandbox.worker_id is not None:
-        return get_worker(session, sandbox.worker_id)
+        worker = get_worker(session, sandbox.worker_id)
+        if is_worker_healthy(worker):
+            return worker
     return None
 
 

@@ -6,6 +6,7 @@ from functools import lru_cache
 from urllib.parse import urlparse
 
 from kubernetes import client, config
+from kubernetes.config.kube_config import _get_kube_config_loader
 from kubernetes.client import AppsV1Api, CoreV1Api
 
 DEPLOY_MODE = os.environ.get("DEPLOY_MODE", "local")
@@ -38,26 +39,14 @@ def _normalize_host(value: str) -> str:
 
 def _current_kube_server_host() -> str | None:
     try:
-        contexts, active_context = config.list_kube_config_contexts()
+        loader = _get_kube_config_loader()
     except Exception:
         return None
 
-    if not active_context:
+    server = loader._cluster.safe_get("server")
+    if not server:
         return None
-
-    active_cluster = active_context.get("context", {}).get("cluster")
-    if not active_cluster:
-        return None
-
-    for entry in contexts:
-        context = entry.get("context", {})
-        if context.get("cluster") != active_cluster:
-            continue
-        server = entry.get("cluster", {}).get("server")
-        if not server:
-            return None
-        return urlparse(server).hostname
-    return None
+    return urlparse(server).hostname
 
 
 def _bootstrap_local_cluster_host() -> str | None:

@@ -73,6 +73,18 @@ class OpenCodeServer:
     def unsubscribe(self, opencode_session_id: str) -> None:
         self._queues.pop(opencode_session_id, None)
 
+    def _extract_session_id(self, payload: dict) -> str | None:
+        props = payload.get("properties", {})
+        if props.get("sessionID"):
+            return props["sessionID"]
+        part = props.get("part", {})
+        if isinstance(part, dict) and part.get("sessionID"):
+            return part["sessionID"]
+        info = props.get("info", {})
+        if isinstance(info, dict) and info.get("id") and payload.get("type", "").startswith("session."):
+            return info["id"]
+        return None
+
     async def _fan_out_events(self) -> None:
         while True:
             try:
@@ -89,7 +101,7 @@ class OpenCodeServer:
                         except json.JSONDecodeError:
                             continue
                         payload = envelope.get("payload", {})
-                        session_id = payload.get("properties", {}).get("sessionID")
+                        session_id = self._extract_session_id(payload)
                         if session_id and session_id in self._queues:
                             await self._queues[session_id].put(payload)
                             logger.debug("fanned out event %s for session %s", payload.get("type"), session_id)
@@ -111,6 +123,7 @@ class OpenCodeRunner(AgentRunner):
         self._server = server
         self.opencode_session_id: str | None = None
         self._queue: asyncio.Queue | None = None
+        self._text_by_part_id: dict[str, str] = {}
 
     async def start(self, *, prompt: str, session: Session) -> None:
         client = self._server.client
@@ -171,9 +184,15 @@ class OpenCodeRunner(AgentRunner):
     def _translate(self, payload: dict) -> Event | None:
         oc_type = payload.get("type", "")
         props = payload.get("properties", {})
+        part = props.get("part", {}) if isinstance(props.get("part"), dict) else {}
 
         if oc_type == "session.status":
-            return Event(session_id=self._session_id, type=EventType.SESSION_BUSY, data={})
+            status = props.get("status", {}).get("type")
+            if status == "busy":
+                return Event(session_id=self._session_id, type=EventType.SESSION_BUSY, data={})
+            if status == "idle":
+                return Event(session_id=self._session_id, type=EventType.SESSION_IDLE, data={})
+            return None
 
         elif oc_type == "session.idle":
             return Event(session_id=self._session_id, type=EventType.SESSION_IDLE, data={})
@@ -189,12 +208,35 @@ class OpenCodeRunner(AgentRunner):
         elif oc_type == "feedback.response":
             return Event(session_id=self._session_id, type=EventType.FEEDBACK_RESPONSE, data=props)
 
-        elif oc_type == "message.part.delta":
-            if props.get("field") == "text":
+        elif oc_type in ("message.part.delta", "message.part.updated"):
+            if props.get("field") == "text" or part.get("type") == "text":
+                part_id = str(props.get("partID") or part.get("id") or "")
+                delta = str(props.get("delta", ""))
+                if not delta:
+                    current_text = str(part.get("text") or "")
+                    previous_text = self._text_by_part_id.get(part_id, "")
+                    if current_text.startswith(previous_text):
+                        delta = current_text[len(previous_text):]
+                    else:
+                        delta = current_text
+                    if part_id:
+                        self._text_by_part_id[part_id] = current_text
                 return Event(session_id=self._session_id, type=EventType.TEXT_DELTA, data={
-                    "delta": props.get("delta", ""),
-                    "message_id": props.get("messageID"),
-                    "part_id": props.get("partID"),
+                    "delta": delta,
+                    "message_id": props.get("messageID") or part.get("messageID"),
+                    "part_id": part_id or None,
+                })
+            if part.get("type") == "tool":
+                state = part.get("state", {}) if isinstance(part.get("state"), dict) else {}
+                metadata = state.get("metadata", {}) if isinstance(state.get("metadata"), dict) else {}
+                return Event(session_id=self._session_id, type=EventType.TOOL_USE, data={
+                    "tool": part.get("tool", ""),
+                    "tool_name": part.get("tool", ""),
+                    "args": state.get("input", {}),
+                    "state": state,
+                    "message_id": part.get("messageID"),
+                    "part_id": part.get("id"),
+                    "stdout": metadata.get("output"),
                 })
 
         elif oc_type == "file.edited":
@@ -204,9 +246,14 @@ class OpenCodeRunner(AgentRunner):
 
         elif oc_type == "message.part.done":
             # Tool call completions include the tool name and arguments
-            part = props.get("part", {})
+            if part.get("type") == "text":
+                part_id = str(props.get("partID") or part.get("id") or "")
+                if part_id:
+                    self._text_by_part_id.pop(part_id, None)
+                return None
             if part.get("type") == "tool-invocation":
                 return Event(session_id=self._session_id, type=EventType.TOOL_USE, data={
+                    "tool": part.get("toolInvocation", {}).get("toolName", ""),
                     "tool_name": part.get("toolInvocation", {}).get("toolName", ""),
                     "args": part.get("toolInvocation", {}).get("args", {}),
                     "state": part.get("toolInvocation", {}).get("state", ""),
@@ -217,6 +264,7 @@ class OpenCodeRunner(AgentRunner):
         elif oc_type == "tool.call":
             # Alternative event format for tool calls
             return Event(session_id=self._session_id, type=EventType.TOOL_USE, data={
+                "tool": props.get("name", props.get("toolName", "")),
                 "tool_name": props.get("name", props.get("toolName", "")),
                 "args": props.get("args", props.get("arguments", {})),
                 "message_id": props.get("messageID"),

@@ -100,7 +100,13 @@ dev-restart-workers: dev-build-worker-image dev-config dev-secrets
 	kubectl rollout restart deployment/worker -n $(K8S_NAMESPACE)
 	kubectl rollout status deployment/worker -n $(K8S_NAMESPACE)
 
-dev-frontend:
+frontend/node_modules: frontend/package-lock.json frontend/package.json
+	cd frontend && npm ci
+
+tests/node_modules: tests/package-lock.json tests/package.json
+	cd tests && npm ci
+
+dev-frontend: frontend/node_modules
 	cd frontend && \
 		VITE_PORT=$(FRONTEND_PORT) \
 		VITE_BACKEND_TARGET=http://$(K8S_NODE_HOST):$(BACKEND_NODEPORT) \
@@ -148,12 +154,12 @@ makemigrations:
 	cd backend && uv run alembic revision --autogenerate -m "$(MSG)"
 
 install-frontend:
-	cd frontend && npm install
+	cd frontend && npm ci
 
 install-tests:
-	cd tests && npm install
+	cd tests && npm ci
 
-test-backend: dev-check-cluster dev-namespace
+test-backend: dev-check-cluster dev-namespace tests/node_modules
 	cd tests && PLAYWRIGHT_BASE_URL=http://$(K8S_NODE_HOST):$(BACKEND_NODEPORT) npm run test -- $(ARGS)
 
 sandbox-delete-all:
