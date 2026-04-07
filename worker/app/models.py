@@ -2,7 +2,10 @@ import uuid
 from datetime import datetime, UTC
 from enum import StrEnum
 from typing import Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from app.pydantic_schema_registry import PydanticSchemaId
+from app.supported_models import validate_supported_model_for_agent_type
 
 class SessionStatus(StrEnum):
     STARTING = "starting"
@@ -37,9 +40,10 @@ class Event(BaseModel):
 
 class Session(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    opencode_session_id: str | None = None
     agent_type: str
     model: str
+    schema_id: str | None = None
+    runner_state: dict[str, Any] = Field(default_factory=dict)
     status: SessionStatus = SessionStatus.STARTING
     workspace_dir: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -48,11 +52,21 @@ class Session(BaseModel):
 class CreateSessionRequest(BaseModel):
     prompt: str
     agent_type: str = "opencode"
-    model: str = "anthropic/claude-sonnet-4-5"
+    model: str = "anthropic/claude-sonnet-4-6"
+    schema_id: str | None = None
     workspace_name: str | None = None
     graph_tools: bool = False
     workspace_id: str | None = None
     sandbox_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_request(self) -> "CreateSessionRequest":
+        validate_supported_model_for_agent_type(self.agent_type, self.model)
+        if self.agent_type == "pydantic" and self.schema_id is None:
+            raise ValueError("schema_id is required for pydantic sessions")
+        if self.schema_id is not None and self.schema_id not in {item.value for item in PydanticSchemaId}:
+            raise ValueError(f"Unsupported schema_id: {self.schema_id}")
+        return self
 
 class CreateSessionResponse(BaseModel):
     session: Session
