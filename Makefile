@@ -65,6 +65,7 @@ dev-secrets: dev-namespace
 		--from-literal=DB_NAME=$(DB_NAME) \
 		--from-literal=DB_PASSWORD=$(DB_PASSWORD) \
 		--from-literal=DB_USER=$(DB_USER) \
+		--from-literal=GOOGLE_API_KEY=$(GOOGLE_API_KEY) \
 		--from-literal=OPENAI_API_KEY=$(OPENAI_API_KEY) \
 		--dry-run=client -o yaml | kubectl apply -f -
 
