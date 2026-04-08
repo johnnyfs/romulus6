@@ -25,6 +25,7 @@ class SubgraphTemplateNodeType(str, Enum):
     command = "command"
     task_template = "task_template"
     subgraph_template = "subgraph_template"
+    view = "view"
 
 
 # ── Task Templates ───────────────────────────────────────────────────────────

@@ -49,8 +49,46 @@ export interface SandboxDebugSummary {
   workers: SandboxDebugWorker[]
 }
 
+interface SandboxRecord {
+  id: string
+  workspace_id: string
+  name: string
+  worker_id: string | null
+  current_lease_id: string | null
+}
+
+async function fetchSandboxListFallback(workspaceId: string): Promise<SandboxDebugSummary> {
+  const fallbackRes = await fetch(`/api/workspaces/${workspaceId}/sandboxes`)
+  if (!fallbackRes.ok) throw new Error('Failed to fetch sandbox debug summary')
+  const sandboxes = (await fallbackRes.json()) as SandboxRecord[]
+  return {
+    workspace_id: workspaceId,
+    active_agent_count: 0,
+    dismissed_agent_count: 0,
+    sandbox_count: sandboxes.length,
+    worker_count: 0,
+    attached_worker_count: sandboxes.filter((sandbox) => sandbox.worker_id != null).length,
+    sandboxes: sandboxes.map((sandbox) => ({
+      id: sandbox.id,
+      name: sandbox.name,
+      worker_id: sandbox.worker_id,
+      current_lease_id: sandbox.current_lease_id,
+      active_agent_count: 0,
+      dismissed_agent_count: 0,
+      agents: [],
+    })),
+    unassigned_agents: [],
+    workers: [],
+  }
+}
+
 export async function getSandboxDebugSummary(workspaceId: string): Promise<SandboxDebugSummary> {
   const res = await fetch(`/api/workspaces/${workspaceId}/sandboxes/debug`)
-  if (!res.ok) throw new Error('Failed to fetch sandbox debug summary')
+  if (!res.ok) {
+    if (res.status === 404 || res.status === 422) {
+      return fetchSandboxListFallback(workspaceId)
+    }
+    throw new Error('Failed to fetch sandbox debug summary')
+  }
   return res.json()
 }

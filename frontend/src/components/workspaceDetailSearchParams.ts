@@ -17,6 +17,7 @@ export const WORKSPACE_DETAIL_PARAM_KEYS = {
   templatesSubTab: 'templatesTab',
   templateNodeId: 'templateNode',
   subgraphTemplateId: 'subgraphTemplate',
+  hideFailedWorkers: 'hideFailed',
 } as const
 
 type SearchParamValue = string | null | undefined

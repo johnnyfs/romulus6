@@ -390,6 +390,47 @@ test.describe('Subgraph Template API', () => {
     }
   });
 
+  test('PATCH /subgraph-templates/{id}/nodes/{node_id} updates node to view type', async ({ request }) => {
+    const wid = await createWorkspace(request);
+    try {
+      const sgRes = await request.post(`/api/v1/workspaces/${wid}/subgraph-templates`, {
+        data: { name: 'patch-view-node-sg' },
+      });
+      const sg = await sgRes.json();
+
+      const nodeRes = await request.post(`/api/v1/workspaces/${wid}/subgraph-templates/${sg.id}/nodes`, {
+        data: { node_type: 'agent', name: 'asset-viewer' },
+      });
+      const node = await nodeRes.json();
+
+      const patchRes = await request.patch(
+        `/api/v1/workspaces/${wid}/subgraph-templates/${sg.id}/nodes/${node.id}`,
+        {
+          data: {
+            node_type: 'view',
+            view_config: {
+              images: [
+                { type: 'url', url: '{{ asset_path }}' },
+              ],
+            },
+          },
+        },
+      );
+      expect(patchRes.status()).toBe(200);
+      const patched = await patchRes.json();
+      expect(patched.node_type).toBe('view');
+      expect(patched.view_config).toEqual({
+        images: [
+          { type: 'url', url: '{{ asset_path }}', path: null },
+        ],
+      });
+
+      await request.delete(`/api/v1/workspaces/${wid}/subgraph-templates/${sg.id}`);
+    } finally {
+      await deleteWorkspace(request, wid);
+    }
+  });
+
   test('DELETE /subgraph-templates/{id}/nodes/{node_id} deletes node and its edges', async ({ request }) => {
     const wid = await createWorkspace(request);
     try {

@@ -25,6 +25,7 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
   const [templates, setTemplates] = useState<TaskTemplate[]>([])
   const [detail, setDetail] = useState<TaskTemplate | null>(null)
   const [mutating, setMutating] = useState(false)
+  const [dirty, setDirty] = useState(false)
   const activeId = readStringParam(searchParams, WORKSPACE_DETAIL_PARAM_KEYS.taskTemplateId)
 
   // Edit state
@@ -40,6 +41,10 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
   const [editGraphTools, setEditGraphTools] = useState(false)
   const argIdCounter = useRef(0)
   const [editArgs, setEditArgs] = useState<{ _id: number; name: string; arg_type: TaskTemplateArgType; default_value: string; model_constraint: string[]; min_value: string; max_value: string; enum_options: string[] }[]>([])
+
+  function markDirty<T>(setter: (v: T) => void) {
+    return (v: T) => { setter(v); setDirty(true) }
+  }
 
   const loadList = useCallback(async () => {
     const ts = await listTaskTemplates(workspaceId)
@@ -103,6 +108,7 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
             enum_options: a.enum_options ?? [],
           })),
         )
+        setDirty(false)
       })
     } else {
       setDetail(null)
@@ -167,14 +173,17 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
 
   function addArg() {
     setEditArgs([...editArgs, { _id: argIdCounter.current++, name: '', arg_type: 'string', default_value: '', model_constraint: [], min_value: '', max_value: '', enum_options: [] }])
+    setDirty(true)
   }
 
   function removeArg(idx: number) {
     setEditArgs(editArgs.filter((_, i) => i !== idx))
+    setDirty(true)
   }
 
   function updateArg(idx: number, field: string, value: any) {
     setEditArgs(editArgs.map((a, i) => (i === idx ? { ...a, [field]: value } : a)))
+    setDirty(true)
   }
 
   return (
@@ -208,17 +217,17 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
 
           <div style={s.row}>
             <span style={s.label}>Name</span>
-            <input style={s.input} value={editName} onChange={(e) => setEditName(e.target.value)} />
+            <input style={s.input} value={editName} onChange={(e) => markDirty(setEditName)(e.target.value)} />
           </div>
 
           <div style={s.row}>
             <span style={s.label}>Label</span>
-            <input style={s.input} value={editLabel} onChange={(e) => setEditLabel(e.target.value)} placeholder="e.g. Process {{ item }}" />
+            <input style={s.input} value={editLabel} onChange={(e) => markDirty(setEditLabel)(e.target.value)} placeholder="e.g. Process {{ item }}" />
           </div>
 
           <div style={s.row}>
             <span style={s.label}>Type</span>
-            <select style={s.sel} value={editTaskType} onChange={(e) => setEditTaskType(e.target.value as NodeType)}>
+            <select style={s.sel} value={editTaskType} onChange={(e) => markDirty(setEditTaskType)(e.target.value as NodeType)}>
               <option value="agent">agent</option>
               <option value="command">command</option>
             </select>
@@ -228,7 +237,7 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
             <>
               <div style={s.row}>
                 <span style={s.label}>Model</span>
-                <select style={s.sel} value={editModel} onChange={(e) => setEditModel(e.target.value)}>
+                <select style={s.sel} value={editModel} onChange={(e) => markDirty(setEditModel)(e.target.value)}>
                   {MODEL_OPTIONS.map((m) => (
                     <option key={m.value} value={m.value}>{m.label}</option>
                   ))}
@@ -240,12 +249,12 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
                   ref={promptRef}
                   style={{ ...s.input, minHeight: 50, resize: 'none', fontFamily: 'inherit' }}
                   value={editPrompt}
-                  onChange={(e) => setEditPrompt(e.target.value)}
+                  onChange={(e) => markDirty(setEditPrompt)(e.target.value)}
                 />
               </div>
               <div style={s.row}>
                 <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <input type="checkbox" checked={editGraphTools} onChange={(e) => setEditGraphTools(e.target.checked)} />
+                  <input type="checkbox" checked={editGraphTools} onChange={(e) => markDirty(setEditGraphTools)(e.target.checked)} />
                   Graph tools
                 </label>
               </div>
@@ -259,7 +268,7 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
                 ref={commandRef}
                 style={{ ...s.input, minHeight: 50, resize: 'none', fontFamily: 'monospace' }}
                 value={editCommand}
-                onChange={(e) => setEditCommand(e.target.value)}
+                onChange={(e) => markDirty(setEditCommand)(e.target.value)}
               />
             </div>
           )}
@@ -322,7 +331,7 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
           ))}
           <button style={s.addBtn} onClick={addArg}>+ Add Argument</button>
 
-          <button style={s.saveBtn} onClick={handleSave} disabled={mutating}>
+          <button style={{ ...s.saveBtn, opacity: dirty ? 1 : 0.5 }} onClick={handleSave} disabled={mutating || !dirty}>
             Save
           </button>
         </div>

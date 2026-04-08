@@ -46,12 +46,8 @@ export default tool({
 """
 
 
-def _resolve_output_references(session: Session, run: GraphRun, node: GraphRunNode) -> str | None:
-    """Resolve {{ slug.field }} references in a node's prompt/command using completed predecessors."""
-    text = node.prompt if node.node_type == "agent" else node.command
-    if not text or "{{" not in text:
-        return text
-
+def _build_predecessor_context(session: Session, run: GraphRun, node: GraphRunNode) -> dict[str, Any]:
+    """Build Jinja2 context from completed predecessor nodes."""
     predecessor_ids = {
         e.from_run_node_id for e in run.run_edges if e.to_run_node_id == node.id
     }
@@ -62,10 +58,47 @@ def _resolve_output_references(session: Session, run: GraphRun, node: GraphRunNo
             slug = slugify(pred.name)
             output_data = json.loads(pred.output) if pred.output else {}
             context[slug] = {**output_data, "output": output_data}
+    return context
 
+
+def _resolve_output_references(session: Session, run: GraphRun, node: GraphRunNode) -> str | None:
+    """Resolve {{ slug.field }} references in a node's prompt/command using completed predecessors."""
+    text = node.prompt if node.node_type == "agent" else node.command
+    if not text or "{{" not in text:
+        return text
+
+    context = _build_predecessor_context(session, run, node)
     from app.services.graphs import _jinja_env
 
     return _jinja_env.from_string(text).render(context)
+
+
+def _resolve_image_references(session: Session, run: GraphRun, node: GraphRunNode) -> str | None:
+    """Resolve {{ slug.field }} references in image URLs/paths using completed predecessors."""
+    if not node.images:
+        return node.images
+
+    images = json.loads(node.images)
+    has_templates = any(
+        "{{" in (img.get("url", "") or img.get("path", "") or "")
+        for img in images
+    )
+    if not has_templates:
+        return node.images
+
+    context = _build_predecessor_context(session, run, node)
+    from app.services.graphs import _jinja_env
+
+    resolved = []
+    for img in images:
+        new_img = dict(img)
+        if img.get("url") and "{{" in img["url"]:
+            new_img["url"] = _jinja_env.from_string(img["url"]).render(context)
+        if img.get("path") and "{{" in img["path"]:
+            new_img["path"] = _jinja_env.from_string(img["path"]).render(context)
+        resolved.append(new_img)
+
+    return json.dumps(resolved)
 
 
 def _collect_child_run_output(session: Session, run: GraphRun) -> dict | None:
@@ -427,6 +460,27 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
                     enqueue_run(session, node.child_run_id, reason="parent node unblocked")
                 continue
 
+            if node.node_type == "view":
+                node.state = "dispatching"
+                node.updated_at = datetime.datetime.utcnow()
+                session.add(node)
+                session.commit()
+                # Only need a worker if images reference sandbox paths
+                needs_worker = False
+                if node.images:
+                    for img in json.loads(node.images):
+                        if img.get("type") == "sandbox_path":
+                            needs_worker = True
+                            break
+                view_worker_id = None
+                if needs_worker:
+                    if worker is None:
+                        worker = _ensure_run_sandbox_worker(session, run)
+                    if worker is not None:
+                        view_worker_id = worker.id
+                asyncio.create_task(_dispatch_view_node(run.id, node.id, view_worker_id))
+                continue
+
             node.state = "dispatching"
             node.updated_at = datetime.datetime.utcnow()
             session.add(node)
@@ -634,6 +688,65 @@ async def _dispatch_command_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_i
         except Exception:
             logger.exception("command dispatch failed for node %s", node_id)
             fail_node_and_run(session, run_id, node_id, "command dispatch failed")
+
+
+async def _dispatch_view_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id: uuid.UUID | None) -> None:
+    with Session(engine) as session:
+        run = session.get(GraphRun, run_id)
+        node = session.get(GraphRunNode, node_id)
+        if run is None or node is None:
+            return
+
+        node.state = "running"
+        node.updated_at = datetime.datetime.utcnow()
+        session.add(node)
+        session.commit()
+
+        try:
+            resolved_images_json = _resolve_image_references(session, run, node)
+
+            worker_url = None
+            if worker_id:
+                worker = session.get(Worker, worker_id)
+                if worker:
+                    worker_url = worker.worker_url
+
+            resolved_images: list[dict] = []
+            if resolved_images_json:
+                parsed = json.loads(resolved_images_json)
+                if worker_url:
+                    resolved_images = await _resolve_images(worker_url, resolved_images_json) or []
+                else:
+                    # Without a worker, keep URL images as-is, skip sandbox_path
+                    resolved_images = [
+                        img for img in parsed if img.get("type") == "url"
+                    ]
+
+            event_svc.persist_event(
+                session,
+                workspace_id=run.workspace_id,
+                source_type="run",
+                source_id=str(node.id),
+                payload={
+                    "id": str(uuid.uuid4()),
+                    "type": "view.images",
+                    "timestamp": datetime.datetime.utcnow().isoformat(),
+                    "data": {
+                        "images": resolved_images,
+                        "node_name": node.name or "view",
+                    },
+                },
+                source_name=node.name,
+                run_id=run.id,
+                node_id=node.id,
+                sandbox_id=run.sandbox_id,
+                worker_id=worker_id,
+            )
+
+            complete_node(session, run_id, node_id, output={"images_count": len(resolved_images)})
+        except Exception:
+            logger.exception("view dispatch failed for node %s", node_id)
+            fail_node_and_run(session, run_id, node_id, "view dispatch failed")
 
 
 def complete_node(

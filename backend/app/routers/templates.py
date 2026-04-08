@@ -303,11 +303,16 @@ class CreateSubgraphTemplateRequest(BaseModel):
     output_schema: Optional[dict[str, str]] = None
 
 
+class ViewConfig(BaseModel):
+    images: list[ImageAttachment] = []
+
+
 class AddSubgraphNodeRequest(BaseModel):
     node_type: SubgraphTemplateNodeType
     name: Optional[str] = None
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
+    view_config: Optional[ViewConfig] = None
     task_template_id: Optional[uuid.UUID] = None
     ref_subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
@@ -319,6 +324,7 @@ class PatchSubgraphNodeRequest(BaseModel):
     node_type: Optional[SubgraphTemplateNodeType] = None
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
+    view_config: Optional[ViewConfig] = None
     task_template_id: Optional[uuid.UUID] = None
     ref_subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
@@ -337,6 +343,7 @@ class SubgraphNodeResponse(BaseModel):
     name: Optional[str] = None
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
+    view_config: Optional[ViewConfig] = None
     task_template_id: Optional[uuid.UUID] = None
     ref_subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
@@ -410,6 +417,17 @@ def _command_config_from(obj: Any) -> Optional[CommandConfig]:
     return CommandConfig(command=obj.command)
 
 
+def _view_config_from(obj: Any) -> Optional[ViewConfig]:
+    node_type = getattr(obj, "node_type", None)
+    if hasattr(node_type, "value"):
+        node_type = node_type.value
+    if node_type != "view":
+        return None
+    images_raw = _parse_json_field(obj, "images")
+    images = [ImageAttachment(**img) for img in images_raw] if images_raw else []
+    return ViewConfig(images=images)
+
+
 def _node_response(n: Any) -> SubgraphNodeResponse:
     bindings = None
     if n.argument_bindings:
@@ -424,6 +442,7 @@ def _node_response(n: Any) -> SubgraphNodeResponse:
         name=n.name,
         agent_config=_agent_config_from(n),
         command_config=_command_config_from(n),
+        view_config=_view_config_from(n),
         task_template_id=n.task_template_id,
         ref_subgraph_template_id=n.ref_subgraph_template_id,
         argument_bindings=bindings,
@@ -459,9 +478,12 @@ def _to_node_inputs(nodes: list[SubgraphNodeInputSchema]) -> list[SubgraphNodeIn
     for n in nodes:
         ac = n.agent_config
         cc = n.command_config
+        vc = getattr(n, "view_config", None)
         images = None
         if isinstance(ac, PydanticAgentConfig) and ac.images:
             images = [img.model_dump(mode="json") for img in ac.images]
+        elif vc and vc.images:
+            images = [img.model_dump(mode="json") for img in vc.images]
         result.append(SubgraphNodeInput(
             node_type=n.node_type,
             name=n.name,
@@ -564,9 +586,12 @@ def add_subgraph_node(
     tmpl = _require_subgraph_template(workspace_id, template_id, session)
     ac = body.agent_config
     cc = body.command_config
+    vc = body.view_config
     images = None
     if isinstance(ac, PydanticAgentConfig) and ac.images:
         images = [img.model_dump(mode="json") for img in ac.images]
+    elif vc and vc.images:
+        images = [img.model_dump(mode="json") for img in vc.images]
     try:
         node = svc.add_subgraph_template_node(
             session,
@@ -601,9 +626,12 @@ def patch_subgraph_node(
     tmpl = _require_subgraph_template(workspace_id, template_id, session)
     ac = body.agent_config
     cc = body.command_config
+    vc = body.view_config
     images = None
     if isinstance(ac, PydanticAgentConfig) and ac.images:
         images = [img.model_dump(mode="json") for img in ac.images]
+    elif vc and vc.images:
+        images = [img.model_dump(mode="json") for img in vc.images]
     try:
         node = svc.patch_subgraph_template_node(
             session,

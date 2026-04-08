@@ -5,6 +5,7 @@ import {
   type Graph,
   type GraphDetail,
   type NodeType,
+  type ViewImage,
   addEdge,
   addNode,
   createGraph,
@@ -52,6 +53,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
   const [editModel, setEditModel] = useState(DEFAULT_MODEL_BY_AGENT_TYPE.opencode)
   const [editPrompt, setEditPrompt] = useState('')
   const [editCommand, setEditCommand] = useState('')
+  const [editImages, setEditImages] = useState<ViewImage[]>([])
   const promptRef = useAutoResize(editPrompt, 300, 60)
   const commandRef = useAutoResize(editCommand, 300, 80)
   const [editGraphTools, setEditGraphTools] = useState(false)
@@ -189,6 +191,11 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
         setEditCommand(node.command_config.command)
       } else {
         setEditCommand('')
+      }
+      if (node.view_config) {
+        setEditImages(node.view_config.images)
+      } else {
+        setEditImages([])
       }
       setEditTaskTemplateId(node.task_template_id ?? '')
       setEditSubgraphTemplateId(node.subgraph_template_id ?? '')
@@ -390,6 +397,8 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
     } else if (editType === 'subgraph_template') {
       patch.subgraph_template_id = editSubgraphTemplateId || undefined
       if (Object.keys(editBindings).length > 0) patch.argument_bindings = editBindings
+    } else if (editType === 'view') {
+      patch.view_config = { images: editImages }
     }
     try {
       const updated = await patchNode(workspaceId, activeGraphId, selectedNodeId, patch)
@@ -799,6 +808,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
               onChange={(e) => markDirty(setEditType)(e.target.value as NodeType)}>
               <option value="agent">agent</option>
               <option value="command">command</option>
+              <option value="view">view</option>
               <option value="task_template">task_template</option>
               <option value="subgraph_template">subgraph_template</option>
             </select>
@@ -873,8 +883,8 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
                 <>
                   <div style={{ ...s.inspectorTitle, marginTop: 6 }}>BINDINGS</div>
                   {refTemplateArgs.map((arg) => (
-                    <div key={arg.id} style={s.inspectorRow}>
-                      <label style={s.inspectorLabel} title={arg.name}>{arg.name.slice(0, 6)}:</label>
+                    <div key={arg.id} style={s.bindingRow}>
+                      <label style={s.bindingLabel}>{arg.name}</label>
                       <input style={s.inspectorInput}
                         value={editBindings[arg.name] ?? ''}
                         onChange={(e) => { setEditBindings(prev => ({ ...prev, [arg.name]: e.target.value })); setNodeDirty(true) }}
@@ -899,8 +909,8 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
                 <>
                   <div style={{ ...s.inspectorTitle, marginTop: 6 }}>BINDINGS</div>
                   {refTemplateArgs.map((arg) => (
-                    <div key={arg.id} style={s.inspectorRow}>
-                      <label style={s.inspectorLabel} title={arg.name}>{arg.name.slice(0, 6)}:</label>
+                    <div key={arg.id} style={s.bindingRow}>
+                      <label style={s.bindingLabel}>{arg.name}</label>
                       <input style={s.inspectorInput}
                         value={editBindings[arg.name] ?? ''}
                         onChange={(e) => { setEditBindings(prev => ({ ...prev, [arg.name]: e.target.value })); setNodeDirty(true) }}
@@ -909,6 +919,47 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
                   ))}
                 </>
               )}
+            </>
+          )}
+          {editType === 'view' && (
+            <>
+              <div style={{ ...s.inspectorTitle, marginTop: 8 }}>IMAGES</div>
+              {editImages.map((img, idx) => (
+                <div key={idx} style={{ ...s.inspectorRow, gap: 4 }}>
+                  <select style={{ ...s.inspectorSelect, flex: 1 }} value={img.type}
+                    onChange={(e) => {
+                      const next = [...editImages]
+                      const newType = e.target.value as 'url' | 'sandbox_path'
+                      next[idx] = newType === 'url' ? { type: 'url', url: '' } : { type: 'sandbox_path', path: '' }
+                      setEditImages(next)
+                      setNodeDirty(true)
+                    }}>
+                    <option value="url">URL</option>
+                    <option value="sandbox_path">Sandbox Path</option>
+                  </select>
+                  <input style={{ ...s.inspectorInput, flex: 3 }}
+                    value={img.type === 'url' ? (img.url ?? '') : (img.path ?? '')}
+                    onChange={(e) => {
+                      const next = [...editImages]
+                      const field = img.type === 'url' ? 'url' : 'path'
+                      next[idx] = { ...next[idx], [field]: e.target.value }
+                      setEditImages(next)
+                      setNodeDirty(true)
+                    }}
+                    placeholder={img.type === 'url' ? 'https://... or {{ slug.field }}' : '/path/in/sandbox or {{ slug.field }}'} />
+                  <button style={s.edgeDeleteBtn} onClick={() => {
+                    setEditImages(prev => prev.filter((_, i) => i !== idx))
+                    setNodeDirty(true)
+                  }}>x</button>
+                </div>
+              ))}
+              <button style={{ ...s.addFirstBtn, fontSize: '11px', marginTop: 2 }}
+                onClick={() => {
+                  setEditImages(prev => [...prev, { type: 'url', url: '' }])
+                  setNodeDirty(true)
+                }}>
+                [ + Add Image ]
+              </button>
             </>
           )}
           {/* Output Schema (agent + command) */}
@@ -949,7 +1000,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
             </>
           )}
           {/* Upstream output references */}
-          {(editType === 'agent' || editType === 'command') && upstreamRefs.length > 0 && (
+          {(editType === 'agent' || editType === 'command' || editType === 'view') && upstreamRefs.length > 0 && (
             <div style={{ marginTop: 6, fontSize: '11px', color: 'var(--text-muted)', padding: '0 4px' }}>
               <div style={{ fontWeight: 600, marginBottom: 2 }}>Available refs:</div>
               {upstreamRefs.map(ref => (
@@ -1230,6 +1281,19 @@ const s: Record<string, React.CSSProperties> = {
     flexShrink: 0,
     width: '36px',
     fontSize: '12px',
+  },
+  bindingRow: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: '2px',
+    marginBottom: '6px',
+  },
+  bindingLabel: {
+    color: 'var(--text-dim)',
+    fontSize: '11px',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
   },
   inspectorInput: {
     flex: 1,

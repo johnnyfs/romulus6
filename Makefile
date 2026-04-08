@@ -3,7 +3,8 @@ export
 
 K8S_NAMESPACE ?= romulus
 K8S_DEV_DIR := k8s/dev
-K8S_NODE_HOST ?= localhost
+K8S_NODE_HOST ?= $(shell minikube ip 2>/dev/null || echo localhost)
+MINIKUBE_PROFILE ?= minikube
 
 BACKEND_IMAGE ?= backend:latest
 WORKER_IMAGE ?= worker:latest
@@ -33,10 +34,10 @@ dev-namespace:
 dev-build-images: dev-build-backend-image dev-build-worker-image
 
 dev-build-backend-image:
-	docker build -t $(BACKEND_IMAGE) backend/
+	eval $$(minikube -p $(MINIKUBE_PROFILE) docker-env) && docker build -t $(BACKEND_IMAGE) backend/
 
 dev-build-worker-image:
-	docker build -t $(WORKER_IMAGE) worker/
+	eval $$(minikube -p $(MINIKUBE_PROFILE) docker-env) && docker build -t $(WORKER_IMAGE) worker/
 
 dev-config: dev-namespace
 	kubectl create configmap romulus-backend-config -n $(K8S_NAMESPACE) \
@@ -100,13 +101,13 @@ dev-restart-workers: dev-build-worker-image dev-config dev-secrets
 	kubectl rollout restart deployment/worker -n $(K8S_NAMESPACE)
 	kubectl rollout status deployment/worker -n $(K8S_NAMESPACE)
 
-frontend/node_modules: frontend/package-lock.json frontend/package.json
+frontend/node_modules/.bin/vite: frontend/package-lock.json frontend/package.json
 	cd frontend && npm ci
 
-tests/node_modules: tests/package-lock.json tests/package.json
+tests/node_modules/.bin/playwright: tests/package-lock.json tests/package.json
 	cd tests && npm ci
 
-dev-frontend: frontend/node_modules
+dev-frontend: frontend/node_modules/.bin/vite
 	cd frontend && \
 		VITE_PORT=$(FRONTEND_PORT) \
 		VITE_BACKEND_TARGET=http://$(K8S_NODE_HOST):$(BACKEND_NODEPORT) \

@@ -26,11 +26,16 @@ SessionDep = Annotated[Session, Depends(get_session)]
 
 # --- Request schemas ---
 
+class ViewConfig(BaseModel):
+    images: list[ImageAttachment] = []
+
+
 class NodeInputSchema(BaseModel):
     node_type: NodeType
     name: Optional[str] = None
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
+    view_config: Optional[ViewConfig] = None
     task_template_id: Optional[uuid.UUID] = None
     subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
@@ -57,6 +62,7 @@ class AddNodeRequest(BaseModel):
     name: Optional[str] = None
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
+    view_config: Optional[ViewConfig] = None
     task_template_id: Optional[uuid.UUID] = None
     subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
@@ -68,6 +74,7 @@ class PatchNodeRequest(BaseModel):
     node_type: Optional[NodeType] = None
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
+    view_config: Optional[ViewConfig] = None
     task_template_id: Optional[uuid.UUID] = None
     subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
@@ -92,6 +99,7 @@ class GraphNodeResponse(BaseModel):
     name: Optional[str] = None
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
+    view_config: Optional[ViewConfig] = None
     task_template_id: Optional[uuid.UUID] = None
     subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
@@ -143,6 +151,7 @@ class GraphRunNodeResponse(BaseModel):
     state: str
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
+    view_config: Optional[ViewConfig] = None
     agent_id: Optional[uuid.UUID] = None
     session_id: Optional[str] = None
     child_run_id: Optional[uuid.UUID] = None
@@ -226,6 +235,17 @@ def _command_config_from(obj: Any) -> Optional[CommandConfig]:
     return CommandConfig(command=obj.command)
 
 
+def _view_config_from(obj: Any) -> Optional[ViewConfig]:
+    node_type = getattr(obj, "node_type", None)
+    if isinstance(node_type, NodeType):
+        node_type = node_type.value
+    if node_type != "view":
+        return None
+    images_raw = _parse_json_field(obj, "images")
+    images = [ImageAttachment(**img) for img in images_raw] if images_raw else []
+    return ViewConfig(images=images)
+
+
 def _parse_json_field(obj: Any, field: str) -> Optional[dict]:
     raw = getattr(obj, field, None)
     if raw is None:
@@ -248,6 +268,7 @@ def _node_response(n: Any) -> GraphNodeResponse:
         name=n.name,
         agent_config=_agent_config_from(n),
         command_config=_command_config_from(n),
+        view_config=_view_config_from(n),
         task_template_id=getattr(n, "task_template_id", None),
         subgraph_template_id=getattr(n, "subgraph_template_id", None),
         argument_bindings=_parse_bindings(n),
@@ -270,6 +291,7 @@ def _run_node_response(rn: Any) -> GraphRunNodeResponse:
         state=rn.state,
         agent_config=_agent_config_from(rn),
         command_config=_command_config_from(rn),
+        view_config=_view_config_from(rn),
         agent_id=rn.agent_id,
         session_id=rn.session_id,
         child_run_id=getattr(rn, "child_run_id", None),
@@ -308,9 +330,12 @@ def _run_response(run: Any) -> GraphRunResponse:
 def _node_input(n: NodeInputSchema) -> NodeInput:
     ac = n.agent_config
     cc = n.command_config
+    vc = n.view_config
     images = None
     if isinstance(ac, PydanticAgentConfig) and ac.images:
         images = [img.model_dump(mode="json") for img in ac.images]
+    elif vc and vc.images:
+        images = [img.model_dump(mode="json") for img in vc.images]
     return NodeInput(
         node_type=n.node_type,
         name=n.name,
@@ -437,9 +462,12 @@ def add_node(
     graph = _require_graph(workspace_id, graph_id, session)
     ac = body.agent_config
     cc = body.command_config
+    vc = body.view_config
     images = None
     if isinstance(ac, PydanticAgentConfig) and ac.images:
         images = [img.model_dump(mode="json") for img in ac.images]
+    elif vc and vc.images:
+        images = [img.model_dump(mode="json") for img in vc.images]
     try:
         node = svc.add_node(
             session,
@@ -493,9 +521,12 @@ def patch_node(
     graph = _require_graph(workspace_id, graph_id, session)
     ac = body.agent_config
     cc = body.command_config
+    vc = body.view_config
     images = None
     if isinstance(ac, PydanticAgentConfig) and ac.images:
         images = [img.model_dump(mode="json") for img in ac.images]
+    elif vc and vc.images:
+        images = [img.model_dump(mode="json") for img in vc.images]
     try:
         node = svc.patch_node(
             session,

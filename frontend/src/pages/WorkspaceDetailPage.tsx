@@ -43,11 +43,19 @@ interface ActivityBlock {
   history: AgentEvent[]
 }
 
+interface ViewFeedImage {
+  type: string
+  url?: string
+  data?: string
+  media_type?: string
+}
+
 type FeedItem =
   | { kind: 'message'; agentId: string; event: AgentEvent; key: string }
   | { kind: 'user'; agentId: string; prompt: string; timestamp: string; key: string; isDispatch?: boolean }
   | { kind: 'activity'; block: ActivityBlock }
   | { kind: 'feedback'; agentId: string; event: AgentEvent; key: string; resolved: boolean; resolvedResponse?: string }
+  | { kind: 'images'; key: string; event: AgentEvent; nodeName: string; images: ViewFeedImage[] }
 
 const ACTIVITY_TYPES = new Set(['tool.use', 'file.edit', 'command.output'])
 
@@ -285,7 +293,12 @@ export default function WorkspaceDetailPage() {
   const [graphWidth, setGraphWidth] = useState(340)
   const [sandboxDebug, setSandboxDebug] = useState<SandboxDebugSummary | null>(null)
   const [sandboxDebugLoading, setSandboxDebugLoading] = useState(false)
-  const [hideFailedWorkers, setHideFailedWorkers] = useState(false)
+  const [pageError, setPageError] = useState<string | null>(null)
+  const hideFailedWorkers = readBooleanParam(
+    searchParams,
+    WORKSPACE_DETAIL_PARAM_KEYS.hideFailedWorkers,
+    false,
+  )
   const isDragging = useRef(false)
   const dragStartX = useRef(0)
   const dragStartWidth = useRef(0)
@@ -294,10 +307,23 @@ export default function WorkspaceDetailPage() {
 
   useEffect(() => {
     if (!id) return
-    Promise.all([getWorkspace(id), listAgents(id)]).then(([ws, agts]) => {
-      setWorkspace(ws)
-      setAgents(agts)
-    })
+    let cancelled = false
+
+    void Promise.all([getWorkspace(id), listAgents(id)])
+      .then(([ws, agts]) => {
+        if (cancelled) return
+        setWorkspace(ws)
+        setAgents(agts)
+        setPageError(null)
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        setPageError(error instanceof Error ? error.message : 'Failed to load workspace')
+      })
+
+    return () => {
+      cancelled = true
+    }
   }, [id])
 
   // ── SSE connection management ─────────────────────────────────────────────
@@ -438,6 +464,9 @@ export default function WorkspaceDetailPage() {
     setSandboxDebugLoading(true)
     try {
       setSandboxDebug(await getSandboxDebugSummary(id))
+      setPageError(null)
+    } catch (error) {
+      setPageError(error instanceof Error ? error.message : 'Failed to load sandbox details')
     } finally {
       setSandboxDebugLoading(false)
     }
@@ -559,6 +588,16 @@ export default function WorkspaceDetailPage() {
         delete activityIdx[streamKey]
       } else if (event.type === 'feedback.response') {
         // audit-only, skip rendering
+      } else if (event.type === 'view.images') {
+        const images = (event.data.images as ViewFeedImage[]) ?? []
+        items.push({
+          kind: 'images',
+          key: event.id,
+          event,
+          nodeName: String(event.data.node_name ?? 'view'),
+          images,
+        })
+        delete activityIdx[streamKey]
       } else if (isActivity(event.type)) {
         const idx = activityIdx[streamKey]
         if (idx !== undefined) {
@@ -773,6 +812,8 @@ export default function WorkspaceDetailPage() {
         <span style={styles.headerSep}>/</span>
         <span style={styles.title}>{workspaceName}</span>
       </div>
+
+      {pageError ? <div style={styles.errorBanner}>{pageError}</div> : null}
 
       {/* Body */}
       <div style={styles.body}>
@@ -1064,6 +1105,38 @@ export default function WorkspaceDetailPage() {
                     )
                   }
 
+                  if (item.kind === 'images') {
+                    return (
+                      <div key={item.key} style={styles.agentBubbleWrap}>
+                        <div style={{ ...styles.agentBubble, borderLeft: '3px solid #84cc16' }}>
+                          <div style={{ ...styles.agentBubbleHeader, color: '#84cc16' }}>
+                            {item.event.display_label || item.nodeName}
+                          </div>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '4px 0' }}>
+                            {item.images.map((img, idx) => {
+                              const src = img.type === 'base64'
+                                ? `data:${img.media_type ?? 'image/png'};base64,${img.data}`
+                                : img.url ?? ''
+                              return (
+                                <img
+                                  key={idx}
+                                  src={src}
+                                  alt={`view ${idx + 1}`}
+                                  style={{ maxWidth: '100%', maxHeight: 400, borderRadius: 4, objectFit: 'contain' }}
+                                />
+                              )
+                            })}
+                            {item.images.length === 0 && (
+                              <span style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontSize: '13px' }}>
+                                No images
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  }
+
                   return (
                     <ActivityLine
                       key={item.block.blockId}
@@ -1176,7 +1249,17 @@ export default function WorkspaceDetailPage() {
                       <input
                         type="checkbox"
                         checked={hideFailedWorkers}
-                        onChange={(e) => setHideFailedWorkers(e.target.checked)}
+                        onChange={(e) =>
+                          setSearchParams(
+                            (prev) =>
+                              mergeSearchParams(prev, {
+                                [WORKSPACE_DETAIL_PARAM_KEYS.hideFailedWorkers]: e.target.checked
+                                  ? '1'
+                                  : null,
+                              }),
+                            { replace: true },
+                          )
+                        }
                       />
                       hide failed
                     </label>
@@ -1338,6 +1421,14 @@ const styles: Record<string, React.CSSProperties> = {
   },
   headerSep: { color: 'var(--border)', fontSize: '13px' },
   title: { fontWeight: 600, fontSize: '14px', color: 'var(--text)' },
+  errorBanner: {
+    padding: '10px 16px',
+    background: 'rgba(249, 112, 102, 0.12)',
+    borderBottom: '1px solid rgba(249, 112, 102, 0.32)',
+    color: '#fda29b',
+    fontSize: '13px',
+    flexShrink: 0,
+  },
   body: { display: 'flex', flex: 1, overflow: 'hidden' },
 
   // Sidebar

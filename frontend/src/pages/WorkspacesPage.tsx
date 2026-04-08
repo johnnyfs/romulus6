@@ -7,9 +7,26 @@ export default function WorkspacesPage() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [newName, setNewName] = useState('')
   const [creating, setCreating] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
 
   useEffect(() => {
-    listWorkspaces().then(setWorkspaces)
+    let cancelled = false
+
+    void listWorkspaces()
+      .then((items) => {
+        if (cancelled) return
+        setWorkspaces(items)
+        setLoadError(null)
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        setLoadError(error instanceof Error ? error.message : 'Failed to fetch workspaces')
+      })
+
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   async function handleCreate(e: React.FormEvent) {
@@ -17,18 +34,26 @@ export default function WorkspacesPage() {
     const trimmed = newName.trim()
     if (!trimmed) return
     setCreating(true)
+    setActionError(null)
     try {
       const ws = await createWorkspace(trimmed)
       setWorkspaces((prev) => [...prev, ws])
       setNewName('')
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Failed to create workspace')
     } finally {
       setCreating(false)
     }
   }
 
   async function handleDelete(id: string) {
-    await deleteWorkspace(id)
-    setWorkspaces((prev) => prev.filter((w) => w.id !== id))
+    setActionError(null)
+    try {
+      await deleteWorkspace(id)
+      setWorkspaces((prev) => prev.filter((w) => w.id !== id))
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Failed to delete workspace')
+    }
   }
 
   return (
@@ -48,6 +73,9 @@ export default function WorkspacesPage() {
             {creating ? 'Creating…' : 'Create'}
           </button>
         </form>
+
+        {loadError ? <p style={styles.error}>{loadError}</p> : null}
+        {actionError ? <p style={styles.error}>{actionError}</p> : null}
 
         <div style={styles.list}>
           {workspaces.length === 0 ? (
@@ -115,5 +143,10 @@ const styles: Record<string, React.CSSProperties> = {
   },
   empty: {
     color: 'var(--text-muted)',
+  },
+  error: {
+    margin: 0,
+    color: '#f97066',
+    fontSize: '14px',
   },
 }

@@ -621,8 +621,9 @@ def _materialize_subgraph(
         if tmpl_node.node_type in (
             SubgraphTemplateNodeType.agent,
             SubgraphTemplateNodeType.command,
+            SubgraphTemplateNodeType.view,
         ):
-            # Inline agent/command node — snapshot directly with arg substitution
+            # Inline agent/command/view node — snapshot directly with arg substitution
             rn = GraphRunNode(
                 run_id=child_run.id,
                 source_node_id=tmpl_node.id,

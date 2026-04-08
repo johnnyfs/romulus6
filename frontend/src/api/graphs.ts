@@ -1,6 +1,6 @@
 const BASE = '/api'
 
-export type NodeType = 'agent' | 'command' | 'task_template' | 'subgraph_template'
+export type NodeType = 'agent' | 'command' | 'task_template' | 'subgraph_template' | 'view'
 
 export interface OpenCodeAgentConfig {
   agent_type: 'opencode'
@@ -21,6 +21,16 @@ export interface CommandConfig {
   command: string
 }
 
+export interface ViewImage {
+  type: 'url' | 'sandbox_path'
+  url?: string
+  path?: string
+}
+
+export interface ViewConfig {
+  images: ViewImage[]
+}
+
 export interface GraphNode {
   id: string
   graph_id: string
@@ -28,6 +38,7 @@ export interface GraphNode {
   name: string | null
   agent_config: AgentConfig | null
   command_config: CommandConfig | null
+  view_config: ViewConfig | null
   task_template_id: string | null
   subgraph_template_id: string | null
   argument_bindings: Record<string, string> | null
@@ -69,6 +80,7 @@ export interface GraphRunNode {
   state: RunNodeState
   agent_config: AgentConfig | null
   command_config: CommandConfig | null
+  view_config: ViewConfig | null
   child_run_id: string | null
   output_schema: Record<string, string> | null
   output: Record<string, unknown> | null
@@ -141,6 +153,7 @@ export async function addNode(
   extra?: {
     agent_config?: AgentConfig
     command_config?: CommandConfig
+    view_config?: ViewConfig
     task_template_id?: string
     subgraph_template_id?: string
     argument_bindings?: Record<string, string>
@@ -204,6 +217,7 @@ export async function patchNode(
     node_type?: NodeType
     agent_config?: AgentConfig
     command_config?: CommandConfig
+    view_config?: ViewConfig
     task_template_id?: string
     subgraph_template_id?: string
     argument_bindings?: Record<string, string>
