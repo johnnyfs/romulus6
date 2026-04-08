@@ -329,6 +329,39 @@ test.describe('Task template materialization in runs', () => {
     }
   });
 
+  test('POST /runs materializes view task_template with images into a view run node', async ({ request }) => {
+    const wid = await createWorkspace(request);
+    try {
+      const tmpl = await createTaskTemplate(request, wid, {
+        name: 'view-run-tmpl',
+        task_type: 'view',
+        images: [{ type: 'url', url: 'https://example.com/a.png' }],
+      });
+
+      const graph = await createGraph(request, wid, {
+        name: 'mat-view-graph',
+        nodes: [
+          {
+            node_type: 'task_template',
+            task_template_id: tmpl.id,
+          },
+        ],
+        edges: [],
+      });
+
+      const run = await createRun(request, wid, graph.id);
+      const rn = run.run_nodes[0];
+      expect(rn.node_type).toBe('view');
+      expect(rn.agent_config).toBeNull();
+      expect(rn.command_config).toBeNull();
+      expect(rn.view_config).toEqual({
+        images: [{ type: 'url', url: 'https://example.com/a.png', path: null }],
+      });
+    } finally {
+      await deleteWorkspace(request, wid);
+    }
+  });
+
   test('POST /runs materializes mix of regular and template nodes', async ({ request }) => {
     const wid = await createWorkspace(request);
     try {
@@ -402,6 +435,54 @@ test.describe('Subgraph template materialization in runs', () => {
       expect(sgNode.node_type).toBe('subgraph');
       expect(sgNode.child_run_id).toMatch(UUID_RE);
       expect(sgNode.state).toBe('pending');
+    } finally {
+      await deleteWorkspace(request, wid);
+    }
+  });
+
+  test('PATCHed graph node changing from agent to subgraph_template clears stale config and child run remains fetchable', async ({ request }) => {
+    const wid = await createWorkspace(request);
+    try {
+      const sg = await createSubgraphTemplate(request, wid, { name: 'child-subgraph' });
+
+      const graph = await createGraph(request, wid, {
+        name: 'patched-subgraph-run',
+        nodes: [
+          {
+            node_type: 'agent',
+            name: 'mutable-node',
+            agent_config: {
+              agent_type: 'opencode',
+              model: 'anthropic/claude-haiku-4-5',
+              prompt: 'old config',
+            },
+          },
+        ],
+        edges: [],
+      });
+
+      const patchRes = await request.patch(`/api/v1/workspaces/${wid}/graphs/${graph.id}/nodes/${graph.nodes[0].id}`, {
+        data: {
+          node_type: 'subgraph_template',
+          subgraph_template_id: sg.id,
+        },
+      });
+      expect(patchRes.status()).toBe(200);
+      const patchedNode = await patchRes.json();
+      expect(patchedNode.node_type).toBe('subgraph_template');
+      expect(patchedNode.agent_config).toBeNull();
+      expect(patchedNode.command_config).toBeNull();
+      expect(patchedNode.subgraph_template_id).toBe(sg.id);
+
+      const run = await createRun(request, wid, graph.id);
+      expect(run.run_nodes).toHaveLength(1);
+      expect(run.run_nodes[0].node_type).toBe('subgraph');
+      expect(run.run_nodes[0].agent_config).toBeNull();
+      expect(run.run_nodes[0].child_run_id).toBeTruthy();
+
+      const childRun = await getRun(request, wid, run.run_nodes[0].child_run_id);
+      expect(childRun.id).toBe(run.run_nodes[0].child_run_id);
+      expect(childRun.source_template_id).toBe(sg.id);
     } finally {
       await deleteWorkspace(request, wid);
     }
@@ -747,6 +828,33 @@ test.describe('Subgraph templates with inline agent/command nodes', () => {
       expect(sg.nodes[0].agent_config).toMatchObject({
         agent_type: 'opencode',
         prompt: 'do work',
+      });
+    } finally {
+      await deleteWorkspace(request, wid);
+    }
+  });
+
+  test('POST /subgraph-templates creates with inline view node', async ({ request }) => {
+    const wid = await createWorkspace(request);
+    try {
+      const sg = await createSubgraphTemplate(request, wid, {
+        name: 'inline-view-subgraph',
+        nodes: [
+          {
+            node_type: 'view',
+            name: 'preview',
+            view_config: {
+              images: [{ type: 'url', url: 'https://example.com/preview.png' }],
+            },
+          },
+        ],
+        edges: [],
+      });
+
+      expect(sg.nodes).toHaveLength(1);
+      expect(sg.nodes[0].node_type).toBe('view');
+      expect(sg.nodes[0].view_config).toEqual({
+        images: [{ type: 'url', url: 'https://example.com/preview.png', path: null }],
       });
     } finally {
       await deleteWorkspace(request, wid);

@@ -15,6 +15,7 @@ from app.services import graphs as svc
 from app.services import graph_transfer as transfer_svc
 from app.services import runs as run_svc
 from app.services.graphs import EdgeInput, NodeInput
+from app.services.node_shapes import UNSET, is_agent_node_type, is_command_node_type
 
 router = APIRouter(
     prefix="/workspaces/{workspace_id}/graphs",
@@ -210,6 +211,8 @@ def _require_graph(
 
 
 def _agent_config_from(obj: Any) -> Optional[AgentConfig]:
+    if not is_agent_node_type(getattr(obj, "node_type", None)):
+        return None
     if obj.agent_type is None:
         return None
     if obj.agent_type == "pydantic":
@@ -230,6 +233,8 @@ def _agent_config_from(obj: Any) -> Optional[AgentConfig]:
 
 
 def _command_config_from(obj: Any) -> Optional[CommandConfig]:
+    if not is_command_node_type(getattr(obj, "node_type", None)):
+        return None
     if obj.command is None:
         return None
     return CommandConfig(command=obj.command)
@@ -321,6 +326,7 @@ def _run_response(run: Any) -> GraphRunResponse:
         state=run.state,
         sandbox_id=run.sandbox_id,
         parent_run_node_id=getattr(run, "parent_run_node_id", None),
+        source_template_id=getattr(run, "source_template_id", None),
         created_at=run.created_at,
         run_nodes=[_run_node_response(rn) for rn in run.run_nodes],
         run_edges=[GraphRunEdgeResponse.model_validate(re) for re in run.run_edges],
@@ -534,16 +540,16 @@ def patch_node(
             node_id=node_id,
             name=body.name,
             node_type=body.node_type,
-            agent_type=ac.agent_type if ac else None,
-            model=ac.model.value if ac else None,
-            prompt=ac.prompt if ac else None,
-            command=cc.command if cc else None,
-            graph_tools=getattr(ac, "graph_tools", None) if ac else None,
-            task_template_id=body.task_template_id,
-            subgraph_template_id=body.subgraph_template_id,
+            agent_type=ac.agent_type if ac else UNSET,
+            model=ac.model.value if ac else UNSET,
+            prompt=ac.prompt if ac else UNSET,
+            command=cc.command if cc else UNSET,
+            graph_tools=getattr(ac, "graph_tools", None) if ac else UNSET,
+            task_template_id=body.task_template_id if body.task_template_id is not None else UNSET,
+            subgraph_template_id=body.subgraph_template_id if body.subgraph_template_id is not None else UNSET,
             argument_bindings=body.argument_bindings,
             output_schema=body.output_schema,
-            images=images,
+            images=images if vc is not None or isinstance(ac, PydanticAgentConfig) else UNSET,
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))

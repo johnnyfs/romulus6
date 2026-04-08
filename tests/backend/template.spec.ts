@@ -74,6 +74,22 @@ test.describe('Task Template API', () => {
     }
   });
 
+  test('POST /task-templates rejects template-realizing task types', async ({ request }) => {
+    const wid = await createWorkspace(request);
+    try {
+      const res = await request.post(`/api/v1/workspaces/${wid}/task-templates`, {
+        data: {
+          name: 'bad-template',
+          task_type: 'subgraph_template',
+        },
+      });
+      expect(res.status()).toBe(422);
+      expect(await res.text()).toContain('task templates may only realize concrete node types');
+    } finally {
+      await deleteWorkspace(request, wid);
+    }
+  });
+
   test('GET /task-templates lists task templates', async ({ request }) => {
     const wid = await createWorkspace(request);
     try {
@@ -419,6 +435,8 @@ test.describe('Subgraph Template API', () => {
       expect(patchRes.status()).toBe(200);
       const patched = await patchRes.json();
       expect(patched.node_type).toBe('view');
+      expect(patched.agent_config).toBeNull();
+      expect(patched.command_config).toBeNull();
       expect(patched.view_config).toEqual({
         images: [
           { type: 'url', url: '{{ asset_path }}', path: null },

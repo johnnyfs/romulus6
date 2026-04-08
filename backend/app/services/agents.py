@@ -147,13 +147,7 @@ def set_agent_dismissed(
         sandbox_svc.delete_sandbox(session, workspace_id, agent.sandbox_id)
         agent.sandbox_id = None
         agent.session_id = None
-        if agent.status in {
-            AgentStatus.starting,
-            AgentStatus.busy,
-            AgentStatus.idle,
-            AgentStatus.waiting,
-        }:
-            agent.status = AgentStatus.interrupted
+        agent.status = AgentStatus.interrupted
     agent.dismissed = dismissed
     agent.updated_at = datetime.datetime.utcnow()
     session.add(agent)

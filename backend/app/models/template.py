@@ -20,12 +20,7 @@ class TemplateArgType(str, Enum):
     enum = "enum"
 
 
-class SubgraphTemplateNodeType(str, Enum):
-    agent = "agent"
-    command = "command"
-    task_template = "task_template"
-    subgraph_template = "subgraph_template"
-    view = "view"
+SubgraphTemplateNodeType = NodeType
 
 
 # ── Task Templates ───────────────────────────────────────────────────────────

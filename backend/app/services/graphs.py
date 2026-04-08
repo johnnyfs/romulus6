@@ -18,6 +18,7 @@ from app.models.template import (
     TaskTemplateArgument,
     TemplateArgType,
 )
+from app.services.node_shapes import UNSET, normalized_node_field_values
 from app.utils.output_schema import validate_output_schema_definition
 
 
@@ -383,10 +384,9 @@ def add_node(
     bindings_json = json.dumps(argument_bindings) if argument_bindings else None
     output_schema_json = json.dumps(output_schema) if output_schema else None
     images_json = json.dumps(images) if images else None
-    node = GraphNode(
-        graph_id=graph.id,
-        node_type=node_type,
-        name=name,
+    normalized = normalized_node_field_values(
+        node_type,
+        subgraph_ref_field="subgraph_template_id",
         agent_type=agent_type,
         model=model,
         prompt=prompt,
@@ -395,8 +395,22 @@ def add_node(
         task_template_id=task_template_id,
         subgraph_template_id=subgraph_template_id,
         argument_bindings=bindings_json,
-        output_schema=output_schema_json,
         images=images_json,
+    )
+    node = GraphNode(
+        graph_id=graph.id,
+        node_type=node_type,
+        name=name,
+        agent_type=normalized["agent_type"],
+        model=normalized["model"],
+        prompt=normalized["prompt"],
+        command=normalized["command"],
+        graph_tools=normalized["graph_tools"],
+        task_template_id=normalized["task_template_id"],
+        subgraph_template_id=normalized["subgraph_template_id"],
+        argument_bindings=normalized["argument_bindings"],
+        output_schema=output_schema_json,
+        images=normalized["images"],
     )
     session.add(node)
     session.commit()
@@ -440,26 +454,39 @@ def patch_node(
         node.name = name
     if node_type is not None:
         node.node_type = node_type
-    if agent_type is not None:
-        node.agent_type = agent_type
-    if model is not None:
-        node.model = model
-    if prompt is not None:
-        node.prompt = prompt
-    if command is not None:
-        node.command = command
-    if graph_tools is not None:
-        node.graph_tools = graph_tools
-    if task_template_id is not None:
-        node.task_template_id = task_template_id
-    if subgraph_template_id is not None:
-        node.subgraph_template_id = subgraph_template_id
-    if argument_bindings is not None:
-        node.argument_bindings = json.dumps(argument_bindings)
+    normalized = normalized_node_field_values(
+        effective_type,
+        current=node,
+        subgraph_ref_field="subgraph_template_id",
+        agent_type=agent_type,
+        model=model,
+        prompt=prompt,
+        command=command,
+        graph_tools=graph_tools,
+        task_template_id=task_template_id,
+        subgraph_template_id=subgraph_template_id,
+        argument_bindings=(
+            json.dumps(argument_bindings)
+            if argument_bindings is not UNSET and argument_bindings is not None
+            else argument_bindings
+        ),
+        images=(
+            json.dumps(images)
+            if images is not UNSET and images is not None
+            else images
+        ),
+    )
+    node.agent_type = normalized["agent_type"]
+    node.model = normalized["model"]
+    node.prompt = normalized["prompt"]
+    node.command = normalized["command"]
+    node.graph_tools = normalized["graph_tools"]
+    node.task_template_id = normalized["task_template_id"]
+    node.subgraph_template_id = normalized["subgraph_template_id"]
+    node.argument_bindings = normalized["argument_bindings"]
     if output_schema is not None:
         node.output_schema = json.dumps(output_schema)
-    if images is not None:
-        node.images = json.dumps(images)
+    node.images = normalized["images"]
     session.add(node)
     session.commit()
     session.refresh(node)

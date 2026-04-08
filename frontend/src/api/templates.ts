@@ -3,7 +3,7 @@ import type { AgentConfig, CommandConfig, NodeType, ViewConfig } from './graphs'
 const BASE = '/api'
 
 export type TaskTemplateArgType = 'string' | 'model_type' | 'boolean' | 'number' | 'enum'
-export type SubgraphTemplateNodeType = 'agent' | 'command' | 'task_template' | 'subgraph_template' | 'view'
+export type SubgraphTemplateNodeType = NodeType
 
 export interface TaskTemplateArgument {
   id: string
@@ -29,6 +29,8 @@ export interface TaskTemplate {
   command: string | null
   graph_tools: boolean
   arguments: TaskTemplateArgument[]
+  output_schema?: Record<string, string> | null
+  images?: ViewConfig['images'] | null
   created_at: string
   updated_at: string
 }
@@ -44,6 +46,7 @@ export interface SubgraphTemplateNode {
   task_template_id: string | null
   ref_subgraph_template_id: string | null
   argument_bindings: Record<string, string> | null
+  output_schema?: Record<string, string> | null
   created_at: string
 }
 
@@ -68,6 +71,7 @@ export interface SubgraphTemplateDetail extends SubgraphTemplate {
   nodes: SubgraphTemplateNode[]
   edges: SubgraphTemplateEdge[]
   arguments: TaskTemplateArgument[]
+  output_schema?: Record<string, string> | null
 }
 
 async function _check(res: Response): Promise<Response> {
@@ -159,9 +163,10 @@ export async function createSubgraphTemplate(
   body: {
     name: string
     label?: string
-    nodes?: { node_type: SubgraphTemplateNodeType; name?: string; task_template_id?: string; ref_subgraph_template_id?: string; argument_bindings?: Record<string, string> }[]
+    nodes?: { node_type: SubgraphTemplateNodeType; name?: string; agent_config?: AgentConfig; command_config?: CommandConfig; view_config?: ViewConfig; task_template_id?: string; ref_subgraph_template_id?: string; argument_bindings?: Record<string, string>; output_schema?: Record<string, string> }[]
     edges?: { from_index: number; to_index: number }[]
     arguments?: { name: string; arg_type?: TaskTemplateArgType; default_value?: string; model_constraint?: string[]; min_value?: number; max_value?: number; enum_options?: string[] }[]
+    output_schema?: Record<string, string>
   },
 ): Promise<SubgraphTemplateDetail> {
   const res = await fetch(`${BASE}/workspaces/${workspaceId}/subgraph-templates`, {
@@ -185,9 +190,10 @@ export async function updateSubgraphTemplate(
   body: {
     name: string
     label?: string
-    nodes?: { node_type: SubgraphTemplateNodeType; name?: string; task_template_id?: string; ref_subgraph_template_id?: string; argument_bindings?: Record<string, string> }[]
+    nodes?: { node_type: SubgraphTemplateNodeType; name?: string; agent_config?: AgentConfig; command_config?: CommandConfig; view_config?: ViewConfig; task_template_id?: string; ref_subgraph_template_id?: string; argument_bindings?: Record<string, string>; output_schema?: Record<string, string> }[]
     edges?: { from_index: number; to_index: number }[]
     arguments?: { name: string; arg_type?: TaskTemplateArgType; default_value?: string; model_constraint?: string[]; min_value?: number; max_value?: number; enum_options?: string[] }[]
+    output_schema?: Record<string, string>
   },
 ): Promise<SubgraphTemplateDetail> {
   const res = await fetch(`${BASE}/workspaces/${workspaceId}/subgraph-templates/${templateId}`, {
@@ -209,7 +215,7 @@ export async function deleteSubgraphTemplate(workspaceId: string, templateId: st
 export async function addSubgraphTemplateNode(
   workspaceId: string,
   templateId: string,
-  body: { node_type: SubgraphTemplateNodeType; name?: string; agent_config?: AgentConfig; command_config?: CommandConfig; view_config?: ViewConfig; task_template_id?: string; ref_subgraph_template_id?: string; argument_bindings?: Record<string, string> },
+  body: { node_type: SubgraphTemplateNodeType; name?: string; agent_config?: AgentConfig; command_config?: CommandConfig; view_config?: ViewConfig; task_template_id?: string; ref_subgraph_template_id?: string; argument_bindings?: Record<string, string>; output_schema?: Record<string, string> },
 ): Promise<SubgraphTemplateNode> {
   const res = await fetch(`${BASE}/workspaces/${workspaceId}/subgraph-templates/${templateId}/nodes`, {
     method: 'POST',
@@ -224,7 +230,7 @@ export async function patchSubgraphTemplateNode(
   workspaceId: string,
   templateId: string,
   nodeId: string,
-  patch: { name?: string; node_type?: SubgraphTemplateNodeType; agent_config?: AgentConfig; command_config?: CommandConfig; view_config?: ViewConfig; task_template_id?: string; ref_subgraph_template_id?: string; argument_bindings?: Record<string, string> },
+  patch: { name?: string; node_type?: SubgraphTemplateNodeType; agent_config?: AgentConfig; command_config?: CommandConfig; view_config?: ViewConfig; task_template_id?: string; ref_subgraph_template_id?: string; argument_bindings?: Record<string, string>; output_schema?: Record<string, string> },
 ): Promise<SubgraphTemplateNode> {
   const res = await fetch(`${BASE}/workspaces/${workspaceId}/subgraph-templates/${templateId}/nodes/${nodeId}`, {
     method: 'PATCH',

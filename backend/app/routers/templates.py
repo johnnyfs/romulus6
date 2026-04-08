@@ -16,6 +16,7 @@ from app.models.template import (
 )
 from app.models.workspace import Workspace
 from app.services import templates as svc
+from app.services.node_shapes import UNSET, is_agent_node_type, is_command_node_type
 from app.services.templates import ArgumentInput, SubgraphEdgeInput, SubgraphNodeInput
 
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -192,21 +193,24 @@ def create_task_template(
 ) -> Any:
     _require_workspace(workspace_id, session)
     images = [img.model_dump(mode="json") for img in body.images] if body.images else None
-    tmpl = svc.create_task_template(
-        session,
-        workspace_id=workspace_id,
-        name=body.name,
-        task_type=body.task_type,
-        agent_type=body.agent_type,
-        model=body.model,
-        prompt=body.prompt,
-        command=body.command,
-        graph_tools=body.graph_tools,
-        label=body.label,
-        arguments=_to_arg_inputs(body.arguments),
-        output_schema=body.output_schema,
-        images=images,
-    )
+    try:
+        tmpl = svc.create_task_template(
+            session,
+            workspace_id=workspace_id,
+            name=body.name,
+            task_type=body.task_type,
+            agent_type=body.agent_type,
+            model=body.model,
+            prompt=body.prompt,
+            command=body.command,
+            graph_tools=body.graph_tools,
+            label=body.label,
+            arguments=_to_arg_inputs(body.arguments),
+            output_schema=body.output_schema,
+            images=images,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
     return _task_tmpl_response(tmpl)
 
 
@@ -237,21 +241,24 @@ def update_task_template(
     if tmpl is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task template not found")
     images = [img.model_dump(mode="json") for img in body.images] if body.images else None
-    tmpl = svc.update_task_template(
-        session,
-        tmpl=tmpl,
-        name=body.name,
-        task_type=body.task_type,
-        agent_type=body.agent_type,
-        model=body.model,
-        prompt=body.prompt,
-        command=body.command,
-        graph_tools=body.graph_tools,
-        label=body.label,
-        arguments=_to_arg_inputs(body.arguments),
-        output_schema=body.output_schema,
-        images=images,
-    )
+    try:
+        tmpl = svc.update_task_template(
+            session,
+            tmpl=tmpl,
+            name=body.name,
+            task_type=body.task_type,
+            agent_type=body.agent_type,
+            model=body.model,
+            prompt=body.prompt,
+            command=body.command,
+            graph_tools=body.graph_tools,
+            label=body.label,
+            arguments=_to_arg_inputs(body.arguments),
+            output_schema=body.output_schema,
+            images=images,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
     return _task_tmpl_response(tmpl)
 
 
@@ -282,6 +289,7 @@ class SubgraphNodeInputSchema(BaseModel):
     # For agent/command inline nodes
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
+    view_config: Optional["ViewConfig"] = None
     # For task_template/subgraph_template reference nodes
     task_template_id: Optional[uuid.UUID] = None
     ref_subgraph_template_id: Optional[uuid.UUID] = None
@@ -392,6 +400,8 @@ class SubgraphTemplateListResponse(BaseModel):
 # --- Helpers ---
 
 def _agent_config_from(obj: Any) -> Optional[AgentConfig]:
+    if not is_agent_node_type(getattr(obj, "node_type", None)):
+        return None
     if obj.agent_type is None:
         return None
     if obj.agent_type == "pydantic":
@@ -412,6 +422,8 @@ def _agent_config_from(obj: Any) -> Optional[AgentConfig]:
 
 
 def _command_config_from(obj: Any) -> Optional[CommandConfig]:
+    if not is_command_node_type(getattr(obj, "node_type", None)):
+        return None
     if obj.command is None:
         return None
     return CommandConfig(command=obj.command)
@@ -639,16 +651,16 @@ def patch_subgraph_node(
             node_id=node_id,
             name=body.name,
             node_type=body.node_type,
-            agent_type=ac.agent_type if ac else None,
-            model=ac.model.value if ac and ac.model else None,
-            prompt=ac.prompt if ac else None,
-            command=cc.command if cc else None,
-            graph_tools=getattr(ac, "graph_tools", None) if ac else None,
-            task_template_id=body.task_template_id,
-            ref_subgraph_template_id=body.ref_subgraph_template_id,
+            agent_type=ac.agent_type if ac else UNSET,
+            model=ac.model.value if ac and ac.model else UNSET,
+            prompt=ac.prompt if ac else UNSET,
+            command=cc.command if cc else UNSET,
+            graph_tools=getattr(ac, "graph_tools", None) if ac else UNSET,
+            task_template_id=body.task_template_id if body.task_template_id is not None else UNSET,
+            ref_subgraph_template_id=body.ref_subgraph_template_id if body.ref_subgraph_template_id is not None else UNSET,
             argument_bindings=body.argument_bindings,
             output_schema=body.output_schema,
-            images=images,
+            images=images if vc is not None or isinstance(ac, PydanticAgentConfig) else UNSET,
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
