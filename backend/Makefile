@@ -1,0 +1,2 @@
+check:
+	uv run pytest

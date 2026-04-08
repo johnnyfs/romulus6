@@ -46,6 +46,41 @@ export default tool({
 """
 
 
+def _persist_run_node_event(
+    session: Session,
+    run: GraphRun,
+    node: GraphRunNode,
+    event_type: str,
+    *,
+    data: dict[str, Any] | None = None,
+    worker_id: uuid.UUID | None = None,
+) -> None:
+    event_svc.persist_event(
+        session,
+        workspace_id=run.workspace_id,
+        source_type="run",
+        source_id=str(node.id),
+        payload={
+            "id": str(uuid.uuid4()),
+            "type": event_type,
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "data": {
+                "node_type": node.node_type,
+                "node_state": node.state,
+                "attempt": node.attempt,
+                **(data or {}),
+            },
+        },
+        source_name=node.name,
+        session_id=node.session_id,
+        agent_id=node.agent_id,
+        run_id=run.id,
+        node_id=node.id,
+        sandbox_id=run.sandbox_id,
+        worker_id=worker_id,
+    )
+
+
 def _build_predecessor_context(session: Session, run: GraphRun, node: GraphRunNode) -> dict[str, Any]:
     """Build Jinja2 context from completed predecessor nodes."""
     predecessor_ids = {
@@ -56,7 +91,7 @@ def _build_predecessor_context(session: Session, run: GraphRun, node: GraphRunNo
         pred = session.get(GraphRunNode, pred_id)
         if pred and pred.state == "completed" and pred.name:
             slug = slugify(pred.name)
-            output_data = json.loads(pred.output) if pred.output else {}
+            output_data = pred.output or {}
             context[slug] = {**output_data, "output": output_data}
     return context
 
@@ -73,12 +108,16 @@ def _resolve_output_references(session: Session, run: GraphRun, node: GraphRunNo
     return _jinja_env.from_string(text).render(context)
 
 
-def _resolve_image_references(session: Session, run: GraphRun, node: GraphRunNode) -> str | None:
+def _resolve_image_references(
+    session: Session,
+    run: GraphRun,
+    node: GraphRunNode,
+) -> list[dict[str, Any]] | None:
     """Resolve {{ slug.field }} references in image URLs/paths using completed predecessors."""
     if not node.images:
         return node.images
 
-    images = json.loads(node.images)
+    images = node.images
     has_templates = any(
         "{{" in (img.get("url", "") or img.get("path", "") or "")
         for img in images
@@ -98,7 +137,7 @@ def _resolve_image_references(session: Session, run: GraphRun, node: GraphRunNod
             new_img["path"] = _jinja_env.from_string(img["path"]).render(context)
         resolved.append(new_img)
 
-    return json.dumps(resolved)
+    return resolved
 
 
 def _collect_child_run_output(session: Session, run: GraphRun) -> dict | None:
@@ -109,12 +148,12 @@ def _collect_child_run_output(session: Session, run: GraphRun) -> dict | None:
         return None
     # Single leaf: use its output directly
     if len(leaf_nodes) == 1 and leaf_nodes[0].output:
-        return json.loads(leaf_nodes[0].output)
+        return leaf_nodes[0].output
     # Multiple leaves: merge keyed by slugified node name
     merged: dict = {}
     for leaf in leaf_nodes:
         if leaf.output:
-            leaf_data = json.loads(leaf.output)
+            leaf_data = leaf.output
             if leaf.name:
                 merged[slugify(leaf.name)] = leaf_data
             else:
@@ -290,12 +329,10 @@ async def _read_sandbox_file_base64(worker_url: str, path: str) -> str:
 
 
 async def _resolve_images(
-    worker_url: str, images_json: str | None
+    worker_url: str,
+    images: list[dict[str, Any]] | None,
 ) -> list[dict[str, str]] | None:
     """Resolve image attachments, reading sandbox files as base64."""
-    if not images_json:
-        return None
-    images = json.loads(images_json)
     if not images:
         return None
     resolved = []
@@ -456,6 +493,7 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
                 node.updated_at = datetime.datetime.utcnow()
                 session.add(node)
                 session.commit()
+                _persist_run_node_event(session, run, node, "run.node.running")
                 if node.child_run_id:
                     enqueue_run(session, node.child_run_id, reason="parent node unblocked")
                 continue
@@ -465,10 +503,11 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
                 node.updated_at = datetime.datetime.utcnow()
                 session.add(node)
                 session.commit()
+                _persist_run_node_event(session, run, node, "run.node.dispatching")
                 # Only need a worker if images reference sandbox paths
                 needs_worker = False
                 if node.images:
-                    for img in json.loads(node.images):
+                    for img in node.images:
                         if img.get("type") == "sandbox_path":
                             needs_worker = True
                             break
@@ -485,6 +524,7 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
             node.updated_at = datetime.datetime.utcnow()
             session.add(node)
             session.commit()
+            _persist_run_node_event(session, run, node, "run.node.dispatching")
             if worker is None:
                 worker = _ensure_run_sandbox_worker(session, run)
                 if worker is None:
@@ -559,8 +599,11 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
         try:
             await _ensure_workspace_dir(worker.worker_url, workspace_dir)
             if node.graph_tools and node.agent_type != "pydantic":
-                schema = json.loads(node.output_schema) if node.output_schema else None
-                await _place_tool_file(worker.worker_url, workspace_dir, output_schema=schema)
+                await _place_tool_file(
+                    worker.worker_url,
+                    workspace_dir,
+                    output_schema=node.output_schema,
+                )
 
             agent = Agent(
                 workspace_id=run.workspace_id,
@@ -585,8 +628,9 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
                     "you MUST call the `mark_node_complete` tool to signal completion."
                 )
                 if node.output_schema:
-                    schema = json.loads(node.output_schema)
-                    fields_desc = ", ".join(f'"{k}" ({v})' for k, v in schema.items())
+                    fields_desc = ", ".join(
+                        f'"{k}" ({v})' for k, v in node.output_schema.items()
+                    )
                     dispatch_prompt += (
                         f"\n\nWhen calling mark_node_complete, you MUST pass an 'output' "
                         f"object with these fields: {fields_desc}."
@@ -603,7 +647,7 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
                     "prompt": dispatch_prompt,
                     "agent_type": node.agent_type,
                     "model": node.model,
-                    "output_schema": json.loads(node.output_schema) if node.output_schema else None,
+                    "output_schema": node.output_schema,
                     "workspace_name": str(run.workspace_id),
                     "graph_tools": node.graph_tools,
                     "workspace_id": str(run.workspace_id),
@@ -622,6 +666,17 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
             session.add(agent)
             session.add(node)
             session.commit()
+            _persist_run_node_event(
+                session,
+                run,
+                node,
+                "run.node.running",
+                data={
+                    "agent_id": str(agent.id),
+                    "session_id": agent.session_id,
+                },
+                worker_id=worker.id,
+            )
         except Exception:
             logger.exception("failed to dispatch agent node %s", node_id)
             fail_node_and_run(session, run_id, node_id, "agent dispatch failed")
@@ -642,6 +697,13 @@ async def _dispatch_command_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_i
         node.updated_at = datetime.datetime.utcnow()
         session.add(node)
         session.commit()
+        _persist_run_node_event(
+            session,
+            run,
+            node,
+            "run.node.running",
+            worker_id=worker.id,
+        )
 
         try:
             resolved_command = _resolve_output_references(session, run, node) or node.command
@@ -701,6 +763,13 @@ async def _dispatch_view_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id: 
         node.updated_at = datetime.datetime.utcnow()
         session.add(node)
         session.commit()
+        _persist_run_node_event(
+            session,
+            run,
+            node,
+            "run.node.running",
+            worker_id=worker_id,
+        )
 
         try:
             resolved_images_json = _resolve_image_references(session, run, node)
@@ -713,13 +782,12 @@ async def _dispatch_view_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id: 
 
             resolved_images: list[dict] = []
             if resolved_images_json:
-                parsed = json.loads(resolved_images_json)
                 if worker_url:
                     resolved_images = await _resolve_images(worker_url, resolved_images_json) or []
                 else:
                     # Without a worker, keep URL images as-is, skip sandbox_path
                     resolved_images = [
-                        img for img in parsed if img.get("type") == "url"
+                        img for img in resolved_images_json if img.get("type") == "url"
                     ]
 
             event_svc.persist_event(
@@ -758,16 +826,25 @@ def complete_node(
     node = session.get(GraphRunNode, node_id)
     if node is None or node.state == "completed" or node.next_attempt_run_node_id is not None:
         return
-    schema = json.loads(node.output_schema) if node.output_schema else None
+    schema = node.output_schema
     if output is None and node.output is not None:
-        output = json.loads(node.output)
+        output = node.output
     validate_output_against_schema(output, schema)
     if output is not None:
-        node.output = json.dumps(output)
+        node.output = output
     node.state = "completed"
     node.updated_at = datetime.datetime.utcnow()
     session.add(node)
     session.commit()
+    run = session.get(GraphRun, run_id)
+    if run is not None:
+        _persist_run_node_event(
+            session,
+            run,
+            node,
+            "run.node.completed",
+            data={"output": output},
+        )
     enqueue_run(session, run_id, reason="node completed")
 
 
@@ -795,6 +872,21 @@ def fail_node_and_run(
         _create_retry_attempt(session, run, node)
         _resume_run_if_terminal(session, run)
         session.commit()
+        if run is not None:
+            _persist_run_node_event(
+                session,
+                run,
+                node,
+                "run.node.retry_scheduled",
+                data={
+                    "reason": reason,
+                    "next_attempt_run_node_id": (
+                        str(node.next_attempt_run_node_id)
+                        if node.next_attempt_run_node_id
+                        else None
+                    ),
+                },
+            )
         enqueue_run(session, run_id, reason=f"node retry scheduled: {reason}")
         return
     if node is not None and node.state != "error":
@@ -806,6 +898,14 @@ def fail_node_and_run(
         run.updated_at = datetime.datetime.utcnow()
         session.add(run)
     session.commit()
+    if node is not None and run is not None:
+        _persist_run_node_event(
+            session,
+            run,
+            node,
+            "run.node.failed",
+            data={"reason": reason},
+        )
     if release_lease and run is not None:
         _maybe_release_run_sandbox(session, run, failure_reason=reason)
 

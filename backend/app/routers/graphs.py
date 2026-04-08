@@ -1,4 +1,5 @@
 import datetime
+import json
 import uuid
 from typing import Annotated, Any, Optional
 
@@ -7,15 +8,22 @@ from pydantic import BaseModel
 from sqlmodel import Session
 
 from app.database import get_session
-from app.models.agent import AgentConfig, CommandConfig, ImageAttachment, OpenCodeAgentConfig, PydanticAgentConfig
+from app.models.agent import AgentConfig, CommandConfig, PydanticAgentConfig
 from app.models.graph import Graph, NodeType
 from app.models.run import GraphRun
+from app.models.structured_fields import ViewConfig
 from app.models.workspace import Workspace
-from app.services import graphs as svc
 from app.services import graph_transfer as transfer_svc
+from app.services import graphs as svc
 from app.services import runs as run_svc
 from app.services.graphs import EdgeInput, NodeInput
-from app.services.node_shapes import UNSET, is_agent_node_type, is_command_node_type
+from app.services.node_configs import (
+    agent_config_from_node,
+    command_config_from_node,
+    image_payloads_from_configs,
+    view_config_from_node,
+)
+from app.services.node_shapes import UNSET
 
 router = APIRouter(
     prefix="/workspaces/{workspace_id}/graphs",
@@ -26,10 +34,6 @@ SessionDep = Annotated[Session, Depends(get_session)]
 
 
 # --- Request schemas ---
-
-class ViewConfig(BaseModel):
-    images: list[ImageAttachment] = []
-
 
 class NodeInputSchema(BaseModel):
     node_type: NodeType
@@ -210,54 +214,12 @@ def _require_graph(
     return graph
 
 
-def _agent_config_from(obj: Any) -> Optional[AgentConfig]:
-    if not is_agent_node_type(getattr(obj, "node_type", None)):
-        return None
-    if obj.agent_type is None:
-        return None
-    if obj.agent_type == "pydantic":
-        images_raw = _parse_json_field(obj, "images")
-        images = [ImageAttachment(**img) for img in images_raw] if images_raw else []
-        return PydanticAgentConfig(
-            agent_type=obj.agent_type,
-            model=obj.model,
-            prompt=obj.prompt,
-            images=images,
-        )
-    return OpenCodeAgentConfig(
-        agent_type=obj.agent_type,
-        model=obj.model,
-        prompt=obj.prompt,
-        graph_tools=getattr(obj, "graph_tools", False),
-    )
-
-
-def _command_config_from(obj: Any) -> Optional[CommandConfig]:
-    if not is_command_node_type(getattr(obj, "node_type", None)):
-        return None
-    if obj.command is None:
-        return None
-    return CommandConfig(command=obj.command)
-
-
-def _view_config_from(obj: Any) -> Optional[ViewConfig]:
-    node_type = getattr(obj, "node_type", None)
-    if isinstance(node_type, NodeType):
-        node_type = node_type.value
-    if node_type != "view":
-        return None
-    images_raw = _parse_json_field(obj, "images")
-    images = [ImageAttachment(**img) for img in images_raw] if images_raw else []
-    return ViewConfig(images=images)
-
-
-def _parse_json_field(obj: Any, field: str) -> Optional[dict]:
+def _parse_json_field(obj: Any, field: str) -> Any:
     raw = getattr(obj, field, None)
     if raw is None:
         return None
-    if isinstance(raw, dict):
+    if isinstance(raw, (dict, list)):
         return raw
-    import json
     return json.loads(raw)
 
 
@@ -271,9 +233,9 @@ def _node_response(n: Any) -> GraphNodeResponse:
         graph_id=n.graph_id,
         node_type=n.node_type,
         name=n.name,
-        agent_config=_agent_config_from(n),
-        command_config=_command_config_from(n),
-        view_config=_view_config_from(n),
+        agent_config=agent_config_from_node(n),
+        command_config=command_config_from_node(n),
+        view_config=view_config_from_node(n),
         task_template_id=getattr(n, "task_template_id", None),
         subgraph_template_id=getattr(n, "subgraph_template_id", None),
         argument_bindings=_parse_bindings(n),
@@ -294,9 +256,9 @@ def _run_node_response(rn: Any) -> GraphRunNodeResponse:
         node_type=rn.node_type,
         name=rn.name,
         state=rn.state,
-        agent_config=_agent_config_from(rn),
-        command_config=_command_config_from(rn),
-        view_config=_view_config_from(rn),
+        agent_config=agent_config_from_node(rn),
+        command_config=command_config_from_node(rn),
+        view_config=view_config_from_node(rn),
         agent_id=rn.agent_id,
         session_id=rn.session_id,
         child_run_id=getattr(rn, "child_run_id", None),
@@ -337,11 +299,6 @@ def _node_input(n: NodeInputSchema) -> NodeInput:
     ac = n.agent_config
     cc = n.command_config
     vc = n.view_config
-    images = None
-    if isinstance(ac, PydanticAgentConfig) and ac.images:
-        images = [img.model_dump(mode="json") for img in ac.images]
-    elif vc and vc.images:
-        images = [img.model_dump(mode="json") for img in vc.images]
     return NodeInput(
         node_type=n.node_type,
         name=n.name,
@@ -354,7 +311,7 @@ def _node_input(n: NodeInputSchema) -> NodeInput:
         subgraph_template_id=n.subgraph_template_id,
         argument_bindings=n.argument_bindings,
         output_schema=n.output_schema,
-        images=images,
+        images=image_payloads_from_configs(ac, vc),
     )
 
 
@@ -469,11 +426,6 @@ def add_node(
     ac = body.agent_config
     cc = body.command_config
     vc = body.view_config
-    images = None
-    if isinstance(ac, PydanticAgentConfig) and ac.images:
-        images = [img.model_dump(mode="json") for img in ac.images]
-    elif vc and vc.images:
-        images = [img.model_dump(mode="json") for img in vc.images]
     try:
         node = svc.add_node(
             session,
@@ -489,7 +441,7 @@ def add_node(
             subgraph_template_id=body.subgraph_template_id,
             argument_bindings=body.argument_bindings,
             output_schema=body.output_schema,
-            images=images,
+            images=image_payloads_from_configs(ac, vc),
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
@@ -528,11 +480,6 @@ def patch_node(
     ac = body.agent_config
     cc = body.command_config
     vc = body.view_config
-    images = None
-    if isinstance(ac, PydanticAgentConfig) and ac.images:
-        images = [img.model_dump(mode="json") for img in ac.images]
-    elif vc and vc.images:
-        images = [img.model_dump(mode="json") for img in vc.images]
     try:
         node = svc.patch_node(
             session,
@@ -549,7 +496,11 @@ def patch_node(
             subgraph_template_id=body.subgraph_template_id if body.subgraph_template_id is not None else UNSET,
             argument_bindings=body.argument_bindings,
             output_schema=body.output_schema,
-            images=images if vc is not None or isinstance(ac, PydanticAgentConfig) else UNSET,
+            images=(
+                image_payloads_from_configs(ac, vc)
+                if vc is not None or isinstance(ac, PydanticAgentConfig)
+                else UNSET
+            ),
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))

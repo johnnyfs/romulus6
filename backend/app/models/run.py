@@ -5,6 +5,13 @@ from sqlalchemy import Column, ForeignKey, String
 from sqlmodel import Field, Relationship
 
 from .base import RomulusBase
+from .json_column import validated_json_column
+from .structured_fields import (
+    ImageAttachmentSchema,
+    ImagePayloadList,
+    NodeOutputPayload,
+    OutputSchemaDefinition,
+)
 
 if TYPE_CHECKING:
     from .sandbox import Sandbox
@@ -74,9 +81,18 @@ class GraphRunNode(RomulusBase, table=True):
     agent_id: Optional[uuid.UUID] = Field(default=None, foreign_key="agent.id")
     session_id: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     graph_tools: bool = Field(default=False)
-    output_schema: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
-    output: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
-    images: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    output_schema: Optional[OutputSchemaDefinition] = Field(
+        default=None,
+        sa_column=validated_json_column(OutputSchemaDefinition, nullable=True),
+    )
+    output: Optional[NodeOutputPayload] = Field(
+        default=None,
+        sa_column=validated_json_column(NodeOutputPayload, nullable=True),
+    )
+    images: Optional[ImagePayloadList] = Field(
+        default=None,
+        sa_column=validated_json_column(ImageAttachmentSchema, nullable=True),
+    )
     child_run_id: Optional[uuid.UUID] = Field(default=None, foreign_key="graphrun.id")
 
     run: Optional[GraphRun] = Relationship(

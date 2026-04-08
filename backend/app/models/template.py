@@ -7,6 +7,13 @@ from sqlmodel import Field, Relationship
 
 from .base import RomulusBase
 from .graph import NodeType
+from .json_column import validated_json_column
+from .structured_fields import (
+    ArgumentBindings,
+    ImageAttachmentSchema,
+    ImagePayloadList,
+    OutputSchemaDefinition,
+)
 
 if TYPE_CHECKING:
     from .workspace import Workspace
@@ -47,8 +54,14 @@ class TaskTemplate(RomulusBase, table=True):
     command: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     graph_tools: bool = Field(default=False)
     label: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
-    output_schema: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
-    images: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    output_schema: Optional[OutputSchemaDefinition] = Field(
+        default=None,
+        sa_column=validated_json_column(OutputSchemaDefinition, nullable=True),
+    )
+    images: Optional[ImagePayloadList] = Field(
+        default=None,
+        sa_column=validated_json_column(ImageAttachmentSchema, nullable=True),
+    )
 
     workspace: Optional["Workspace"] = Relationship(back_populates="task_templates")
     arguments: List["TaskTemplateArgument"] = Relationship(
@@ -99,7 +112,10 @@ class SubgraphTemplate(RomulusBase, table=True):
     workspace_id: uuid.UUID = Field(foreign_key="workspace.id", index=True)
     name: str
     label: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
-    output_schema: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    output_schema: Optional[OutputSchemaDefinition] = Field(
+        default=None,
+        sa_column=validated_json_column(OutputSchemaDefinition, nullable=True),
+    )
 
     workspace: Optional["Workspace"] = Relationship(back_populates="subgraph_templates")
     nodes: List["SubgraphTemplateNode"] = Relationship(
@@ -171,13 +187,18 @@ class SubgraphTemplateNode(RomulusBase, table=True):
     ref_subgraph_template_id: Optional[uuid.UUID] = Field(
         default=None, foreign_key="subgraphtemplate.id"
     )
-    argument_bindings: Optional[str] = Field(
-        default=None, sa_column=Column(String, nullable=True)
+    argument_bindings: Optional[ArgumentBindings] = Field(
+        default=None,
+        sa_column=validated_json_column(ArgumentBindings, nullable=True),
     )
-    output_schema: Optional[str] = Field(
-        default=None, sa_column=Column(String, nullable=True)
+    output_schema: Optional[OutputSchemaDefinition] = Field(
+        default=None,
+        sa_column=validated_json_column(OutputSchemaDefinition, nullable=True),
     )
-    images: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    images: Optional[ImagePayloadList] = Field(
+        default=None,
+        sa_column=validated_json_column(ImageAttachmentSchema, nullable=True),
+    )
 
     subgraph_template: Optional[SubgraphTemplate] = Relationship(
         back_populates="nodes",

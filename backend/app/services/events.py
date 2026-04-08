@@ -232,7 +232,7 @@ def ingest_worker_event(
             if event_type == "text.delta":
                 structured = payload.get("data", {}).get("structured_output")
                 if structured:
-                    node.output = json.dumps(structured)
+                    node.output = structured
                     session.add(node)
                     session.commit()
 

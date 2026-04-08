@@ -6,6 +6,13 @@ from sqlalchemy import Column, Index, String, text
 from sqlmodel import Field, Relationship
 
 from .base import RomulusBase
+from .json_column import validated_json_column
+from .structured_fields import (
+    ArgumentBindings,
+    ImageAttachmentSchema,
+    ImagePayloadList,
+    OutputSchemaDefinition,
+)
 
 if TYPE_CHECKING:
     from .template import SubgraphTemplate, TaskTemplate
@@ -72,13 +79,18 @@ class GraphNode(RomulusBase, table=True):
     subgraph_template_id: Optional[uuid.UUID] = Field(
         default=None, foreign_key="subgraphtemplate.id"
     )
-    argument_bindings: Optional[str] = Field(
-        default=None, sa_column=Column(String, nullable=True)
+    argument_bindings: Optional[ArgumentBindings] = Field(
+        default=None,
+        sa_column=validated_json_column(ArgumentBindings, nullable=True),
     )
-    output_schema: Optional[str] = Field(
-        default=None, sa_column=Column(String, nullable=True)
+    output_schema: Optional[OutputSchemaDefinition] = Field(
+        default=None,
+        sa_column=validated_json_column(OutputSchemaDefinition, nullable=True),
     )
-    images: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    images: Optional[ImagePayloadList] = Field(
+        default=None,
+        sa_column=validated_json_column(ImageAttachmentSchema, nullable=True),
+    )
 
     graph: Optional[Graph] = Relationship(back_populates="nodes")
     ref_task_template: Optional["TaskTemplate"] = Relationship(
