@@ -34,6 +34,29 @@ def _run_delete_depth(run_by_id: dict[uuid.UUID, GraphRun], run: GraphRun) -> in
     return depth
 
 
+def _clear_run_delete_links(session: Session, runs: list[GraphRun], run_nodes: list[GraphRunNode]) -> None:
+    for node in run_nodes:
+        changed = False
+        if node.child_run_id is not None:
+            node.child_run_id = None
+            changed = True
+        if node.retry_of_run_node_id is not None:
+            node.retry_of_run_node_id = None
+            changed = True
+        if node.next_attempt_run_node_id is not None:
+            node.next_attempt_run_node_id = None
+            changed = True
+        if changed:
+            session.add(node)
+
+    for run in runs:
+        if run.parent_run_node_id is not None:
+            run.parent_run_node_id = None
+            session.add(run)
+
+    session.flush()
+
+
 def list_workspaces(session: Session) -> list[Workspace]:
     return list(session.exec(Workspace.active()).all())
 
@@ -79,15 +102,7 @@ def delete_workspace(session: Session, id: uuid.UUID) -> bool:
         session.exec(select(GraphRunNode).where(GraphRunNode.run_id.in_(run_ids))).all()
     ) if run_ids else []
 
-    for node in run_nodes:
-        if node.child_run_id is not None:
-            node.child_run_id = None
-            session.add(node)
-    for run in runs:
-        if run.parent_run_node_id is not None:
-            run.parent_run_node_id = None
-            session.add(run)
-    session.flush()
+    _clear_run_delete_links(session, runs, run_nodes)
 
     run_by_id = {run.id: run for run in runs}
     for run in sorted(runs, key=lambda candidate: _run_delete_depth(run_by_id, candidate), reverse=True):
