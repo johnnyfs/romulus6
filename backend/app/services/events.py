@@ -1,18 +1,76 @@
+import asyncio
 import datetime
 import json
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable, Generator
+from contextlib import contextmanager
 from typing import Any
 
+from sqlalchemy import and_, or_
 from sqlmodel import Session, asc, select
 
 from app.models.agent import Agent, AgentStatus
 from app.models.event import Event
 from app.models.graph import Graph
-from app.models.run import GraphRun
-from app.models.run import GraphRunNode
+from app.models.run import GraphRun, GraphRunNode
+from app.services.event_broadcast import event_broadcaster
 
 MARK_COMPLETE_TOOL = "mark_node_complete"
+DEFAULT_EVENT_PAGE_SIZE = 200
+DEFAULT_KEEPALIVE_INTERVAL_SECONDS = 15.0
+CURSOR_SEPARATOR = "|"
+
+
+def encode_event_cursor(event: Event) -> str:
+    return f"{event.received_at.isoformat()}{CURSOR_SEPARATOR}{event.id}"
+
+
+def decode_event_cursor(cursor: str) -> tuple[datetime.datetime, str]:
+    timestamp_text, separator, event_id = cursor.rpartition(CURSOR_SEPARATOR)
+    if not separator or not timestamp_text or not event_id:
+        raise ValueError("Invalid event cursor")
+    try:
+        received_at = datetime.datetime.fromisoformat(timestamp_text)
+    except ValueError as exc:
+        raise ValueError("Invalid event cursor") from exc
+    return received_at, event_id
+
+
+def _apply_after_cursor(statement, cursor: str):
+    received_at, event_id = decode_event_cursor(cursor)
+    return statement.where(
+        or_(
+            Event.received_at > received_at,
+            and_(Event.received_at == received_at, Event.id > event_id),
+        )
+    )
+
+
+def _sse_payload(item: dict[str, Any]) -> bytes:
+    return f"id: {item['cursor']}\ndata: {json.dumps(item)}\n\n".encode()
+
+
+@contextmanager
+def _session_from_factory(
+    session_factory: (
+        Callable[[], Session]
+        | Callable[[], Generator[Session, None, None]]
+    ),
+):
+    session_or_context = session_factory()
+    if (
+        hasattr(session_or_context, "__enter__")
+        and hasattr(session_or_context, "__exit__")
+    ):
+        with session_or_context as session:
+            yield session
+        return
+    try:
+        yield session_or_context
+    finally:
+        close = getattr(session_or_context, "close", None)
+        if callable(close):
+            close()
 
 
 def persist_event(
@@ -51,6 +109,7 @@ def persist_event(
     )
     session.merge(event)
     session.commit()
+    event_broadcaster.publish(_serialize_event(session, event))
     return event
 
 
@@ -99,6 +158,7 @@ def _serialize_event(session: Session, event: Event) -> dict[str, Any]:
 
     return {
         "id": event.id,
+        "cursor": encode_event_cursor(event),
         "workspace_id": str(event.workspace_id),
         "source_type": event.type,
         "source_id": event.source_id,
@@ -120,21 +180,142 @@ def _serialize_event(session: Session, event: Event) -> dict[str, Any]:
     }
 
 
+def _serialize_agent_event_item(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": item["id"],
+        "cursor": item["cursor"],
+        "session_id": item["session_id"] or "",
+        "type": item["type"],
+        "timestamp": item["event_time"],
+        "received_at": item["received_at"],
+        "data": item["data"],
+        "raw": item["raw"],
+        "source_name": item["source_name"],
+        "source_type": item["source_type"],
+        "agent_id": item["agent_id"],
+    }
+
+
+def _list_events(
+    session: Session,
+    statement,
+    *,
+    since: int = 0,
+    after: str | None = None,
+    limit: int = DEFAULT_EVENT_PAGE_SIZE,
+) -> list[Event]:
+    if after is not None:
+        statement = _apply_after_cursor(statement, after)
+    else:
+        statement = statement.offset(since)
+    return session.exec(
+        statement
+        .order_by(asc(Event.received_at), asc(Event.id))
+        .limit(limit)
+    ).all()
+
+
+def _iter_workspace_event_items(
+    session_factory: (
+        Callable[[], Session]
+        | Callable[[], Generator[Session, None, None]]
+    ),
+    workspace_id: uuid.UUID,
+    *,
+    since: int = 0,
+    after: str | None = None,
+) -> Generator[dict[str, Any], None, None]:
+    cursor = after
+    offset = since
+    while True:
+        with _session_from_factory(session_factory) as session:
+            items = list_workspace_events(
+                session,
+                workspace_id,
+                since=offset,
+                after=cursor,
+                limit=DEFAULT_EVENT_PAGE_SIZE,
+            )
+        if not items:
+            return
+        for item in items:
+            yield item
+        if len(items) < DEFAULT_EVENT_PAGE_SIZE:
+            return
+        cursor = items[-1]["cursor"]
+        offset = 0
+
+
+def _iter_agent_event_items(
+    session_factory: (
+        Callable[[], Session]
+        | Callable[[], Generator[Session, None, None]]
+    ),
+    workspace_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    *,
+    since: int = 0,
+    after: str | None = None,
+) -> Generator[dict[str, Any], None, None]:
+    cursor = after
+    offset = since
+    while True:
+        with _session_from_factory(session_factory) as session:
+            items = list_agent_events(
+                session,
+                workspace_id,
+                agent_id,
+                since=offset,
+                after=cursor,
+                limit=DEFAULT_EVENT_PAGE_SIZE,
+            )
+        if not items:
+            return
+        for item in items:
+            yield item
+        if len(items) < DEFAULT_EVENT_PAGE_SIZE:
+            return
+        cursor = items[-1]["cursor"]
+        offset = 0
+
+
 def list_workspace_events(
     session: Session,
     workspace_id: uuid.UUID,
     *,
     since: int = 0,
+    after: str | None = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
-    results = session.exec(
+    results = _list_events(
+        session,
+        select(Event).where(Event.workspace_id == workspace_id),
+        since=since,
+        after=after,
+        limit=limit,
+    )
+    return [_serialize_event(session, e) for e in results]
+
+
+def list_agent_events(
+    session: Session,
+    workspace_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    *,
+    since: int = 0,
+    after: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    results = _list_events(
+        session,
         select(Event)
         .where(Event.workspace_id == workspace_id)
-        .order_by(asc(Event.received_at), asc(Event.id))
-        .offset(since)
-        .limit(limit)
-    ).all()
-    return [_serialize_event(session, e) for e in results]
+        .where(Event.agent_id == agent_id),
+        since=since,
+        after=after,
+        limit=limit,
+    )
+    return [_serialize_agent_event_item(_serialize_event(session, e)) for e in results]
 
 
 async def stream_workspace_events(
@@ -142,18 +323,71 @@ async def stream_workspace_events(
     workspace_id: uuid.UUID,
     *,
     since: int = 0,
+    after: str | None = None,
+    keepalive_interval: float = DEFAULT_KEEPALIVE_INTERVAL_SECONDS,
 ) -> AsyncGenerator[bytes, None]:
-    cursor = since
-    while True:
-        with session_factory() as session:
-            items = list_workspace_events(session, workspace_id, since=cursor, limit=200)
-        if items:
-            for item in items:
-                cursor += 1
-                yield f"id: {item['id']}\ndata: {json.dumps(item)}\n\n".encode()
-        else:
-            yield b": keepalive\n\n"
-        await __import__("asyncio").sleep(1.0)
+    channel = event_broadcaster.workspace_channel(workspace_id)
+    token, queue = event_broadcaster.subscribe(channel)
+    backlog_ids: set[str] = set()
+    try:
+        for item in _iter_workspace_event_items(
+            session_factory,
+            workspace_id,
+            since=since,
+            after=after,
+        ):
+            backlog_ids.add(item["id"])
+            yield _sse_payload(item)
+
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=keepalive_interval)
+            except asyncio.TimeoutError:
+                yield b": keepalive\n\n"
+                continue
+            if item["id"] in backlog_ids:
+                backlog_ids.remove(item["id"])
+                continue
+            yield _sse_payload(item)
+    finally:
+        event_broadcaster.unsubscribe(token, channel)
+
+
+async def stream_agent_events(
+    session_factory,
+    workspace_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    *,
+    since: int = 0,
+    after: str | None = None,
+    keepalive_interval: float = DEFAULT_KEEPALIVE_INTERVAL_SECONDS,
+) -> AsyncGenerator[bytes, None]:
+    channel = event_broadcaster.agent_channel(agent_id)
+    token, queue = event_broadcaster.subscribe(channel)
+    backlog_ids: set[str] = set()
+    try:
+        for item in _iter_agent_event_items(
+            session_factory,
+            workspace_id,
+            agent_id,
+            since=since,
+            after=after,
+        ):
+            backlog_ids.add(item["id"])
+            yield _sse_payload(item)
+
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=keepalive_interval)
+            except asyncio.TimeoutError:
+                yield b": keepalive\n\n"
+                continue
+            if item["id"] in backlog_ids:
+                backlog_ids.remove(item["id"])
+                continue
+            yield _sse_payload(_serialize_agent_event_item(item))
+    finally:
+        event_broadcaster.unsubscribe(token, channel)
 
 
 def ingest_worker_event(
@@ -165,8 +399,16 @@ def ingest_worker_event(
     from app.services import controller as controller_svc
     from app.services import runs as run_svc
 
-    session_id = str(payload.get("session_id") or payload.get("data", {}).get("session_id") or "")
-    agent = session.exec(select(Agent).where(Agent.session_id == session_id)).first() if session_id else None
+    session_id = str(
+        payload.get("session_id")
+        or payload.get("data", {}).get("session_id")
+        or ""
+    )
+    agent = (
+        session.exec(select(Agent).where(Agent.session_id == session_id)).first()
+        if session_id
+        else None
+    )
 
     workspace_id = agent.workspace_id if agent is not None else None
     source_type = "worker"
@@ -184,7 +426,9 @@ def ingest_worker_event(
         workspace_id = agent.workspace_id
         agent_id = agent.id
         sandbox_id = agent.sandbox_id
-        node = session.exec(select(GraphRunNode).where(GraphRunNode.session_id == session_id)).first()
+        node = session.exec(
+            select(GraphRunNode).where(GraphRunNode.session_id == session_id)
+        ).first()
         if node is not None:
             node_id = node.id
             run_id = node.run_id
@@ -236,7 +480,11 @@ def ingest_worker_event(
                     session.add(node)
                     session.commit()
 
-            if node.graph_tools and event_type == "tool.use" and payload.get("data", {}).get("tool_name") == MARK_COMPLETE_TOOL:
+            if (
+                node.graph_tools
+                and event_type == "tool.use"
+                and payload.get("data", {}).get("tool_name") == MARK_COMPLETE_TOOL
+            ):
                 tool_input = payload.get("data", {}).get("tool_input", {})
                 output = tool_input.get("output")
                 try:
@@ -249,8 +497,17 @@ def ingest_worker_event(
                 except ValueError as exc:
                     run_svc.fail_node_and_run(session, run_id, node_id, str(exc))
             elif event_type == "session.error":
-                run_svc.fail_node_and_run(session, run_id, node_id, "worker session error")
+                run_svc.fail_node_and_run(
+                    session,
+                    run_id,
+                    node_id,
+                    "worker session error",
+                )
             else:
-                controller_svc.enqueue_run_reconcile(session, run_id, reason=f"event:{event_type}")
+                controller_svc.enqueue_run_reconcile(
+                    session,
+                    run_id,
+                    reason=f"event:{event_type}",
+                )
 
     return event

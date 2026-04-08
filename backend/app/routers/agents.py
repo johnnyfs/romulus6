@@ -2,17 +2,21 @@ import uuid
 from typing import Annotated, Any, Literal
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlmodel import Session
 
-from app.database import get_session
+from app.database import engine, get_session
 from app.models.agent import Agent, AgentType
 from app.models.pydantic_agent import PydanticSchemaId
-from app.models.supported_models import SupportedModel, validate_supported_model_for_agent_type
+from app.models.supported_models import (
+    SupportedModel,
+    validate_supported_model_for_agent_type,
+)
 from app.models.workspace import Workspace
 from app.services import agents as svc
+from app.services import events as event_svc
 
 router = APIRouter(
     prefix="/workspaces/{workspace_id}/agents",
@@ -90,11 +94,17 @@ async def create_agent(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except RuntimeError as e:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        )
     except httpx.HTTPStatusError as e:
         _raise_upstream_http_error(e)
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        )
 
 
 @router.get("", response_model=list[Agent])
@@ -108,7 +118,10 @@ def get_agent(workspace_id: uuid.UUID, agent_id: uuid.UUID, session: SessionDep)
     _require_workspace(workspace_id, session)
     agent = svc.get_agent(session, workspace_id, agent_id)
     if agent is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Agent not found",
+        )
     return agent
 
 
@@ -163,7 +176,10 @@ def dismiss_agent(
         dismissed=body.dismissed,
     )
     if agent is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Agent not found",
+        )
     return agent
 
 
@@ -204,14 +220,21 @@ async def send_feedback(
 
 
 @router.delete("/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_agent(workspace_id: uuid.UUID, agent_id: uuid.UUID, session: SessionDep) -> None:
+def delete_agent(
+    workspace_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    session: SessionDep,
+) -> None:
     _require_workspace(workspace_id, session)
     try:
         deleted = svc.delete_agent(session, workspace_id, agent_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     if not deleted:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Agent not found",
+        )
 
 
 @router.get("/{agent_id}/events")
@@ -220,12 +243,22 @@ async def get_agent_events(
     agent_id: uuid.UUID,
     session: SessionDep,
     since: int = 0,
+    after: str | None = None,
 ) -> Any:
     _require_workspace(workspace_id, session)
     agent = svc.get_agent(session, workspace_id, agent_id, include_deleted=True)
     if agent is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
-    return await svc.get_agent_events(session, agent, since=since)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Agent not found",
+        )
+    try:
+        return await svc.get_agent_events(session, agent, since=since, after=after)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
 
 
 @router.get("/{agent_id}/events/stream")
@@ -234,13 +267,32 @@ async def stream_agent_events(
     agent_id: uuid.UUID,
     session: SessionDep,
     since: int = 0,
+    after: str | None = None,
+    last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
 ) -> StreamingResponse:
     _require_workspace(workspace_id, session)
     agent = svc.get_agent(session, workspace_id, agent_id, include_deleted=True)
     if agent is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Agent not found",
+        )
+    cursor = after or last_event_id
+    if cursor is not None:
+        try:
+            event_svc.decode_event_cursor(cursor)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            )
     return StreamingResponse(
-        svc.stream_agent_events(session, agent, since=since),
+        svc.stream_agent_events(
+            lambda: Session(engine),
+            agent,
+            since=since,
+            after=cursor,
+        ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
