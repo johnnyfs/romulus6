@@ -5,15 +5,15 @@ import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
+from romulus_common.pydantic_schemas import PydanticSchemaId
+from romulus_common.supported_models import (
+    SupportedModel,
+    validate_supported_model_for_agent_type,
+)
 from sqlmodel import Session
 
 from app.database import engine, get_session
 from app.models.agent import Agent, AgentType
-from app.models.pydantic_agent import PydanticSchemaId
-from app.models.supported_models import (
-    SupportedModel,
-    validate_supported_model_for_agent_type,
-)
 from app.models.workspace import Workspace
 from app.services import agents as svc
 from app.services import events as event_svc

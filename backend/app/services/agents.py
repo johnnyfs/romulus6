@@ -3,6 +3,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
+import httpx
 from sqlmodel import Session, select
 
 from app.models.agent import Agent, AgentStatus, AgentType
@@ -14,6 +15,28 @@ from app.services import workers as worker_svc
 from app.services.worker_client import post_session_message, post_session_with_retry
 
 _post_session_with_retry = post_session_with_retry
+
+
+def _mark_agent_session_unavailable(
+    session: Session,
+    agent: Agent,
+    *,
+    prompt: str,
+    worker_id: uuid.UUID | None,
+    error: str,
+) -> None:
+    _persist_agent_event(
+        session,
+        agent,
+        "message.dispatch.failed",
+        data={"prompt": prompt, "error": error},
+        worker_id=worker_id,
+    )
+    agent.status = AgentStatus.error
+    agent.session_id = None
+    agent.updated_at = datetime.datetime.utcnow()
+    session.add(agent)
+    session.commit()
 
 
 def _persist_agent_event(
@@ -131,7 +154,7 @@ async def create_agent(
                 "prompt": prompt,
                 "agent_type": agent_type.value,
                 "model": model,
-                "workspace_name": str(workspace_id),
+                "workspace_name": str(sandbox.id),
                 "graph_tools": graph_tools,
                 "workspace_id": str(workspace_id),
                 "sandbox_id": str(sandbox.id),
@@ -206,28 +229,45 @@ async def send_message(session: Session, agent: Agent, prompt: str) -> None:
     )
 
     if agent.session_id is None:
-        _persist_agent_event(
+        _mark_agent_session_unavailable(
             session,
             agent,
-            "message.dispatch.failed",
-            data={"prompt": prompt, "error": "Agent has no active session"},
+            prompt=prompt,
             worker_id=worker_id,
+            error="Agent has no active session",
         )
         raise RuntimeError("Agent has no active session")
     if worker is None or worker.worker_url is None:
+        message = "Agent session is no longer available; recreate the agent"
+        _mark_agent_session_unavailable(
+            session,
+            agent,
+            prompt=prompt,
+            worker_id=worker_id,
+            error=message,
+        )
+        raise RuntimeError(message)
+    try:
+        await post_session_message(worker.worker_url, agent.session_id, prompt)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            message = "Agent session was lost after worker restart; recreate the agent"
+            _mark_agent_session_unavailable(
+                session,
+                agent,
+                prompt=prompt,
+                worker_id=worker_id,
+                error=message,
+            )
+            raise RuntimeError(message) from exc
         _persist_agent_event(
             session,
             agent,
             "message.dispatch.failed",
-            data={
-                "prompt": prompt,
-                "error": "Agent session is no longer available; recreate the agent",
-            },
+            data={"prompt": prompt, "error": str(exc)},
             worker_id=worker_id,
         )
-        raise RuntimeError("Agent session is no longer available; recreate the agent")
-    try:
-        await post_session_message(worker.worker_url, agent.session_id, prompt)
+        raise
     except Exception as exc:
         _persist_agent_event(
             session,

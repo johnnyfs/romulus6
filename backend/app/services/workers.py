@@ -5,11 +5,14 @@ from typing import Any
 
 from sqlmodel import Session, select
 
+from app.models.agent import Agent, AgentStatus
 from app.models.lease import WorkerLease, WorkerLeaseStatus
 from app.models.sandbox import Sandbox
 from app.models.worker import Worker, WorkerStatus
+from app.services import events as event_svc
 
 HEARTBEAT_TIMEOUT_SECONDS = int(os.environ.get("WORKER_HEARTBEAT_TIMEOUT_SECONDS", "30"))
+DEPLOY_MODE = os.environ.get("DEPLOY_MODE", "local")
 
 
 def _utcnow() -> datetime.datetime:
@@ -19,6 +22,67 @@ def _utcnow() -> datetime.datetime:
 def heartbeat_expiry(now: datetime.datetime | None = None) -> datetime.datetime:
     now = now or _utcnow()
     return now + datetime.timedelta(seconds=HEARTBEAT_TIMEOUT_SECONDS)
+
+
+def _did_worker_restart(
+    previous_metadata: dict[str, Any] | None,
+    new_metadata: dict[str, Any] | None,
+) -> bool:
+    if not previous_metadata or not new_metadata:
+        return False
+    previous_pid = previous_metadata.get("pid")
+    new_pid = new_metadata.get("pid")
+    return previous_pid is not None and new_pid is not None and previous_pid != new_pid
+
+
+def _invalidate_agent_sessions_for_worker(
+    session: Session,
+    worker: Worker,
+    *,
+    reason: str,
+) -> None:
+    sandbox_ids = list(
+        session.exec(
+            select(Sandbox.id)
+            .where(Sandbox.worker_id == worker.id)
+            .where(Sandbox.deleted == False)  # noqa: E712
+        ).all()
+    )
+    if not sandbox_ids:
+        return
+
+    affected_agents = list(
+        session.exec(
+            select(Agent)
+            .where(Agent.sandbox_id.in_(sandbox_ids))
+            .where(Agent.deleted == False)  # noqa: E712
+            .where(Agent.session_id.is_not(None))
+        ).all()
+    )
+    for agent in affected_agents:
+        event_svc.persist_event(
+            session,
+            workspace_id=agent.workspace_id,
+            source_type="agent",
+            source_id=str(agent.id),
+            payload={
+                "id": str(uuid.uuid4()),
+                "type": "session.error",
+                "session_id": agent.session_id,
+                "timestamp": _utcnow().isoformat(),
+                "data": {"error": reason},
+            },
+            source_name=agent.name,
+            session_id=agent.session_id,
+            agent_id=agent.id,
+            sandbox_id=agent.sandbox_id,
+            worker_id=worker.id,
+        )
+        agent.status = AgentStatus.error
+        agent.session_id = None
+        agent.updated_at = _utcnow()
+        session.add(agent)
+        session.commit()
 
 
 def register_worker(
@@ -31,6 +95,7 @@ def register_worker(
     metadata: dict[str, Any] | None = None,
 ) -> Worker:
     worker: Worker | None = None
+    previous_metadata: dict[str, Any] | None = None
     if registration_key:
         worker = session.exec(
             select(Worker).where(Worker.registration_key == registration_key).where(Worker.deleted == False)  # noqa: E712
@@ -42,6 +107,8 @@ def register_worker(
 
     if worker is None:
         worker = Worker()
+    else:
+        previous_metadata = dict(worker.worker_metadata or {})
 
     now = _utcnow()
     worker.status = WorkerStatus.running
@@ -56,6 +123,13 @@ def register_worker(
     session.add(worker)
     session.commit()
     session.refresh(worker)
+    if _did_worker_restart(previous_metadata, metadata):
+        _invalidate_agent_sessions_for_worker(
+            session,
+            worker,
+            reason="worker restarted; recreate the agent",
+        )
+        session.refresh(worker)
     return worker
 
 
@@ -151,7 +225,6 @@ def lease_worker_for_sandbox(
     workspace_id: uuid.UUID,
     sandbox: Sandbox,
 ) -> tuple[WorkerLease, Worker]:
-    active_worker_ids = _active_worker_ids(session)
     cutoff = _utcnow() - datetime.timedelta(seconds=HEARTBEAT_TIMEOUT_SECONDS)
     candidates = session.exec(
         select(Worker)
@@ -162,7 +235,12 @@ def lease_worker_for_sandbox(
         .order_by(Worker.last_heartbeat_at.desc(), Worker.created_at.asc())
     ).all()
 
-    worker = next((w for w in candidates if w.id not in active_worker_ids and w.worker_url), None)
+    if DEPLOY_MODE == "local":
+        # Local mode: allow multiple sandboxes on a single worker
+        worker = next((w for w in candidates if w.worker_url), None)
+    else:
+        active_worker_ids = _active_worker_ids(session)
+        worker = next((w for w in candidates if w.id not in active_worker_ids and w.worker_url), None)
     if worker is None:
         raise RuntimeError("No healthy idle workers available")
 

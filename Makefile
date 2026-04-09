@@ -51,10 +51,10 @@ dev-namespace:
 dev-build-images: dev-build-backend-image dev-build-worker-image
 
 dev-build-backend-image:
-	eval $$(minikube -p $(MINIKUBE_PROFILE) docker-env) && docker build -t $(BACKEND_IMAGE) backend/
+	eval $$(minikube -p $(MINIKUBE_PROFILE) docker-env) && docker build -t $(BACKEND_IMAGE) -f backend/Dockerfile .
 
 dev-build-worker-image:
-	eval $$(minikube -p $(MINIKUBE_PROFILE) docker-env) && docker build -t $(WORKER_IMAGE) worker/
+	eval $$(minikube -p $(MINIKUBE_PROFILE) docker-env) && docker build -t $(WORKER_IMAGE) -f worker/Dockerfile .
 
 dev-config: dev-namespace
 	kubectl create configmap romulus-backend-config -n $(K8S_NAMESPACE) \
@@ -202,6 +202,7 @@ local-backend-services:
 
 local-db-migrate: local-backend-services
 	cd backend && \
+		PYTHONPATH=../common \
 		DB_HOST=127.0.0.1 \
 		DB_PORT=$(LOCAL_DB_PORT) \
 		uv run alembic upgrade head
@@ -210,12 +211,13 @@ local-backend: local-db-migrate
 	@printf '%s\n' "http://localhost:$(HOST_BACKEND_PORT)" > $(FRONTEND_TARGET_FILE)
 	@echo "Frontend target set to http://localhost:$(HOST_BACKEND_PORT)."
 	cd backend && \
+		PYTHONPATH=../common \
 		DB_HOST=127.0.0.1 \
 		DB_PORT=$(LOCAL_DB_PORT) \
 		DEPLOY_MODE=local \
 		ENABLE_K8S=0 \
 		FRONTEND_PORT=$(FRONTEND_PORT) \
-		uv run uvicorn app.main:app --host 0.0.0.0 --port $(HOST_BACKEND_PORT) --reload
+		uv run uvicorn app.main:app --host 0.0.0.0 --port $(HOST_BACKEND_PORT) --reload --reload-dir app --reload-dir ../common/romulus_common
 
 check-local-worker-opencode:
 	@command -v opencode >/dev/null 2>&1 || { \
@@ -229,13 +231,14 @@ local-worker: check-local-worker-opencode
 	mkdir -p $(LOCAL_WORKSPACE_ROOT)/.opencode/tools $(LOCAL_WORKER_HOME) $(LOCAL_WORKER_DATA_HOME)
 	cp -R worker/tools/. $(LOCAL_WORKSPACE_ROOT)/.opencode/tools/
 	cd worker && \
+		PYTHONPATH=../common \
 		HOME=$(LOCAL_WORKER_HOME) \
 		XDG_DATA_HOME=$(LOCAL_WORKER_DATA_HOME) \
 		WORKER_PORT=$(LOCAL_WORKER_PORT) \
 		WORKER_WORKSPACE_ROOT=$(LOCAL_WORKSPACE_ROOT) \
 		WORKER_ROMULUS_BACKEND_URL=http://localhost:$(HOST_BACKEND_PORT)/api/v1 \
 		WORKER_ADVERTISE_URL=http://localhost:$(LOCAL_WORKER_PORT) \
-		uv run uvicorn app.main:app --host 0.0.0.0 --port $(LOCAL_WORKER_PORT) --reload
+		uv run uvicorn app.main:app --host 0.0.0.0 --port $(LOCAL_WORKER_PORT) --reload --reload-dir app --reload-dir ../common/romulus_common
 
 local-clean:
 	-docker rm -f $(LOCAL_POSTGRES_CONTAINER) 2>/dev/null

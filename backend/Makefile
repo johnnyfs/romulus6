@@ -1,8 +1,8 @@
 check:
-	uv run pytest
+	PYTHONPATH=../common uv run pytest
 
 lint:
-	uv run ruff check app tests
+	PYTHONPATH=../common uv run ruff check app tests
 
 test-fast:
-	uv run pytest -m fast
+	PYTHONPATH=../common uv run pytest -m fast

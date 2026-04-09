@@ -1,5 +1,3 @@
-from enum import StrEnum
+from romulus_common.pydantic_schemas import PydanticSchemaId
 
-
-class PydanticSchemaId(StrEnum):
-    structured_response_v1 = "structured_response_v1"
+__all__ = ["PydanticSchemaId"]

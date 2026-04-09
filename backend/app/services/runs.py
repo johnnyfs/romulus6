@@ -586,7 +586,7 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
             return
 
         sandbox = session.get(Sandbox, run.sandbox_id) if run.sandbox_id else None
-        workspace_dir = f"/workspaces/{run.workspace_id}"
+        workspace_dir = f"/workspaces/{run.sandbox_id}"
 
         try:
             await _ensure_workspace_dir(worker.worker_url, workspace_dir)
@@ -640,7 +640,7 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
                     "agent_type": node.agent_type,
                     "model": node.model,
                     "output_schema": node.output_schema,
-                    "workspace_name": str(run.workspace_id),
+                    "workspace_name": str(run.sandbox_id),
                     "graph_tools": node.graph_tools,
                     "workspace_id": str(run.workspace_id),
                     "sandbox_id": str(run.sandbox_id) if run.sandbox_id else None,
@@ -699,11 +699,11 @@ async def _dispatch_command_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_i
 
         try:
             resolved_command = _resolve_output_references(session, run, node) or node.command
-            await _ensure_workspace_dir(worker.worker_url, f"/workspaces/{run.workspace_id}")
+            await _ensure_workspace_dir(worker.worker_url, f"/workspaces/{run.sandbox_id}")
             resp_data = await execute_command(
                 worker.worker_url,
                 command=["bash", "-c", resolved_command],
-                cwd=f"/workspaces/{run.workspace_id}",
+                cwd=f"/workspaces/{run.sandbox_id}",
                 timeout=300,
                 request_timeout=310.0,
             )

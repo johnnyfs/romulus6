@@ -53,12 +53,12 @@ class SessionManager:
         workspace_name = workspace_name or session_id
         workspace_dir = os.path.join(settings.workspace_root, workspace_name)
         os.makedirs(workspace_dir, exist_ok=True)
-        os.makedirs(os.path.join(settings.workspace_root, ".opencode", "tools"), exist_ok=True)
+        os.makedirs(os.path.join(workspace_dir, ".opencode", "tools"), exist_ok=True)
 
         if graph_tools and workspace_id:
-            # The shared opencode server runs with cwd=settings.workspace_root, so
-            # custom tools must be materialized under that root to be discoverable.
-            write_graph_tools(settings.workspace_root, workspace_id, settings.romulus_backend_url)
+            # Write graph tools into the sandbox workdir so each sandbox has its
+            # own isolated set of tools (keyed by workspace_id for API routing).
+            write_graph_tools(workspace_dir, workspace_id, settings.romulus_backend_url)
 
         session = Session(
             id=session_id,

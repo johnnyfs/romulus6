@@ -632,7 +632,7 @@ export default function WorkspaceDetailPage() {
   function agentName(agentId: string): string {
     const a = agents.find((x) => x.id === agentId)
     if (!a) return 'agent'
-    return a.name ?? `${a.agent_type}/${a.model.split('/')[1]}`
+    return a.name ?? `${a.agent_type}/${a.model?.split('/')[1] ?? 'agent'}`
   }
 
   function eventLabel(event: AgentEvent, fallbackId?: string): string {
@@ -1194,7 +1194,7 @@ export default function WorkspaceDetailPage() {
                   <option value="new">+ New agent</option>
                   {agents.filter((a) => !a.dismissed).map((a) => (
                     <option key={a.id} value={a.id}>
-                      {a.name ?? `${a.agent_type}/${a.model.split('/')[1]}`}
+                      {a.name ?? `${a.agent_type}/${a.model?.split('/')[1] ?? 'agent'}`}
                     </option>
                   ))}
                 </select>

@@ -3,14 +3,17 @@ import datetime
 import json
 from contextlib import contextmanager
 
+import httpx
 import pytest
 from sqlmodel import select
 
 from app.models.agent import Agent, AgentStatus, AgentType
 from app.models.event import Event
+from app.models.sandbox import Sandbox
 from app.models.worker import Worker, WorkerStatus
 from app.services import agents as agent_svc
 from app.services import events as event_svc
+from app.services import workers as worker_svc
 from app.services import workspaces as workspace_svc
 
 pytestmark = pytest.mark.fast
@@ -176,3 +179,134 @@ def test_create_agent_failure_persists_lifecycle_events(session, monkeypatch):
         "session.create.failed",
     ]
     assert events[-1].data["data"]["error"] == "session boot failed"
+
+
+def test_send_message_marks_agent_error_on_missing_worker_session(session, monkeypatch):
+    workspace = workspace_svc.create_workspace(session, "stale-session")
+    worker = Worker(
+        status=WorkerStatus.running,
+        worker_url="http://worker.test",
+        worker_metadata={},
+        last_heartbeat_at=datetime.datetime.utcnow(),
+    )
+    session.add(worker)
+    session.commit()
+    session.refresh(worker)
+
+    sandbox = Sandbox(
+        workspace_id=workspace.id,
+        name="stale-sandbox",
+        worker_id=worker.id,
+    )
+    session.add(sandbox)
+    session.commit()
+    session.refresh(sandbox)
+
+    agent = Agent(
+        workspace_id=workspace.id,
+        sandbox_id=sandbox.id,
+        agent_type=AgentType.opencode,
+        model="openai/gpt-4o",
+        status=AgentStatus.idle,
+        name="stale-agent",
+        prompt="recover me",
+        session_id="missing-session",
+    )
+    session.add(agent)
+    session.commit()
+    session.refresh(agent)
+
+    async def raise_missing_session(*args, **kwargs):
+        request = httpx.Request(
+            "POST",
+            "http://worker.test/sessions/missing-session/messages",
+        )
+        response = httpx.Response(404, request=request, text="Session not found")
+        raise httpx.HTTPStatusError(
+            "404 Session not found",
+            request=request,
+            response=response,
+        )
+
+    monkeypatch.setattr(agent_svc, "post_session_message", raise_missing_session)
+
+    with pytest.raises(
+        RuntimeError,
+        match="Agent session was lost after worker restart; recreate the agent",
+    ):
+        asyncio.run(agent_svc.send_message(session, agent, "hello again"))
+
+    session.refresh(agent)
+    events = session.exec(
+        select(Event)
+        .where(Event.agent_id == agent.id)
+        .order_by(Event.received_at.asc(), Event.id.asc())
+    ).all()
+
+    assert agent.status == AgentStatus.error
+    assert agent.session_id is None
+    assert [event.event_type for event in events] == [
+        "message.dispatch.requested",
+        "message.dispatch.failed",
+    ]
+    assert (
+        events[-1].data["data"]["error"]
+        == "Agent session was lost after worker restart; recreate the agent"
+    )
+
+
+def test_register_worker_restart_invalidates_attached_agent_sessions(session):
+    workspace = workspace_svc.create_workspace(session, "worker-restart")
+    worker = Worker(
+        status=WorkerStatus.running,
+        worker_url="http://worker.test",
+        pod_name="worker-a",
+        worker_metadata={"pid": 1001},
+        last_heartbeat_at=datetime.datetime.utcnow(),
+    )
+    session.add(worker)
+    session.commit()
+    session.refresh(worker)
+
+    sandbox = Sandbox(
+        workspace_id=workspace.id,
+        name="restart-sandbox",
+        worker_id=worker.id,
+    )
+    session.add(sandbox)
+    session.commit()
+    session.refresh(sandbox)
+
+    agent = Agent(
+        workspace_id=workspace.id,
+        sandbox_id=sandbox.id,
+        agent_type=AgentType.opencode,
+        model="openai/gpt-4o",
+        status=AgentStatus.idle,
+        name="restart-agent",
+        prompt="watch me",
+        session_id="live-session",
+    )
+    session.add(agent)
+    session.commit()
+    session.refresh(agent)
+
+    registered = worker_svc.register_worker(
+        session,
+        worker_url="http://worker.test",
+        pod_name="worker-a",
+        metadata={"pid": 2002},
+    )
+
+    session.refresh(agent)
+    events = session.exec(
+        select(Event)
+        .where(Event.agent_id == agent.id)
+        .order_by(Event.received_at.asc(), Event.id.asc())
+    ).all()
+
+    assert registered.id == worker.id
+    assert agent.status == AgentStatus.error
+    assert agent.session_id is None
+    assert [event.event_type for event in events] == ["session.error"]
+    assert events[0].data["data"]["error"] == "worker restarted; recreate the agent"

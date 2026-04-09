@@ -22,8 +22,8 @@ export default function AgentCard({
   onDismiss,
   onDelete,
 }: Props) {
-  const displayName = agent.name ?? agent.model.split('/')[1]
-  const modelShort = agent.model.split('/')[1]
+  const modelShort = agent.model?.split('/')[1] ?? agent.model ?? 'agent'
+  const displayName = agent.name ?? modelShort
   // For run agents, extract the node name from "run-<uuid>-<nodename>"
   const runNodeName = isRunAgent && agent.name
     ? agent.name.replace(/^run-[0-9a-f-]+-/, '')

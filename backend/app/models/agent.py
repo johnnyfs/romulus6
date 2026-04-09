@@ -2,12 +2,17 @@ import uuid
 from enum import Enum
 from typing import TYPE_CHECKING, Annotated, Literal, Optional
 
-from pydantic import BaseModel, Field as PydanticField, model_validator
+from pydantic import BaseModel, model_validator
+from pydantic import Field as PydanticField
+from romulus_common.supported_models import (
+    SupportedModel,
+    validate_supported_model_for_agent_type,
+)
 from sqlalchemy import Index, text
-from sqlmodel import Field as SQLField, Relationship
+from sqlmodel import Field as SQLField
+from sqlmodel import Relationship
 
 from .base import RomulusBase
-from .supported_models import SupportedModel, validate_supported_model_for_agent_type
 
 if TYPE_CHECKING:
     from .sandbox import Sandbox
@@ -99,8 +104,16 @@ class Agent(RomulusBase, table=True):
     )
 
     id: uuid.UUID = SQLField(default_factory=uuid.uuid4, primary_key=True)
-    workspace_id: uuid.UUID = SQLField(foreign_key="workspace.id", index=True, nullable=False)
-    sandbox_id: Optional[uuid.UUID] = SQLField(default=None, foreign_key="sandbox.id", nullable=True)
+    workspace_id: uuid.UUID = SQLField(
+        foreign_key="workspace.id",
+        index=True,
+        nullable=False,
+    )
+    sandbox_id: Optional[uuid.UUID] = SQLField(
+        default=None,
+        foreign_key="sandbox.id",
+        nullable=True,
+    )
     agent_type: AgentType
     model: str
     session_id: Optional[str] = SQLField(default=None)
