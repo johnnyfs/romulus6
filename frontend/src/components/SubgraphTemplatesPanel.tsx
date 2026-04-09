@@ -232,7 +232,7 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
     if (editRefSubgraphId && !sgDetailCacheRef.current[editRefSubgraphId]) {
       getSubgraphTemplate(workspaceId, editRefSubgraphId).then(d => {
         setSgDetailCache(prev => ({ ...prev, [d.id]: d }))
-      }).catch(() => {})
+      }).catch((err) => console.warn('Failed to fetch subgraph template:', err))
     }
   }, [editRefSubgraphId, workspaceId])
 
@@ -313,7 +313,8 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
       const newNode = await addSubgraphTemplateNode(workspaceId, activeId, { node_type: 'agent' })
       try {
         await addSubgraphTemplateEdge(workspaceId, activeId, nodeId, newNode.id)
-      } catch {
+      } catch (err) {
+        console.warn('Edge creation failed, rolling back node:', err)
         await deleteSubgraphTemplateNode(workspaceId, activeId, newNode.id)
       }
       await loadDetail(activeId)

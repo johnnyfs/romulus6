@@ -1,73 +1,93 @@
-# React + TypeScript + Vite
+# Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React 19 + React Router 7 + Vite 8 + TypeScript.
 
-Currently, two official plugins are available:
+## Dev
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+    npm run dev      # start dev server
+    npm run build    # type-check + production build
+    npm run lint     # eslint (must pass before merge)
 
-## React Compiler
+## React Rules We Enforce
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+These are the patterns that have caused production bugs in this codebase. Follow them.
 
-## Expanding the ESLint configuration
+### Never swallow errors silently
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+    // BAD — hides bugs, causes blank screens
+    .catch(() => {})
+    try { ... } catch {}
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+    // GOOD — at minimum log, ideally surface to user
+    .catch((err) => { console.warn('stream error', err); setPageError(err.message) })
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+ESLint `no-empty` with `allowEmptyCatch: false` enforces this.
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+### Always include correct useEffect dependencies
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Never add `eslint-disable-next-line react-hooks/exhaustive-deps`. If the deps
+feel wrong, fix the code — use refs for values you don't want to trigger
+re-runs, or use the function form of state setters to avoid depending on
+current state.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+    // BAD — reads searchParams but doesn't depend on it
+    useEffect(() => {
+      if (searchParams.get('tab') == null) setSearchParams(...)
+    }, [id]) // eslint-disable-next-line react-hooks/exhaustive-deps
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+    // GOOD — use the setter's function form
+    useEffect(() => {
+      setSearchParams((prev) => {
+        if (prev.get('tab') != null) return prev
+        return mergeSearchParams(prev, { tab: 'activity' })
+      }, { replace: true })
+    }, [id, setSearchParams])
+
+### Use stable keys in lists, never array index for dynamic lists
+
+    // BAD — adding/removing items corrupts component state
+    images.map((img, idx) => <img key={idx} />)
+
+    // GOOD — use a content-derived or pre-assigned stable ID
+    images.map((img) => <img key={img.id} />)
+
+Array index is only safe for static, never-reordered lists.
+
+### Wrap independent UI regions in ErrorBoundary
+
+A single error boundary at the app root means one bad event crashes the
+entire page. Wrap panels, feed sections, and other independent zones in
+their own `<ErrorBoundary>` so failures are isolated.
+
+### SSE / streaming connections must reconnect
+
+Never assume a stream stays alive forever. Streams die on network blips,
+backend restarts, and deploys. Always implement:
+- Auto-reconnect with exponential backoff
+- A visible connection status indicator
+- Error surfacing (not silent catch)
+
+### Polling intervals must guard against overlap
+
+    // BAD — if the request takes >2s, requests pile up
+    setInterval(async () => { await fetchData() }, 2000)
+
+    // GOOD — skip if previous request still in flight
+    setInterval(async () => {
+      if (inFlightRef.current) return
+      inFlightRef.current = true
+      try { await fetchData() } finally { inFlightRef.current = false }
+    }, 2000)
+
+### Auto-scroll should respect user position
+
+Only auto-scroll to bottom when the user is already near the bottom.
+If they've scrolled up to read history, don't yank them down on every
+new event.
+
+## Architecture Notes
+
+- **No global state library** — React hooks + local state is sufficient for this app size
+- **SSE for real-time events** — workspace events stream via Server-Sent Events, not polling
+- **URL-driven state** — tab selection, graph/run/node IDs are stored in search params
+- **ErrorBoundary** — class component at `src/components/ErrorBoundary.tsx`, supports `resetKey` prop

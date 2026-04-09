@@ -85,7 +85,9 @@ export async function streamWorkspaceEvents(
                 stream_key: item.stream_key ?? null,
                 workspace_id: item.workspace_id,
               })
-            } catch {}
+            } catch (err) {
+              console.warn('SSE parse error:', line, err)
+            }
           }
         }
       }

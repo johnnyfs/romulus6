@@ -202,7 +202,9 @@ export async function streamAgentEvents(
           if (line.startsWith('data: ')) {
             try {
               onEvent(JSON.parse(line.slice(6)))
-            } catch {}
+            } catch (err) {
+              console.warn('SSE parse error:', line, err)
+            }
           }
         }
       }

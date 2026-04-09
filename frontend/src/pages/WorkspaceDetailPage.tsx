@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAutoResize } from '../hooks/useAutoResize'
+import { useFeed, type ActivityBlock } from '../hooks/useFeed'
+import { useWorkspaceEvents } from '../hooks/useWorkspaceEvents'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   type Agent,
@@ -19,9 +21,9 @@ import {
   type AgentType,
   type PydanticSchemaId,
 } from '../api/models'
-import { listWorkspaceEvents, streamWorkspaceEvents } from '../api/workspaceEvents'
 import { getWorkspace, type Workspace } from '../api/workspaces'
 import AgentCard from '../components/AgentCard'
+import ErrorBoundary from '../components/ErrorBoundary'
 import FeedbackRequest from '../components/FeedbackRequest'
 import { MarkdownMessage } from '../components/MarkdownMessage'
 import GraphPanel from '../components/GraphPanel'
@@ -34,48 +36,10 @@ import {
   readStringParam,
 } from '../components/workspaceDetailSearchParams'
 
-// ─── Feed item types ────────────────────────────────────────────────────────
-
-interface ActivityBlock {
-  blockId: string
-  streamKey: string
-  latest: AgentEvent
-  history: AgentEvent[]
-}
-
-type FeedItem =
-  | { kind: 'message'; agentId: string; event: AgentEvent; key: string }
-  | { kind: 'user'; agentId: string; prompt: string; timestamp: string; key: string; isDispatch?: boolean }
-  | { kind: 'activity'; block: ActivityBlock }
-  | { kind: 'feedback'; agentId: string; event: AgentEvent; key: string; resolved: boolean; resolvedResponse?: string }
-
-const ACTIVITY_TYPES = new Set(['tool.use', 'file.edit', 'command.output', 'run.node.completed'])
-
 const AGENT_COLORS = [
   '#2dd4bf', '#f97066', '#a78bfa', '#84cc16', '#f59e0b', '#e879a8',
   '#38bdf8', '#f97316', '#34d399', '#f472b6', '#818cf8', '#fbbf24',
 ]
-
-function isActivity(type: string): boolean {
-  return ACTIVITY_TYPES.has(type)
-}
-
-function mergeDeltaText(previous: string, incoming: string): string {
-  if (!incoming) return previous
-  if (!previous) return incoming
-  if (incoming === previous) return previous
-  if (incoming.startsWith(previous)) return incoming
-  if (previous.endsWith(incoming)) return previous
-
-  const maxOverlap = Math.min(previous.length, incoming.length)
-  for (let size = maxOverlap; size > 0; size -= 1) {
-    if (previous.endsWith(incoming.slice(0, size))) {
-      return previous + incoming.slice(size)
-    }
-  }
-
-  return previous + incoming
-}
 
 // ─── Event rendering ─────────────────────────────────────────────────────────
 
@@ -293,9 +257,14 @@ export default function WorkspaceDetailPage() {
     },
     [setSearchParams],
   )
-  const [eventMap, setEventMap] = useState<Record<string, AgentEvent[]>>({})
-  const [agentBusy, setAgentBusy] = useState<Record<string, boolean>>({})
-  const [agentTerminal, setAgentTerminal] = useState<Record<string, boolean>>({})
+  const {
+    eventMap, setEventMap,
+    agentBusy,
+    agentTerminal, setAgentTerminal,
+    agentWaiting, setAgentWaiting,
+    resolvedFeedback, setResolvedFeedback,
+    streamStatus,
+  } = useWorkspaceEvents(id, !!workspace, (msg) => setPageError(msg))
   const [expandedBlocks, setExpandedBlocks] = useState<Set<string>>(new Set())
   const [showForm, setShowForm] = useState(false)
   const [formAgentType, setFormAgentType] = useState<AgentType>('opencode')
@@ -322,14 +291,13 @@ export default function WorkspaceDetailPage() {
     try {
       const stored = localStorage.getItem(`user-messages-${id}`)
       return stored ? JSON.parse(stored) : []
-    } catch {
+    } catch (err) {
+      console.warn('Failed to parse stored user messages:', err)
       return []
     }
   })
   const feedBottomRef = useRef<HTMLDivElement>(null)
-  const workspaceStreamController = useRef<AbortController | null>(null)
-  const seenEventIds = useRef<Set<string>>(new Set())
-  const eventCursor = useRef(0)
+  const isNearBottom = useRef(true)
   const showDeadMessages = readBooleanParam(
     searchParams,
     WORKSPACE_DETAIL_PARAM_KEYS.showDeadMessages,
@@ -341,8 +309,6 @@ export default function WorkspaceDetailPage() {
     true,
   )
   const [collapsedRuns, setCollapsedRuns] = useState<Set<string>>(new Set())
-  const [agentWaiting, setAgentWaiting] = useState<Record<string, boolean>>({})
-  const [resolvedFeedback, setResolvedFeedback] = useState<Record<string, string>>({})
   const [graphWidth, setGraphWidth] = useState(340)
   const [sandboxDebug, setSandboxDebug] = useState<SandboxDebugSummary | null>(null)
   const [sandboxDebugLoading, setSandboxDebugLoading] = useState(false)
@@ -384,137 +350,32 @@ export default function WorkspaceDetailPage() {
     }
   }, [id, navigate])
 
-  // ── SSE connection management ─────────────────────────────────────────────
-
-  useEffect(() => {
-    if (!id || !workspace) return
-
-      const applyEvent = (event: AgentEvent) => {
-      const streamKey = event.stream_key ?? event.agent_id ?? event.node_id ?? event.run_id ?? event.source_id ?? 'unknown'
-      const agentId = event.agent_id ?? null
-      eventCursor.current += 1
-      if (!event.type.startsWith('session.')) {
-        if (!seenEventIds.current.has(event.id)) {
-          seenEventIds.current.add(event.id)
-          setEventMap((prev) => ({
-            ...prev,
-            [streamKey]: [...(prev[streamKey] ?? []), event],
-          }))
-        }
-      }
-      if (agentId && event.type === 'session.busy') {
-        setAgentBusy((prev) => ({ ...prev, [agentId]: true }))
-        setAgentWaiting((prev) => ({ ...prev, [agentId]: false }))
-      } else if (agentId && event.type === 'session.idle') {
-        setAgentBusy((prev) => ({ ...prev, [agentId]: false }))
-      } else if (
-        agentId &&
-        (
-          event.type === 'session.completed' ||
-          event.type === 'session.error' ||
-          event.type === 'session.interrupted'
-        )
-      ) {
-        setAgentBusy((prev) => ({ ...prev, [agentId]: false }))
-        setAgentWaiting((prev) => ({ ...prev, [agentId]: false }))
-        setAgentTerminal((prev) => ({ ...prev, [agentId]: true }))
-      }
-      if (agentId && event.type === 'feedback.request') {
-        setAgentBusy((prev) => ({ ...prev, [agentId]: false }))
-        setAgentWaiting((prev) => ({ ...prev, [agentId]: true }))
-      } else if (agentId && event.type === 'feedback.response') {
-        const fbId = String(event.data?.feedback_id ?? '')
-        const fbResp = String(event.data?.response ?? '')
-        if (fbId) setResolvedFeedback((prev) => ({ ...prev, [fbId]: fbResp }))
-        setAgentWaiting((prev) => ({ ...prev, [agentId]: false }))
-      }
-    }
-
-    const ctrl = new AbortController()
-    workspaceStreamController.current = ctrl
-    ;(async () => {
-      const events = await listWorkspaceEvents(id, 0, 1000)
-      const nextMap: Record<string, AgentEvent[]> = {}
-      const nextTerminal: Record<string, boolean> = {}
-      const nextBusy: Record<string, boolean> = {}
-      const nextWaiting: Record<string, boolean> = {}
-      const nextResolved: Record<string, string> = {}
-      eventCursor.current = 0
-      for (const event of events) {
-        eventCursor.current += 1
-        const streamKey = event.stream_key ?? event.agent_id ?? event.node_id ?? event.run_id ?? event.source_id ?? 'unknown'
-        const agentId = event.agent_id ?? null
-        if (!event.type.startsWith('session.')) {
-          seenEventIds.current.add(event.id)
-          nextMap[streamKey] = [...(nextMap[streamKey] ?? []), event]
-        }
-        if (agentId && event.type === 'session.busy') {
-          nextBusy[agentId] = true
-          nextWaiting[agentId] = false
-        }
-        if (agentId && event.type === 'session.idle') nextBusy[agentId] = false
-        if (
-          agentId &&
-          (
-            event.type === 'session.completed' ||
-            event.type === 'session.error' ||
-            event.type === 'session.interrupted'
-          )
-        ) {
-          nextBusy[agentId] = false
-          nextTerminal[agentId] = true
-          nextWaiting[agentId] = false
-        }
-        if (agentId && event.type === 'feedback.request') {
-          nextBusy[agentId] = false
-          nextWaiting[agentId] = true
-        } else if (agentId && event.type === 'feedback.response') {
-          const fbId = String(event.data?.feedback_id ?? '')
-          const fbResp = String(event.data?.response ?? '')
-          if (fbId) nextResolved[fbId] = fbResp
-          nextWaiting[agentId] = false
-        }
-      }
-      setEventMap(nextMap)
-      setAgentBusy((prev) => ({ ...prev, ...nextBusy }))
-      setAgentTerminal((prev) => ({ ...prev, ...nextTerminal }))
-      setAgentWaiting((prev) => ({ ...prev, ...nextWaiting }))
-      setResolvedFeedback((prev) => ({ ...prev, ...nextResolved }))
-      await streamWorkspaceEvents(id, eventCursor.current, applyEvent, ctrl.signal)
-    })().catch(() => {})
-    return () => ctrl.abort()
-  }, [id, workspace])
-
-  useEffect(() => {
-    return () => workspaceStreamController.current?.abort()
-  }, [])
-
   useEffect(() => {
     if (id) localStorage.setItem(`user-messages-${id}`, JSON.stringify(userMessages))
   }, [id, userMessages])
 
   // Initialize list/feed visibility params if absent
   useEffect(() => {
-    if (
-      searchParams.get(WORKSPACE_DETAIL_PARAM_KEYS.workspaceTab) == null ||
-      searchParams.get(WORKSPACE_DETAIL_PARAM_KEYS.showDeadMessages) == null ||
-      searchParams.get(WORKSPACE_DETAIL_PARAM_KEYS.showDismissedAgents) == null
-    ) {
-      setSearchParams(
-        (prev) =>
-          mergeSearchParams(prev, {
-            [WORKSPACE_DETAIL_PARAM_KEYS.workspaceTab]: 'activity',
-            [WORKSPACE_DETAIL_PARAM_KEYS.showDeadMessages]: '1',
-            [WORKSPACE_DETAIL_PARAM_KEYS.showDismissedAgents]: '1',
-          }),
-        { replace: true },
-      )
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id])
+    setSearchParams((prev) => {
+      if (
+        prev.get(WORKSPACE_DETAIL_PARAM_KEYS.workspaceTab) != null &&
+        prev.get(WORKSPACE_DETAIL_PARAM_KEYS.showDeadMessages) != null &&
+        prev.get(WORKSPACE_DETAIL_PARAM_KEYS.showDismissedAgents) != null
+      ) {
+        return prev
+      }
+      return mergeSearchParams(prev, {
+        [WORKSPACE_DETAIL_PARAM_KEYS.workspaceTab]: 'activity',
+        [WORKSPACE_DETAIL_PARAM_KEYS.showDeadMessages]: '1',
+        [WORKSPACE_DETAIL_PARAM_KEYS.showDismissedAgents]: '1',
+      })
+    }, { replace: true })
+  }, [id, setSearchParams])
 
   useEffect(() => {
-    feedBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (isNearBottom.current) {
+      feedBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
   }, [eventMap, userMessages])
 
   const loadSandboxDebug = useCallback(async () => {
@@ -532,9 +393,9 @@ export default function WorkspaceDetailPage() {
 
   useEffect(() => {
     if (!id || !workspace || activeTab !== 'sandboxes') return
-    loadSandboxDebug().catch(() => {})
+    loadSandboxDebug().catch((err) => console.warn('Sandbox debug load failed:', err))
     const interval = window.setInterval(() => {
-      loadSandboxDebug().catch(() => {})
+      loadSandboxDebug().catch((err) => console.warn('Sandbox debug poll failed:', err))
     }, 5000)
     return () => window.clearInterval(interval)
   }, [activeTab, id, workspace, loadSandboxDebug])
@@ -567,116 +428,7 @@ export default function WorkspaceDetailPage() {
     return event?.display_color ?? agentColorMap[agentId] ?? 'var(--accent)'
   }
 
-  const feed = useMemo((): FeedItem[] => {
-    const allRaw: { event: AgentEvent; streamKey: string }[] = []
-    for (const [streamKey, evts] of Object.entries(eventMap)) {
-      for (const ev of evts) allRaw.push({ event: ev, streamKey })
-    }
-    for (const msg of userMessages) {
-      if (!knownAgentIds.has(msg.agentId)) continue
-      allRaw.push({
-        streamKey: `agent:${msg.agentId}`,
-        event: {
-          id: `user-${msg.timestamp}`,
-          session_id: '',
-          type: 'user.message',
-          timestamp: msg.timestamp,
-          data: { prompt: msg.prompt, isDispatch: msg.isDispatch },
-        },
-      })
-    }
-    allRaw.sort((a, b) => (a.event?.timestamp ?? '').localeCompare(b.event?.timestamp ?? ''))
-
-    const items: FeedItem[] = []
-    const textBuffers: Record<
-      string,
-      {
-        idx: number
-        partOrder: string[]
-        partText: Record<string, string>
-      }
-    > = {}
-    const activityIdx: Record<string, number> = {}
-
-    for (const { event, streamKey } of allRaw) {
-      const agentId = event.agent_id ?? (streamKey.startsWith('agent:') ? streamKey.slice('agent:'.length) : null)
-      if (!showDeadMessages && agentId && dismissedAgentIds.has(agentId)) continue
-      if (event.type === 'text.delta') {
-        const key = String(event.data.message_id ?? event.data.session_id ?? agentId)
-        const partKey = String(event.data.part_id ?? event.id)
-        const chunk = String(event.data.delta ?? '')
-        if (textBuffers[key] !== undefined) {
-          const buffer = textBuffers[key]
-          if (!(partKey in buffer.partText)) buffer.partOrder.push(partKey)
-          buffer.partText[partKey] = mergeDeltaText(buffer.partText[partKey] ?? '', chunk)
-          const accumulated = buffer.partOrder.map((id) => buffer.partText[id] ?? '').join('')
-          const item = items[buffer.idx] as Extract<FeedItem, { kind: 'message' }>
-          item.event = {
-            ...item.event,
-            data: { ...item.event.data, accumulated },
-          }
-        } else {
-          textBuffers[key] = {
-            idx: items.length,
-            partOrder: [partKey],
-            partText: { [partKey]: chunk },
-          }
-          items.push({
-            kind: 'message',
-            agentId: agentId ?? 'unknown',
-            key: event.id,
-            event: { ...event, data: { ...event.data, accumulated: chunk } },
-          })
-          delete activityIdx[streamKey]
-        }
-      } else if (event.type === 'text.complete') {
-        const key = String(event.data.message_id ?? event.data.session_id ?? agentId)
-        delete textBuffers[key]
-      } else if (event.type === 'user.message') {
-        items.push({
-          kind: 'user',
-          agentId: agentId ?? 'unknown',
-          key: event.id,
-          prompt: String(event.data.prompt ?? ''),
-          timestamp: event.timestamp,
-          isDispatch: !!event.data.isDispatch,
-        })
-        delete activityIdx[streamKey]
-      } else if (event.type === 'feedback.request') {
-        const fbId = String(event.data.feedback_id ?? '')
-        items.push({
-          kind: 'feedback',
-          agentId: agentId ?? 'unknown',
-          key: event.id,
-          event,
-          resolved: fbId in resolvedFeedback,
-          resolvedResponse: resolvedFeedback[fbId],
-        })
-        delete activityIdx[streamKey]
-      } else if (event.type === 'feedback.response') {
-        // audit-only, skip rendering
-      } else if (isActivity(event.type)) {
-        const idx = activityIdx[streamKey]
-        if (idx !== undefined) {
-          const item = items[idx] as Extract<FeedItem, { kind: 'activity' }>
-          item.block = {
-            ...item.block,
-            latest: event,
-            history: [...item.block.history, event],
-          }
-        } else {
-          const blockId = `act-${streamKey}-${event.id}`
-          activityIdx[streamKey] = items.length
-          items.push({
-            kind: 'activity',
-            block: { blockId, streamKey, latest: event, history: [event] },
-          })
-        }
-      }
-    }
-
-    return items
-  }, [eventMap, userMessages, showDeadMessages, dismissedAgentIds, resolvedFeedback, knownAgentIds])
+  const feed = useFeed({ eventMap, userMessages, showDeadMessages, dismissedAgentIds, resolvedFeedback, knownAgentIds })
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -887,6 +639,11 @@ export default function WorkspaceDetailPage() {
       </div>
 
       {pageError ? <div style={styles.errorBanner}>{pageError}</div> : null}
+      {(streamStatus === 'reconnecting' || streamStatus === 'error') && (
+        <div style={styles.reconnectBanner}>
+          {streamStatus === 'reconnecting' ? 'Reconnecting to event stream…' : 'Event stream disconnected — retrying…'}
+        </div>
+      )}
 
       {/* Body */}
       <div style={styles.body}>
@@ -1120,7 +877,13 @@ export default function WorkspaceDetailPage() {
                   Show dismissed agent messages
                 </label>
               </div>
-              <div style={styles.feed}>
+              <div
+                style={styles.feed}
+                onScroll={(e) => {
+                  const el = e.currentTarget
+                  isNearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+                }}
+              >
                 {feed.length === 0 && (
                   <div style={styles.empty}>
                     No events yet. Dispatch an agent to get started.
@@ -1128,17 +891,21 @@ export default function WorkspaceDetailPage() {
                 )}
 
                 {feed.map((item) => {
+                  const itemKey = item.kind === 'activity' ? item.block.blockId : item.key
+
                   if (item.kind === 'user') {
                     return (
-                      <div key={item.key} style={styles.userBubbleWrap}>
-                        <div style={styles.userBubble}>
-                          <div style={styles.userBubbleHeader}>
-                            you → {agentName(item.agentId)}
-                            {item.isDispatch && <span style={styles.dispatchBadge}>prompt</span>}
+                      <ErrorBoundary key={itemKey} resetKey={itemKey}>
+                        <div style={styles.userBubbleWrap}>
+                          <div style={styles.userBubble}>
+                            <div style={styles.userBubbleHeader}>
+                              you → {agentName(item.agentId)}
+                              {item.isDispatch && <span style={styles.dispatchBadge}>prompt</span>}
+                            </div>
+                            <MarkdownMessage content={item.prompt} />
                           </div>
-                          <MarkdownMessage content={item.prompt} />
                         </div>
-                      </div>
+                      </ErrorBoundary>
                     )
                   }
 
@@ -1147,48 +914,52 @@ export default function WorkspaceDetailPage() {
                     const color = agentColor(item.agentId, item.event)
                     const isDismissed = agent?.dismissed ?? false
                     return (
-                      <div key={item.key} style={{ ...styles.agentBubbleWrap, opacity: isDismissed ? 0.45 : 1 }}>
-                        <div style={{ ...styles.agentBubble, borderLeft: `3px solid ${color}` }}>
-                          <div style={{ ...styles.agentBubbleHeader, color }}>
-                            {agentName(item.agentId)}
+                      <ErrorBoundary key={itemKey} resetKey={itemKey}>
+                        <div style={{ ...styles.agentBubbleWrap, opacity: isDismissed ? 0.45 : 1 }}>
+                          <div style={{ ...styles.agentBubble, borderLeft: `3px solid ${color}` }}>
+                            <div style={{ ...styles.agentBubbleHeader, color }}>
+                              {agentName(item.agentId)}
+                            </div>
+                            <MarkdownMessage
+                              content={String(item.event.data.accumulated ?? item.event.data.delta ?? '')}
+                            />
                           </div>
-                          <MarkdownMessage
-                            content={String(item.event.data.accumulated ?? item.event.data.delta ?? '')}
-                          />
                         </div>
-                      </div>
+                      </ErrorBoundary>
                     )
                   }
 
                   if (item.kind === 'feedback') {
                     return (
-                      <FeedbackRequest
-                        key={item.key}
-                        event={item.event}
-                        agentLabel={agentName(item.agentId)}
-                        color={agentColor(item.agentId)}
-                        resolved={item.resolved}
-                        resolvedResponse={item.resolvedResponse}
-                        disabled={!!agentTerminal[item.agentId]}
-                        onRespond={async (feedbackId, feedbackType, response) => {
-                          if (!id) return
-                          await sendFeedback(id, item.agentId, feedbackId, feedbackType, response)
-                          setResolvedFeedback((prev) => ({ ...prev, [feedbackId]: response }))
-                          setAgentWaiting((prev) => ({ ...prev, [item.agentId]: false }))
-                        }}
-                      />
+                      <ErrorBoundary key={itemKey} resetKey={itemKey}>
+                        <FeedbackRequest
+                          event={item.event}
+                          agentLabel={agentName(item.agentId)}
+                          color={agentColor(item.agentId)}
+                          resolved={item.resolved}
+                          resolvedResponse={item.resolvedResponse}
+                          disabled={!!agentTerminal[item.agentId]}
+                          onRespond={async (feedbackId, feedbackType, response) => {
+                            if (!id) return
+                            await sendFeedback(id, item.agentId, feedbackId, feedbackType, response)
+                            setResolvedFeedback((prev) => ({ ...prev, [feedbackId]: response }))
+                            setAgentWaiting((prev) => ({ ...prev, [item.agentId]: false }))
+                          }}
+                        />
+                      </ErrorBoundary>
                     )
                   }
 
                   return (
-                    <ActivityLine
-                      key={item.block.blockId}
-                      block={item.block}
-                      expanded={expandedBlocks.has(item.block.blockId)}
-                      onToggle={() => toggleBlock(item.block.blockId)}
-                      sourceLabel={eventLabel(item.block.latest).replace(/:$/, '')}
-                      color={agentColorMap[item.block.latest.agent_id ?? ''] ?? undefined}
-                    />
+                    <ErrorBoundary key={itemKey} resetKey={itemKey}>
+                      <ActivityLine
+                        block={item.block}
+                        expanded={expandedBlocks.has(item.block.blockId)}
+                        onToggle={() => toggleBlock(item.block.blockId)}
+                        sourceLabel={eventLabel(item.block.latest).replace(/:$/, '')}
+                        color={agentColorMap[item.block.latest.agent_id ?? ''] ?? undefined}
+                      />
+                    </ErrorBoundary>
                   )
                 })}
 
@@ -1434,7 +1205,11 @@ export default function WorkspaceDetailPage() {
         )}
 
         {/* Graph editor panel */}
-        {id && <GraphPanel workspaceId={id} width={graphWidth} />}
+        {id && (
+          <ErrorBoundary resetKey={id}>
+            <GraphPanel workspaceId={id} width={graphWidth} />
+          </ErrorBoundary>
+        )}
       </div>
     </div>
   )
@@ -1471,6 +1246,14 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'rgba(249, 112, 102, 0.12)',
     borderBottom: '1px solid rgba(249, 112, 102, 0.32)',
     color: '#fda29b',
+    fontSize: '13px',
+    flexShrink: 0,
+  },
+  reconnectBanner: {
+    padding: '8px 16px',
+    background: 'rgba(251, 191, 36, 0.12)',
+    borderBottom: '1px solid rgba(251, 191, 36, 0.32)',
+    color: '#fbbf24',
     fontSize: '13px',
     flexShrink: 0,
   },

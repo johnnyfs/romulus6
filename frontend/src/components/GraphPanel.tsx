@@ -19,6 +19,7 @@ import type { SchemaTemplate, TaskTemplate, SubgraphTemplate, SubgraphTemplateDe
 import { DEFAULT_MODEL_BY_AGENT_TYPE, SUPPORTED_MODELS_BY_AGENT_TYPE, type AgentType } from '../api/models'
 import { buildTypeOptions, listSchemaTemplates, listTaskTemplates, listSubgraphTemplates, getSubgraphTemplate } from '../api/templates'
 import { NODE_W, NODE_H, CANVAS_WIDTH, computeLayout, type Pos } from './graphLayout'
+import ErrorBoundary from './ErrorBoundary'
 import RunsView from './RunsView'
 import TemplatesView from './TemplatesView'
 import {
@@ -204,7 +205,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
     if (editSubgraphTemplateId && !sgDetailCacheRef.current[editSubgraphTemplateId]) {
       getSubgraphTemplate(workspaceId, editSubgraphTemplateId).then(d => {
         setSgDetailCache(prev => ({ ...prev, [d.id]: d }))
-      }).catch(() => {})
+      }).catch((err) => console.warn('Failed to fetch subgraph template:', err))
     }
   }, [editSubgraphTemplateId, workspaceId])
 
@@ -318,8 +319,8 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
       for (const parentId of parentIds) {
         try {
           await addEdge(workspaceId, activeGraphId, parentId, newNode.id)
-        } catch {
-          // skip if this edge would create a cycle (shouldn't happen for siblings)
+        } catch (err) {
+          console.warn('Skipping edge (possible cycle):', err)
         }
       }
       await loadDetail(activeGraphId)
@@ -505,13 +506,17 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
       </div>
 
       {activeTab === 'runs' ? (
-        <RunsView
-          workspaceId={workspaceId}
-          onNavigateToGraphNode={handleNavigateToGraphNode}
-          onNavigateToTemplateNode={handleNavigateToTemplateNode}
-        />
+        <ErrorBoundary resetKey={workspaceId}>
+          <RunsView
+            workspaceId={workspaceId}
+            onNavigateToGraphNode={handleNavigateToGraphNode}
+            onNavigateToTemplateNode={handleNavigateToTemplateNode}
+          />
+        </ErrorBoundary>
       ) : activeTab === 'templates' ? (
-        <TemplatesView workspaceId={workspaceId} />
+        <ErrorBoundary resetKey={workspaceId}>
+          <TemplatesView workspaceId={workspaceId} />
+        </ErrorBoundary>
       ) : (
       <>
       {/* Header bar: selector + new + delete */}
