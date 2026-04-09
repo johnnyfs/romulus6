@@ -107,7 +107,7 @@ async def create_agent(
 ) -> Any:
     _require_workspace(workspace_id, session)
     try:
-        return await svc.create_agent(
+        agent = await svc.create_agent(
             session,
             workspace_id=workspace_id,
             agent_type=AgentType(body.agent_type),
@@ -117,6 +117,8 @@ async def create_agent(
             graph_tools=body.graph_tools if body.agent_type in ("opencode", "codex", "claude_code") else False,
             schema_id=body.schema_id.value if body.agent_type == "pydantic" else None,
         )
+        session.refresh(agent)
+        return agent
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except RuntimeError as e:

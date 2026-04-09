@@ -228,8 +228,6 @@ export default function WorkspaceDetailPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [workspace, setWorkspace] = useState<Workspace | null>(null)
   const [agents, setAgents] = useState<Agent[]>([])
-  // Filter out malformed agent objects (can occur during Vite HMR state reuse)
-  const validAgents = useMemo(() => agents.filter((a) => a.id && a.name), [agents])
   const activeTab = readEnumParam(
     searchParams,
     WORKSPACE_DETAIL_PARAM_KEYS.workspaceTab,
@@ -264,9 +262,9 @@ export default function WorkspaceDetailPage() {
   const [targetAgentId, setTargetAgentId] = useState<string | null>(null)
   // Fall back to selected agent or first non-dismissed agent
   const effectiveTargetId = (() => {
-    if (targetAgentId && agents.find((a) => a.id && a.id === targetAgentId && !a.dismissed)) return targetAgentId
-    if (selectedAgentId && agents.find((a) => a.id && a.id === selectedAgentId && !a.dismissed)) return selectedAgentId
-    const first = agents.find((a) => a.id && !a.dismissed)
+    if (targetAgentId && agents.find((a) => a.id === targetAgentId && !a.dismissed)) return targetAgentId
+    if (selectedAgentId && agents.find((a) => a.id === selectedAgentId && !a.dismissed)) return selectedAgentId
+    const first = agents.find((a) => !a.dismissed)
     return first?.id ?? null
   })()
   const [userMessages, setUserMessages] = useState<
@@ -496,12 +494,12 @@ export default function WorkspaceDetailPage() {
 
   // Dead agent IDs for filter (must be before `feed` which depends on it)
   const dismissedAgentIds = useMemo(() => {
-    return new Set(validAgents.filter((a) => a.dismissed).map((a) => a.id))
-  }, [validAgents])
+    return new Set(agents.filter((a) => a.dismissed).map((a) => a.id))
+  }, [agents])
 
   const knownAgentIds = useMemo(() => {
-    return new Set(validAgents.map((a) => a.id))
-  }, [validAgents])
+    return new Set(agents.map((a) => a.id))
+  }, [agents])
 
   // NOTE: Do NOT prune userMessages when knownAgentIds changes — the agents
   // list can temporarily be stale (e.g., after page reload before listAgents
@@ -509,12 +507,12 @@ export default function WorkspaceDetailPage() {
 
   const agentColorMap = useMemo(() => {
     const map: Record<string, string> = {}
-    const sorted = [...validAgents].sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''))
+    const sorted = [...agents].sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''))
     sorted.forEach((agent, i) => {
       map[agent.id] = AGENT_COLORS[i % AGENT_COLORS.length]
     })
     return map
-  }, [validAgents])
+  }, [agents])
 
   function agentColor(agentId: string, event?: AgentEvent): string {
     return event?.display_color ?? agentColorMap[agentId] ?? 'var(--accent)'
@@ -644,8 +642,8 @@ export default function WorkspaceDetailPage() {
   // ── Helpers ───────────────────────────────────────────────────────────────
 
   function agentName(agentId: string): string {
-    const a = validAgents.find((x) => x.id === agentId)
-    if (!a) return agentId.slice(0, 8)
+    const a = agents.find((x) => x.id === agentId)
+    if (!a) return 'agent'
     return a.name ?? `${a.agent_type}/${a.model?.split('/')[1] ?? 'agent'}`
   }
 
@@ -657,21 +655,21 @@ export default function WorkspaceDetailPage() {
   }
 
   // Partition agents into ad-hoc and run-grouped
-  const adHocAgents = useMemo(() => validAgents.filter((a) => !a.graph_run_id), [validAgents])
+  const adHocAgents = useMemo(() => agents.filter((a) => !a.graph_run_id), [agents])
   const visibleAdHocAgents = useMemo(
     () => adHocAgents.filter((a) => showDismissedAgents || !a.dismissed),
     [adHocAgents, showDismissedAgents],
   )
   const runAgentGroups = useMemo(() => {
     const groups = new Map<string, Agent[]>()
-    for (const a of validAgents) {
+    for (const a of agents) {
       if (!a.graph_run_id) continue
       const list = groups.get(a.graph_run_id) ?? []
       list.push(a)
       groups.set(a.graph_run_id, list)
     }
     return groups
-  }, [validAgents])
+  }, [agents])
   const visibleRunAgentGroups = useMemo(() => {
     const groups = new Map<string, Agent[]>()
     for (const [runId, runAgents] of runAgentGroups.entries()) {
@@ -1190,9 +1188,9 @@ export default function WorkspaceDetailPage() {
                 <div ref={feedBottomRef} />
               </div>
 
-              {validAgents.some((a) => !agentTerminal[a.id]) && (
+              {agents.some((a) => !agentTerminal[a.id]) && (
                 <div style={styles.statusBar}>
-                  {validAgents
+                  {agents
                     .filter((a) => !agentTerminal[a.id])
                     .map((a) => (
                       <span key={a.id} style={styles.statusItem}>
@@ -1221,7 +1219,7 @@ export default function WorkspaceDetailPage() {
                   disabled={!effectiveTargetId}
                 >
                   {!effectiveTargetId && <option value="">No agents</option>}
-                  {validAgents.filter((a) => !a.dismissed).map((a) => (
+                  {agents.filter((a) => !a.dismissed).map((a) => (
                     <option key={a.id} value={a.id}>
                       {a.name ?? `${a.agent_type}/${a.model?.split('/')[1] ?? 'agent'}`}
                     </option>

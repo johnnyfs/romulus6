@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import uuid
 from collections.abc import AsyncIterator
 
 from app.agents.base import AgentRunner
@@ -89,6 +90,7 @@ class CodexRunner(AgentRunner):
             # --- stream callback --------------------------------------------------
             async def on_stream(payload: CodexToolStreamEvent) -> None:
                 event = payload.event
+                logger.info("codex on_stream: %s", type(event).__name__)
 
                 if isinstance(event, ThreadStartedEvent):
                     # Persist thread ID for multi-turn reuse.
@@ -125,22 +127,11 @@ class CodexRunner(AgentRunner):
 
                 item = event.item
 
-                if isinstance(item, ReasoningItem):
-                    await self._queue.put(
-                        Event(
-                            session_id=self._session_id,
-                            type=EventType.TEXT_DELTA,
-                            data={"delta": item.text},
-                        )
-                    )
-                elif isinstance(item, AgentMessageItem):
-                    await self._queue.put(
-                        Event(
-                            session_id=self._session_id,
-                            type=EventType.TEXT_DELTA,
-                            data={"delta": item.text},
-                        )
-                    )
+                if isinstance(item, (ReasoningItem, AgentMessageItem)):
+                    # Don't emit these as TEXT_DELTA — the outer agent's
+                    # final_output already includes the full response text.
+                    # Emitting both causes duplicate messages.
+                    pass
                 elif isinstance(item, CommandExecutionItem):
                     await self._queue.put(
                         Event(
@@ -215,7 +206,10 @@ class CodexRunner(AgentRunner):
                         Event(
                             session_id=self._session_id,
                             type=EventType.TEXT_DELTA,
-                            data={"delta": result.final_output},
+                            data={
+                                "delta": result.final_output,
+                                "message_id": str(uuid.uuid4()),
+                            },
                         )
                     )
                 await self._queue.put(
