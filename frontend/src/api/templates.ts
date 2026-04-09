@@ -1,8 +1,8 @@
-import type { AgentConfig, CommandConfig, NodeType, ViewConfig } from './graphs'
+import type { AgentConfig, CommandConfig, NodeType } from './graphs'
 
 const BASE = '/api'
 
-export type TaskTemplateArgType = 'string' | 'model_type' | 'boolean' | 'number' | 'enum'
+export type TaskTemplateArgType = 'string' | 'model_type' | 'boolean' | 'number' | 'enum' | 'schema'
 export type SubgraphTemplateNodeType = NodeType
 
 export interface TaskTemplateArgument {
@@ -14,6 +14,8 @@ export interface TaskTemplateArgument {
   min_value: number | null
   max_value: number | null
   enum_options: string[] | null
+  schema_template_id: string | null
+  container: string | null // "list" | "map" | null
   created_at: string
 }
 
@@ -30,7 +32,7 @@ export interface TaskTemplate {
   graph_tools: boolean
   arguments: TaskTemplateArgument[]
   output_schema?: Record<string, string> | null
-  images?: ViewConfig['images'] | null
+  image_attachments?: unknown[] | null
   created_at: string
   updated_at: string
 }
@@ -42,7 +44,6 @@ export interface SubgraphTemplateNode {
   name: string | null
   agent_config: AgentConfig | null
   command_config: CommandConfig | null
-  view_config: ViewConfig | null
   task_template_id: string | null
   ref_subgraph_template_id: string | null
   argument_bindings: Record<string, string> | null
@@ -74,6 +75,76 @@ export interface SubgraphTemplateDetail extends SubgraphTemplate {
   output_schema?: Record<string, string> | null
 }
 
+// ── Schema Templates ───────────────────────────────────────────────────────
+
+export interface SchemaTemplate {
+  id: string
+  workspace_id: string
+  name: string
+  fields: Record<string, string> | null
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * Build output-type options from primitives + containers + schema templates.
+ * Used by output schema editors across TaskTemplatesPanel, SubgraphTemplatesPanel,
+ * GraphPanel, and SchemaTemplatesPanel.
+ */
+export function buildTypeOptions(
+  schemaTemplates: SchemaTemplate[],
+  /** Exclude a specific schema template ID (e.g., the one being edited) to prevent self-reference */
+  excludeId?: string,
+): { value: string; label: string }[] {
+  const primitives = ['string', 'number', 'boolean', 'image'] as const
+  const options: { value: string; label: string }[] = []
+
+  // Bare primitives
+  for (const p of primitives) {
+    options.push({ value: p, label: p })
+  }
+
+  // Container variants of primitives
+  for (const p of primitives) {
+    options.push({ value: `list:${p}`, label: `list of ${p}` })
+    options.push({ value: `map:${p}`, label: `map of ${p}` })
+  }
+
+  // Schema templates + container variants
+  for (const st of schemaTemplates) {
+    if (st.id === excludeId) continue
+    options.push({ value: `schema:${st.id}`, label: st.name })
+    options.push({ value: `list:schema:${st.id}`, label: `list of ${st.name}` })
+    options.push({ value: `map:schema:${st.id}`, label: `map of ${st.name}` })
+  }
+
+  return options
+}
+
+/**
+ * Display label for a type value string. Resolves schema UUIDs to names.
+ */
+export function typeDisplayLabel(value: string, schemaTemplates: SchemaTemplate[]): string {
+  const schemasById = new Map(schemaTemplates.map(s => [s.id, s.name]))
+
+  const labelForBase = (base: string): string => {
+    if (base.startsWith('schema:')) {
+      const id = base.slice('schema:'.length)
+      return schemasById.get(id) ?? 'unknown schema'
+    }
+    return base
+  }
+
+  if (value.startsWith('list:')) {
+    return `list of ${labelForBase(value.slice('list:'.length))}`
+  }
+  if (value.startsWith('map:')) {
+    return `map of ${labelForBase(value.slice('map:'.length))}`
+  }
+  return labelForBase(value)
+}
+
+
 async function _check(res: Response): Promise<Response> {
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText)
@@ -101,7 +172,7 @@ export async function createTaskTemplate(
     prompt?: string
     command?: string
     graph_tools?: boolean
-    arguments?: { name: string; arg_type?: TaskTemplateArgType; default_value?: string; model_constraint?: string[]; min_value?: number; max_value?: number; enum_options?: string[] }[]
+    arguments?: { name: string; arg_type?: TaskTemplateArgType; default_value?: string; model_constraint?: string[]; min_value?: number; max_value?: number; enum_options?: string[]; schema_template_id?: string; container?: string }[]
     output_schema?: Record<string, string>
   },
 ): Promise<TaskTemplate> {
@@ -132,7 +203,7 @@ export async function updateTaskTemplate(
     prompt?: string
     command?: string
     graph_tools?: boolean
-    arguments?: { name: string; arg_type?: TaskTemplateArgType; default_value?: string; model_constraint?: string[]; min_value?: number; max_value?: number; enum_options?: string[] }[]
+    arguments?: { name: string; arg_type?: TaskTemplateArgType; default_value?: string; model_constraint?: string[]; min_value?: number; max_value?: number; enum_options?: string[]; schema_template_id?: string; container?: string }[]
     output_schema?: Record<string, string>
   },
 ): Promise<TaskTemplate> {
@@ -152,6 +223,54 @@ export async function deleteTaskTemplate(workspaceId: string, templateId: string
   await _check(res)
 }
 
+// ── Schema Templates ──────────────────────────────────────────────────────
+
+export async function listSchemaTemplates(workspaceId: string): Promise<SchemaTemplate[]> {
+  const res = await fetch(`${BASE}/workspaces/${workspaceId}/schema-templates`)
+  await _check(res)
+  return res.json()
+}
+
+export async function createSchemaTemplate(
+  workspaceId: string,
+  body: { name: string; fields: Record<string, string> },
+): Promise<SchemaTemplate> {
+  const res = await fetch(`${BASE}/workspaces/${workspaceId}/schema-templates`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  await _check(res)
+  return res.json()
+}
+
+export async function getSchemaTemplate(workspaceId: string, templateId: string): Promise<SchemaTemplate> {
+  const res = await fetch(`${BASE}/workspaces/${workspaceId}/schema-templates/${templateId}`)
+  await _check(res)
+  return res.json()
+}
+
+export async function updateSchemaTemplate(
+  workspaceId: string,
+  templateId: string,
+  body: { name: string; fields: Record<string, string> },
+): Promise<SchemaTemplate> {
+  const res = await fetch(`${BASE}/workspaces/${workspaceId}/schema-templates/${templateId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  await _check(res)
+  return res.json()
+}
+
+export async function deleteSchemaTemplate(workspaceId: string, templateId: string): Promise<void> {
+  const res = await fetch(`${BASE}/workspaces/${workspaceId}/schema-templates/${templateId}`, {
+    method: 'DELETE',
+  })
+  await _check(res)
+}
+
 // ── Subgraph Templates ──────────────────────────────────────────────────────
 
 export async function listSubgraphTemplates(workspaceId: string): Promise<SubgraphTemplate[]> {
@@ -165,9 +284,9 @@ export async function createSubgraphTemplate(
   body: {
     name: string
     label?: string
-    nodes?: { node_type: SubgraphTemplateNodeType; name?: string; agent_config?: AgentConfig; command_config?: CommandConfig; view_config?: ViewConfig; task_template_id?: string; ref_subgraph_template_id?: string; argument_bindings?: Record<string, string>; output_schema?: Record<string, string> }[]
+    nodes?: { node_type: SubgraphTemplateNodeType; name?: string; agent_config?: AgentConfig; command_config?: CommandConfig; task_template_id?: string; ref_subgraph_template_id?: string; argument_bindings?: Record<string, string>; output_schema?: Record<string, string> }[]
     edges?: { from_index: number; to_index: number }[]
-    arguments?: { name: string; arg_type?: TaskTemplateArgType; default_value?: string; model_constraint?: string[]; min_value?: number; max_value?: number; enum_options?: string[] }[]
+    arguments?: { name: string; arg_type?: TaskTemplateArgType; default_value?: string; model_constraint?: string[]; min_value?: number; max_value?: number; enum_options?: string[]; schema_template_id?: string; container?: string }[]
     output_schema?: Record<string, string>
   },
 ): Promise<SubgraphTemplateDetail> {
@@ -192,9 +311,9 @@ export async function updateSubgraphTemplate(
   body: {
     name: string
     label?: string
-    nodes?: { node_type: SubgraphTemplateNodeType; name?: string; agent_config?: AgentConfig; command_config?: CommandConfig; view_config?: ViewConfig; task_template_id?: string; ref_subgraph_template_id?: string; argument_bindings?: Record<string, string>; output_schema?: Record<string, string> }[]
+    nodes?: { node_type: SubgraphTemplateNodeType; name?: string; agent_config?: AgentConfig; command_config?: CommandConfig; task_template_id?: string; ref_subgraph_template_id?: string; argument_bindings?: Record<string, string>; output_schema?: Record<string, string> }[]
     edges?: { from_index: number; to_index: number }[]
-    arguments?: { name: string; arg_type?: TaskTemplateArgType; default_value?: string; model_constraint?: string[]; min_value?: number; max_value?: number; enum_options?: string[] }[]
+    arguments?: { name: string; arg_type?: TaskTemplateArgType; default_value?: string; model_constraint?: string[]; min_value?: number; max_value?: number; enum_options?: string[]; schema_template_id?: string; container?: string }[]
     output_schema?: Record<string, string>
   },
 ): Promise<SubgraphTemplateDetail> {
@@ -217,7 +336,7 @@ export async function deleteSubgraphTemplate(workspaceId: string, templateId: st
 export async function addSubgraphTemplateNode(
   workspaceId: string,
   templateId: string,
-  body: { node_type: SubgraphTemplateNodeType; name?: string; agent_config?: AgentConfig; command_config?: CommandConfig; view_config?: ViewConfig; task_template_id?: string; ref_subgraph_template_id?: string; argument_bindings?: Record<string, string>; output_schema?: Record<string, string> },
+  body: { node_type: SubgraphTemplateNodeType; name?: string; agent_config?: AgentConfig; command_config?: CommandConfig; task_template_id?: string; ref_subgraph_template_id?: string; argument_bindings?: Record<string, string>; output_schema?: Record<string, string> },
 ): Promise<SubgraphTemplateNode> {
   const res = await fetch(`${BASE}/workspaces/${workspaceId}/subgraph-templates/${templateId}/nodes`, {
     method: 'POST',
@@ -232,7 +351,7 @@ export async function patchSubgraphTemplateNode(
   workspaceId: string,
   templateId: string,
   nodeId: string,
-  patch: { name?: string; node_type?: SubgraphTemplateNodeType; agent_config?: AgentConfig; command_config?: CommandConfig; view_config?: ViewConfig; task_template_id?: string; ref_subgraph_template_id?: string; argument_bindings?: Record<string, string>; output_schema?: Record<string, string> },
+  patch: { name?: string; node_type?: SubgraphTemplateNodeType; agent_config?: AgentConfig; command_config?: CommandConfig; task_template_id?: string; ref_subgraph_template_id?: string; argument_bindings?: Record<string, string>; output_schema?: Record<string, string> },
 ): Promise<SubgraphTemplateNode> {
   const res = await fetch(`${BASE}/workspaces/${workspaceId}/subgraph-templates/${templateId}/nodes/${nodeId}`, {
     method: 'PATCH',

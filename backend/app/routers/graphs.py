@@ -16,7 +16,6 @@ from app.models.run import (
     RunNodeType,
     RunState,
 )
-from app.models.structured_fields import ViewConfig
 from app.models.workspace import Workspace
 from app.services import graph_transfer as transfer_svc
 from app.services import graphs as svc
@@ -26,7 +25,6 @@ from app.services.node_configs import (
     agent_config_from_node,
     command_config_from_node,
     image_payloads_from_configs,
-    view_config_from_node,
 )
 from app.services.node_shapes import UNSET
 from app.services.structured_serialization import (
@@ -49,7 +47,7 @@ class NodeInputSchema(BaseModel):
     name: Optional[str] = None
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
-    view_config: Optional[ViewConfig] = None
+
     task_template_id: Optional[uuid.UUID] = None
     subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
@@ -76,7 +74,7 @@ class AddNodeRequest(BaseModel):
     name: Optional[str] = None
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
-    view_config: Optional[ViewConfig] = None
+
     task_template_id: Optional[uuid.UUID] = None
     subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
@@ -88,7 +86,7 @@ class PatchNodeRequest(BaseModel):
     node_type: Optional[NodeType] = None
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
-    view_config: Optional[ViewConfig] = None
+
     task_template_id: Optional[uuid.UUID] = None
     subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
@@ -113,7 +111,7 @@ class GraphNodeResponse(BaseModel):
     name: Optional[str] = None
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
-    view_config: Optional[ViewConfig] = None
+
     task_template_id: Optional[uuid.UUID] = None
     subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
@@ -165,7 +163,7 @@ class GraphRunNodeResponse(BaseModel):
     state: RunNodeState
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
-    view_config: Optional[ViewConfig] = None
+
     agent_id: Optional[uuid.UUID] = None
     session_id: Optional[str] = None
     child_run_id: Optional[uuid.UUID] = None
@@ -235,7 +233,6 @@ def _node_response(n: Any) -> GraphNodeResponse:
         name=n.name,
         agent_config=agent_config_from_node(n),
         command_config=command_config_from_node(n),
-        view_config=view_config_from_node(n),
         task_template_id=getattr(n, "task_template_id", None),
         subgraph_template_id=getattr(n, "subgraph_template_id", None),
         argument_bindings=_parse_bindings(n),
@@ -258,7 +255,6 @@ def _run_node_response(rn: Any) -> GraphRunNodeResponse:
         state=rn.state,
         agent_config=agent_config_from_node(rn),
         command_config=command_config_from_node(rn),
-        view_config=view_config_from_node(rn),
         agent_id=rn.agent_id,
         session_id=rn.session_id,
         child_run_id=getattr(rn, "child_run_id", None),
@@ -298,7 +294,6 @@ def _run_response(run: Any) -> GraphRunResponse:
 def _node_input(n: NodeInputSchema) -> NodeInput:
     ac = n.agent_config
     cc = n.command_config
-    vc = n.view_config
     return NodeInput(
         node_type=n.node_type,
         name=n.name,
@@ -311,7 +306,7 @@ def _node_input(n: NodeInputSchema) -> NodeInput:
         subgraph_template_id=n.subgraph_template_id,
         argument_bindings=n.argument_bindings,
         output_schema=n.output_schema,
-        images=image_payloads_from_configs(ac, vc),
+        image_attachments=image_payloads_from_configs(ac),
     )
 
 
@@ -425,7 +420,6 @@ def add_node(
     graph = _require_graph(workspace_id, graph_id, session)
     ac = body.agent_config
     cc = body.command_config
-    vc = body.view_config
     try:
         node = svc.add_node(
             session,
@@ -441,7 +435,7 @@ def add_node(
             subgraph_template_id=body.subgraph_template_id,
             argument_bindings=body.argument_bindings,
             output_schema=body.output_schema,
-            images=image_payloads_from_configs(ac, vc),
+            image_attachments=image_payloads_from_configs(ac),
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
@@ -479,7 +473,6 @@ def patch_node(
     graph = _require_graph(workspace_id, graph_id, session)
     ac = body.agent_config
     cc = body.command_config
-    vc = body.view_config
     try:
         node = svc.patch_node(
             session,
@@ -496,9 +489,9 @@ def patch_node(
             subgraph_template_id=body.subgraph_template_id if body.subgraph_template_id is not None else UNSET,
             argument_bindings=body.argument_bindings,
             output_schema=body.output_schema,
-            images=(
-                image_payloads_from_configs(ac, vc)
-                if vc is not None or isinstance(ac, PydanticAgentConfig)
+            image_attachments=(
+                image_payloads_from_configs(ac)
+                if isinstance(ac, PydanticAgentConfig)
                 else UNSET
             ),
         )

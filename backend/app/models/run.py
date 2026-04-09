@@ -33,7 +33,6 @@ class RunNodeSourceType(str, Enum):
 class RunNodeType(str, Enum):
     agent = "agent"
     command = "command"
-    view = "view"
     subgraph = "subgraph"
 
 
@@ -126,7 +125,7 @@ class GraphRunNode(RomulusBase, table=True):
         default=None,
         sa_column=validated_json_column(NodeOutputPayload, nullable=True),
     )
-    images: Optional[ImagePayloadList] = Field(
+    image_attachments: Optional[ImagePayloadList] = Field(
         default=None,
         sa_column=validated_json_column(ImageAttachmentSchema, nullable=True),
     )

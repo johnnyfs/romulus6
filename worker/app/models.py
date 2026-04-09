@@ -48,7 +48,7 @@ class Session(BaseModel):
     agent_type: str
     model: str
     schema_id: str | None = None
-    output_schema: dict[str, str] | None = None
+    output_schema: dict[str, Any] | None = None
     images: list[dict[str, str]] | None = None
     recovery: RecoveryContext | None = None
     sandbox_mode: str | None = None

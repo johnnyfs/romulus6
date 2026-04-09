@@ -515,11 +515,25 @@ export default function RunsView({ workspaceId, onNavigateToGraphNode, onNavigat
           {selectedRunNode.output && (
             <>
               <div style={{ ...rs.inspectorTitle, marginTop: 6 }}>OUTPUT</div>
-              <div style={{ ...rs.inspectorRow, alignItems: 'flex-start' }}>
-                <span style={{ ...rs.inspectorValue, fontFamily: 'monospace', whiteSpace: 'pre-wrap', maxHeight: 120, overflowY: 'auto' }}>
-                  {JSON.stringify(selectedRunNode.output, null, 2)}
-                </span>
-              </div>
+              {Object.entries(selectedRunNode.output).map(([key, value]) => {
+                const isImage = selectedRunNode.output_schema?.[key] === 'image' && typeof value === 'string'
+                return (
+                  <div key={key} style={{ ...rs.inspectorRow, alignItems: 'flex-start', marginBottom: 4 }}>
+                    <span style={{ ...rs.inspectorLabel, marginTop: 2 }}>{key}:</span>
+                    {isImage ? (
+                      <img
+                        src={value as string}
+                        alt={key}
+                        style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 4, objectFit: 'contain' }}
+                      />
+                    ) : (
+                      <span style={{ ...rs.inspectorValue, fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}>
+                        {JSON.stringify(value)}
+                      </span>
+                    )}
+                  </div>
+                )
+              })}
             </>
           )}
 

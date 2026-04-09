@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from .agent import Agent
     from .graph import Graph
     from .sandbox import Sandbox
-    from .template import SubgraphTemplate, TaskTemplate
+    from .template import SchemaTemplate, SubgraphTemplate, TaskTemplate
 
 
 class Workspace(RomulusBase, table=True):
@@ -29,5 +29,6 @@ class Workspace(RomulusBase, table=True):
     sandboxes: List["Sandbox"] = Relationship(back_populates="workspace")
     agents: List["Agent"] = Relationship(back_populates="workspace")
     graphs: List["Graph"] = Relationship(back_populates="workspace")
+    schema_templates: List["SchemaTemplate"] = Relationship(back_populates="workspace")
     task_templates: List["TaskTemplate"] = Relationship(back_populates="workspace")
     subgraph_templates: List["SubgraphTemplate"] = Relationship(back_populates="workspace")

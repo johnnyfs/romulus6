@@ -24,7 +24,6 @@ class NodeType(str, Enum):
     command = "command"
     task_template = "task_template"
     subgraph_template = "subgraph_template"
-    view = "view"
 
 
 class Graph(RomulusBase, table=True):
@@ -87,7 +86,7 @@ class GraphNode(RomulusBase, table=True):
         default=None,
         sa_column=validated_json_column(OutputSchemaDefinition, nullable=True),
     )
-    images: Optional[ImagePayloadList] = Field(
+    image_attachments: Optional[ImagePayloadList] = Field(
         default=None,
         sa_column=validated_json_column(ImageAttachmentSchema, nullable=True),
     )

@@ -47,7 +47,7 @@ class NodeInput:
     subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
     output_schema: Optional[dict[str, str]] = None
-    images: Optional[list[dict]] = None
+    image_attachments: Optional[list[dict]] = None
 
 
 @dataclass
@@ -252,7 +252,7 @@ def _build_graph_node(graph_id: uuid.UUID, node_input: NodeInput) -> GraphNode:
         subgraph_template_id=node_input.subgraph_template_id,
         argument_bindings=node_input.argument_bindings,
         output_schema=node_input.output_schema,
-        images=node_input.images,
+        image_attachments=node_input.image_attachments,
     )
 
 
@@ -389,7 +389,7 @@ def add_node(
     subgraph_template_id: Optional[uuid.UUID] = None,
     argument_bindings: Optional[dict[str, str]] = None,
     output_schema: Optional[dict[str, str]] = None,
-    images: Optional[list[dict]] = None,
+    image_attachments: Optional[list[dict]] = None,
 ) -> GraphNode:
     if node_type == NodeType.subgraph_template and subgraph_template_id is not None:
         template = require_workspace_subgraph_template(
@@ -418,7 +418,7 @@ def add_node(
         task_template_id=task_template_id,
         subgraph_template_id=subgraph_template_id,
         argument_bindings=argument_bindings,
-        images=images,
+        image_attachments=image_attachments,
     )
     node = GraphNode(
         graph_id=graph.id,
@@ -433,7 +433,7 @@ def add_node(
         subgraph_template_id=normalized["subgraph_template_id"],
         argument_bindings=normalized["argument_bindings"],
         output_schema=output_schema,
-        images=normalized["images"],
+        image_attachments=normalized["image_attachments"],
     )
     session.add(node)
     session.commit()
@@ -456,7 +456,7 @@ def patch_node(
     subgraph_template_id: Optional[uuid.UUID] = None,
     argument_bindings: Optional[dict[str, str]] = None,
     output_schema: Optional[dict[str, str]] = None,
-    images: Optional[list[dict]] = None,
+    image_attachments: Optional[list[dict]] = None,
 ) -> Optional[GraphNode]:
     node = session.get(GraphNode, node_id)
     if node is None or node.graph_id != graph.id:
@@ -512,7 +512,7 @@ def patch_node(
         task_template_id=task_template_id,
         subgraph_template_id=subgraph_template_id,
         argument_bindings=argument_bindings,
-        images=images,
+        image_attachments=image_attachments,
     )
     node.agent_type = normalized["agent_type"]
     node.model = normalized["model"]
@@ -524,7 +524,7 @@ def patch_node(
     node.argument_bindings = normalized["argument_bindings"]
     if output_schema is not None:
         node.output_schema = output_schema
-    node.images = normalized["images"]
+    node.image_attachments = normalized["image_attachments"]
     session.add(node)
     session.commit()
     session.refresh(node)
@@ -632,7 +632,7 @@ def _materialize_task_template(
         command=_substitute_args(task_template.command, bindings),
         graph_tools=task_template.graph_tools,
         output_schema=task_template.output_schema,
-        images=task_template.images,
+        image_attachments=task_template.image_attachments,
     )
     session.add(rn)
     return rn
@@ -686,9 +686,8 @@ def _materialize_subgraph(
         if tmpl_node.node_type in (
             SubgraphTemplateNodeType.agent,
             SubgraphTemplateNodeType.command,
-            SubgraphTemplateNodeType.view,
         ):
-            # Inline agent/command/view node — snapshot directly with arg substitution
+            # Inline agent/command node — snapshot directly with arg substitution
             rn = GraphRunNode(
                 run_id=child_run.id,
                 source_node_id=tmpl_node.id,
@@ -702,7 +701,7 @@ def _materialize_subgraph(
                 command=_substitute_args(tmpl_node.command, bindings),
                 graph_tools=tmpl_node.graph_tools,
                 output_schema=tmpl_node.output_schema,
-                images=tmpl_node.images,
+                image_attachments=tmpl_node.image_attachments,
             )
             session.add(rn)
             template_node_to_run_node[tmpl_node.id] = rn
@@ -857,7 +856,7 @@ def create_run(session: Session, graph: Graph) -> GraphRun:
                 command=node.command,
                 graph_tools=node.graph_tools,
                 output_schema=node.output_schema,
-                images=node.images,
+                image_attachments=node.image_attachments,
             )
             session.add(rn)
             run_nodes.append((node.id, rn))

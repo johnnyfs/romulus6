@@ -4,11 +4,14 @@ import { useSearchParams } from 'react-router-dom'
 import type { NodeType } from '../api/graphs'
 import { DEFAULT_MODEL_BY_AGENT_TYPE, SUPPORTED_MODELS_BY_AGENT_TYPE, type AgentType } from '../api/models'
 import {
+  type SchemaTemplate,
   type TaskTemplate,
   type TaskTemplateArgType,
+  buildTypeOptions,
   createTaskTemplate,
   deleteTaskTemplate,
   getTaskTemplate,
+  listSchemaTemplates,
   listTaskTemplates,
   updateTaskTemplate,
 } from '../api/templates'
@@ -17,8 +20,6 @@ import {
   mergeSearchParams,
   readStringParam,
 } from './workspaceDetailSearchParams'
-
-const OUTPUT_FIELD_TYPES = ['string', 'number', 'boolean'] as const
 
 export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: string }) {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -42,6 +43,8 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
   const argIdCounter = useRef(0)
   const [editArgs, setEditArgs] = useState<{ _id: number; name: string; arg_type: TaskTemplateArgType; default_value: string; model_constraint: string[]; min_value: string; max_value: string; enum_options: string[] }[]>([])
   const [editOutputSchema, setEditOutputSchema] = useState<Record<string, string>>({})
+  const [schemaTemplates, setSchemaTemplates] = useState<SchemaTemplate[]>([])
+  const outputTypeOptions = useMemo(() => buildTypeOptions(schemaTemplates), [schemaTemplates])
   const modelOptions = useMemo(() => SUPPORTED_MODELS_BY_AGENT_TYPE[editAgentType], [editAgentType])
 
   function markDirty<T>(setter: (v: T) => void) {
@@ -49,8 +52,12 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
   }
 
   const loadList = useCallback(async () => {
-    const ts = await listTaskTemplates(workspaceId)
+    const [ts, schemas] = await Promise.all([
+      listTaskTemplates(workspaceId),
+      listSchemaTemplates(workspaceId),
+    ])
     setTemplates(ts)
+    setSchemaTemplates(schemas)
     return ts
   }, [workspaceId])
 
@@ -362,7 +369,7 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
                   setEditOutputSchema(prev => ({ ...prev, [field]: e.target.value }))
                   setDirty(true)
                 }}>
-                {OUTPUT_FIELD_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                {outputTypeOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
               </select>
               <button style={s.removeBtn}
                 onClick={() => {

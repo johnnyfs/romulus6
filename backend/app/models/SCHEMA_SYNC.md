@@ -2,9 +2,10 @@
 
 Critical functionality:
 - `NodeType` is the shared source of truth for graph nodes, subgraph template nodes, and task template realized types.
-- Run nodes are snapshots of concrete executable/view state plus the special run-only type `subgraph`.
-- Task templates may realize only concrete node types: `agent`, `command`, `view`.
-- Structured node payload fields (`argument_bindings`, `output_schema`, `images`, `output`) are JSONB-backed and should stay schema-aligned across graph/template/run models.
+- Run nodes are snapshots of concrete executable state plus the special run-only type `subgraph`.
+- Task templates may realize only concrete node types: `agent`, `command`.
+- Structured node payload fields (`argument_bindings`, `output_schema`, `image_attachments`, `output`) are JSONB-backed and should stay schema-aligned across graph/template/run models.
+- Output schema supports field types: `string`, `number`, `boolean`, `image`. Image fields contain URL or data URI strings.
 
 Best practices:
 - Reuse `NodeType` instead of cloning enum definitions in sibling models.

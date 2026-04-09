@@ -17,9 +17,9 @@ from app.models.graph import NodeType
 
 UNSET = object()
 
-INLINE_NODE_TYPES = frozenset({NodeType.agent, NodeType.command, NodeType.view})
+INLINE_NODE_TYPES = frozenset({NodeType.agent, NodeType.command})
 TEMPLATE_REFERENCE_NODE_TYPES = frozenset({NodeType.task_template, NodeType.subgraph_template})
-TASK_TEMPLATE_ALLOWED_TYPES = frozenset({NodeType.agent, NodeType.command, NodeType.view})
+TASK_TEMPLATE_ALLOWED_TYPES = frozenset({NodeType.agent, NodeType.command})
 
 
 def coerce_node_type(node_type: NodeType | str | None) -> NodeType | None:
@@ -37,10 +37,6 @@ def is_agent_node_type(node_type: NodeType | str | None) -> bool:
 
 def is_command_node_type(node_type: NodeType | str | None) -> bool:
     return coerce_node_type(node_type) == NodeType.command
-
-
-def is_view_node_type(node_type: NodeType | str | None) -> bool:
-    return coerce_node_type(node_type) == NodeType.view
 
 
 def validate_task_template_type(task_type: NodeType) -> None:
@@ -76,7 +72,7 @@ def normalized_node_field_values(
     subgraph_template_id: Any = UNSET,
     ref_subgraph_template_id: Any = UNSET,
     argument_bindings: Any = UNSET,
-    images: Any = UNSET,
+    image_attachments: Any = UNSET,
 ) -> dict[str, Any]:
     values: dict[str, Any] = {}
 
@@ -113,9 +109,9 @@ def normalized_node_field_values(
     else:
         values["argument_bindings"] = None
 
-    if is_agent_node_type(node_type) or is_view_node_type(node_type):
-        values["images"] = _pick(current, "images", images)
+    if is_agent_node_type(node_type):
+        values["image_attachments"] = _pick(current, "image_attachments", image_attachments)
     else:
-        values["images"] = None
+        values["image_attachments"] = None
 
     return values

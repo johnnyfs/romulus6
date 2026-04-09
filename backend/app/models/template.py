@@ -1,6 +1,6 @@
 import uuid
 from enum import Enum
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List, Optional, TypeAlias
 
 from sqlalchemy import Column, Index, String, text
 from sqlmodel import Field, Relationship
@@ -25,9 +25,37 @@ class TemplateArgType(str, Enum):
     boolean = "boolean"
     number = "number"
     enum = "enum"
+    schema = "schema"
 
 
 SubgraphTemplateNodeType = NodeType
+
+SchemaFieldsDefinition: TypeAlias = dict[str, str]
+
+
+# ── Schema Templates ────────────────────────────────────────────────────────
+
+
+class SchemaTemplate(RomulusBase, table=True):
+    __table_args__ = (
+        Index(
+            "ix_schematemplate_workspace_name_unique",
+            "workspace_id",
+            "name",
+            unique=True,
+            postgresql_where=text("deleted = false"),
+        ),
+    )
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(foreign_key="workspace.id", index=True)
+    name: str
+    fields: Optional[SchemaFieldsDefinition] = Field(
+        default=None,
+        sa_column=validated_json_column(SchemaFieldsDefinition, nullable=True),
+    )
+
+    workspace: Optional["Workspace"] = Relationship(back_populates="schema_templates")
 
 
 # ── Task Templates ───────────────────────────────────────────────────────────
@@ -58,7 +86,7 @@ class TaskTemplate(RomulusBase, table=True):
         default=None,
         sa_column=validated_json_column(OutputSchemaDefinition, nullable=True),
     )
-    images: Optional[ImagePayloadList] = Field(
+    image_attachments: Optional[ImagePayloadList] = Field(
         default=None,
         sa_column=validated_json_column(ImageAttachmentSchema, nullable=True),
     )
@@ -90,6 +118,10 @@ class TaskTemplateArgument(RomulusBase, table=True):
     min_value: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     max_value: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     enum_options: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    schema_template_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="schematemplate.id"
+    )
+    container: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
 
     task_template: Optional[TaskTemplate] = Relationship(back_populates="arguments")
 
@@ -155,6 +187,10 @@ class SubgraphTemplateArgument(RomulusBase, table=True):
     min_value: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     max_value: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     enum_options: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
+    schema_template_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="schematemplate.id"
+    )
+    container: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
 
     subgraph_template: Optional[SubgraphTemplate] = Relationship(back_populates="arguments")
 
@@ -195,7 +231,7 @@ class SubgraphTemplateNode(RomulusBase, table=True):
         default=None,
         sa_column=validated_json_column(OutputSchemaDefinition, nullable=True),
     )
-    images: Optional[ImagePayloadList] = Field(
+    image_attachments: Optional[ImagePayloadList] = Field(
         default=None,
         sa_column=validated_json_column(ImageAttachmentSchema, nullable=True),
     )

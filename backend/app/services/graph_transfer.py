@@ -91,7 +91,7 @@ def _serialize_task_template(template: TaskTemplate) -> dict[str, Any]:
         "graph_tools": template.graph_tools,
         "label": template.label,
         "output_schema": normalized_json_value(template.output_schema),
-        "images": normalized_json_value(template.images),
+        "image_attachments": normalized_json_value(template.image_attachments),
         "arguments": [
             _serialize_task_argument(arg)
             for arg in template.arguments
@@ -137,7 +137,7 @@ def _serialize_subgraph_template(template: SubgraphTemplate) -> dict[str, Any]:
                 ),
                 "argument_bindings": normalized_json_value(node.argument_bindings),
                 "output_schema": normalized_json_value(node.output_schema),
-                "images": normalized_json_value(node.images),
+                "image_attachments": normalized_json_value(node.image_attachments),
             }
             for node in template.nodes
             if not node.deleted
@@ -182,7 +182,7 @@ def _serialize_graph(graph: Graph) -> dict[str, Any]:
                 ),
                 "argument_bindings": normalized_json_value(node.argument_bindings),
                 "output_schema": normalized_json_value(node.output_schema),
-                "images": normalized_json_value(node.images),
+                "image_attachments": normalized_json_value(node.image_attachments),
             }
             for node in graph.nodes
             if not node.deleted
@@ -310,7 +310,7 @@ class ImportTaskTemplate(_ImportModel):
     graph_tools: bool = False
     label: str | None = None
     output_schema: dict[str, str] | None = None
-    images: list[dict] | None = None
+    image_attachments: list[dict] | None = None
     arguments: list[ImportArgument] = Field(default_factory=list)
 
 
@@ -329,7 +329,7 @@ class ImportSubgraphNode(_ImportModel):
     ref_subgraph_template_name: str | None = None
     argument_bindings: dict[str, str] | None = None
     output_schema: dict[str, str] | None = None
-    images: list[dict] | None = None
+    image_attachments: list[dict] | None = None
 
 
 class ImportSubgraphEdge(_ImportModel):
@@ -363,7 +363,7 @@ class ImportGraphNode(_ImportModel):
     subgraph_template_name: str | None = None
     argument_bindings: dict[str, str] | None = None
     output_schema: dict[str, str] | None = None
-    images: list[dict] | None = None
+    image_attachments: list[dict] | None = None
 
 
 class ImportGraphEdge(_ImportModel):
@@ -533,7 +533,7 @@ def import_graph_bundle(
                 label=task.label,
                 arguments=arg_inputs,
                 output_schema=task.output_schema,
-                images=task.images,
+                image_attachments=task.image_attachments,
             )
         except ValueError as exc:
             warnings.append(f"task template '{task.name}' skipped: {exc}")
@@ -613,7 +613,7 @@ def import_graph_bundle(
                         ref_subgraph_template_id=ref_subgraph_template_id,
                         argument_bindings=node.argument_bindings,
                         output_schema=node.output_schema,
-                        images=node.images,
+                        image_attachments=node.image_attachments,
                     )
                 )
 
@@ -739,7 +739,7 @@ def import_graph_bundle(
                 subgraph_template_id=subgraph_template_id,
                 argument_bindings=node.argument_bindings,
                 output_schema=node.output_schema,
-                images=node.images,
+                image_attachments=node.image_attachments,
             )
         )
 

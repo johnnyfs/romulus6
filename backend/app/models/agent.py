@@ -71,7 +71,7 @@ class PydanticAgentConfig(BaseModel):
     agent_type: Literal["pydantic"] = "pydantic"
     model: SupportedModel
     prompt: str
-    images: list[ImageAttachment] = PydanticField(default_factory=list)
+    image_attachments: list[ImageAttachment] = PydanticField(default_factory=list)
 
     @model_validator(mode="after")
     def validate_model(self) -> "PydanticAgentConfig":

@@ -423,25 +423,16 @@ test.describe('Subgraph Template API', () => {
         `/api/v1/workspaces/${wid}/subgraph-templates/${sg.id}/nodes/${node.id}`,
         {
           data: {
-            node_type: 'view',
-            view_config: {
-              images: [
-                { type: 'url', url: '{{ asset_path }}' },
-              ],
-            },
+            node_type: 'command',
+            command_config: { command: 'echo hello' },
           },
         },
       );
       expect(patchRes.status()).toBe(200);
       const patched = await patchRes.json();
-      expect(patched.node_type).toBe('view');
+      expect(patched.node_type).toBe('command');
       expect(patched.agent_config).toBeNull();
-      expect(patched.command_config).toBeNull();
-      expect(patched.view_config).toEqual({
-        images: [
-          { type: 'url', url: '{{ asset_path }}', path: null },
-        ],
-      });
+      expect(patched.command_config).toEqual({ command: 'echo hello' });
 
       await request.delete(`/api/v1/workspaces/${wid}/subgraph-templates/${sg.id}`);
     } finally {

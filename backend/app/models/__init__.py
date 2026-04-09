@@ -7,6 +7,7 @@ from .reconcile import RunReconcile
 from .run import GraphRun, GraphRunEdge, GraphRunNode
 from .sandbox import Sandbox
 from .template import (
+    SchemaTemplate,
     SubgraphTemplate,
     SubgraphTemplateArgument,
     SubgraphTemplateEdge,
@@ -21,6 +22,7 @@ __all__ = [
     "RomulusBase", "Workspace", "Worker", "WorkerLease", "RunReconcile",
     "Sandbox", "Agent", "Event", "Graph", "GraphNode", "GraphEdge",
     "GraphRun", "GraphRunNode", "GraphRunEdge",
+    "SchemaTemplate",
     "TaskTemplate", "TaskTemplateArgument",
     "SubgraphTemplate", "SubgraphTemplateArgument",
     "SubgraphTemplateNode", "SubgraphTemplateEdge",

@@ -43,21 +43,13 @@ interface ActivityBlock {
   history: AgentEvent[]
 }
 
-interface ViewFeedImage {
-  type: string
-  url?: string
-  data?: string
-  media_type?: string
-}
-
 type FeedItem =
   | { kind: 'message'; agentId: string; event: AgentEvent; key: string }
   | { kind: 'user'; agentId: string; prompt: string; timestamp: string; key: string; isDispatch?: boolean }
   | { kind: 'activity'; block: ActivityBlock }
   | { kind: 'feedback'; agentId: string; event: AgentEvent; key: string; resolved: boolean; resolvedResponse?: string }
-  | { kind: 'images'; key: string; event: AgentEvent; nodeName: string; images: ViewFeedImage[] }
 
-const ACTIVITY_TYPES = new Set(['tool.use', 'file.edit', 'command.output'])
+const ACTIVITY_TYPES = new Set(['tool.use', 'file.edit', 'command.output', 'run.node.completed'])
 
 const AGENT_COLORS = [
   '#2dd4bf', '#f97066', '#a78bfa', '#84cc16', '#f59e0b', '#e879a8',
@@ -109,6 +101,12 @@ function renderActivityEvent(event: AgentEvent): string {
       const preview = (out || err).slice(0, 80)
       return `$ ${preview}`
     }
+    case 'run.node.completed': {
+      const nodeName = String(event.data.node_name ?? 'node')
+      const schema = event.data.output_schema as Record<string, string> | undefined
+      const hasImages = schema && Object.values(schema).includes('image')
+      return `✓ ${nodeName}${hasImages ? ' 🖼' : ''}`
+    }
     default:
       return event.type
   }
@@ -146,6 +144,55 @@ function ToolUseDetail({ event }: { event: AgentEvent }) {
   )
 }
 
+function NodeOutputDetail({ event }: { event: AgentEvent }) {
+  const [expanded, setExpanded] = useState(false)
+  const nodeName = String(event.data.node_name ?? 'node')
+  const output = event.data.output as Record<string, unknown> | undefined
+  const schema = event.data.output_schema as Record<string, string> | undefined
+  const hasOutput = output && Object.keys(output).length > 0
+
+  return (
+    <div>
+      <span
+        style={{ ...hist.accent, cursor: hasOutput ? 'pointer' : 'default' }}
+        onClick={hasOutput ? () => setExpanded((v) => !v) : undefined}
+      >
+        {hasOutput && <span style={{ fontSize: '10px', marginRight: '4px' }}>{expanded ? '∨' : '›'}</span>}
+        ✓ {nodeName}
+        {!expanded && schema && Object.entries(schema).some(([, t]) => t === 'image') && output && (
+          <span style={{ marginLeft: 6 }}>
+            {Object.entries(schema).filter(([, t]) => t === 'image').map(([k]) => {
+              const val = output[k]
+              return typeof val === 'string' ? (
+                <img key={k} src={val} alt={k}
+                  style={{ height: 20, width: 20, objectFit: 'cover', borderRadius: 2, verticalAlign: 'middle', marginLeft: 2 }} />
+              ) : null
+            })}
+          </span>
+        )}
+      </span>
+      {expanded && output && (
+        <div style={{ marginTop: '4px' }}>
+          {Object.entries(output).map(([key, value]) => {
+            const isImage = schema?.[key] === 'image' && typeof value === 'string'
+            return (
+              <div key={key} style={{ marginBottom: 4 }}>
+                <span style={{ color: 'var(--text-dim)', fontSize: '11px' }}>{key}: </span>
+                {isImage ? (
+                  <img src={value as string} alt={key}
+                    style={{ maxWidth: '100%', maxHeight: 300, borderRadius: 4, display: 'block', marginTop: 2 }} />
+                ) : (
+                  <pre style={hist.pre}>{JSON.stringify(value, null, 2)}</pre>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function renderActivityHistory(event: AgentEvent): React.ReactNode {
   switch (event.type) {
     case 'file.edit':
@@ -159,6 +206,8 @@ function renderActivityHistory(event: AgentEvent): React.ReactNode {
           {event.data.stderr ? `\n[stderr]\n${String(event.data.stderr)}` : ''}
         </pre>
       )
+    case 'run.node.completed':
+      return <NodeOutputDetail event={event} />
     default:
       return <span style={hist.dim}>{event.type}</span>
   }
@@ -606,16 +655,6 @@ export default function WorkspaceDetailPage() {
         delete activityIdx[streamKey]
       } else if (event.type === 'feedback.response') {
         // audit-only, skip rendering
-      } else if (event.type === 'view.images') {
-        const images = (event.data.images as ViewFeedImage[]) ?? []
-        items.push({
-          kind: 'images',
-          key: event.id,
-          event,
-          nodeName: String(event.data.node_name ?? 'view'),
-          images,
-        })
-        delete activityIdx[streamKey]
       } else if (isActivity(event.type)) {
         const idx = activityIdx[streamKey]
         if (idx !== undefined) {
@@ -1138,38 +1177,6 @@ export default function WorkspaceDetailPage() {
                           setAgentWaiting((prev) => ({ ...prev, [item.agentId]: false }))
                         }}
                       />
-                    )
-                  }
-
-                  if (item.kind === 'images') {
-                    return (
-                      <div key={item.key} style={styles.agentBubbleWrap}>
-                        <div style={{ ...styles.agentBubble, borderLeft: '3px solid #84cc16' }}>
-                          <div style={{ ...styles.agentBubbleHeader, color: '#84cc16' }}>
-                            {item.event.display_label || item.nodeName}
-                          </div>
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '4px 0' }}>
-                            {item.images.map((img, idx) => {
-                              const src = img.type === 'base64'
-                                ? `data:${img.media_type ?? 'image/png'};base64,${img.data}`
-                                : img.url ?? ''
-                              return (
-                                <img
-                                  key={idx}
-                                  src={src}
-                                  alt={`view ${idx + 1}`}
-                                  style={{ maxWidth: '100%', maxHeight: 400, borderRadius: 4, objectFit: 'contain' }}
-                                />
-                              )
-                            })}
-                            {item.images.length === 0 && (
-                              <span style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontSize: '13px' }}>
-                                No images
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </div>
                     )
                   }
 

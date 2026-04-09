@@ -12,6 +12,7 @@ from app.routers.agents import router as agents_router
 from app.routers.graphs import router as graphs_router
 from app.routers.graphs import runs_router
 from app.routers.sandboxes import router as sandboxes_router
+from app.routers.templates import schema_router as schema_templates_router
 from app.routers.templates import sub_router as subgraph_templates_router
 from app.routers.templates import task_router as task_templates_router
 from app.routers.workers import router as workers_router
@@ -52,6 +53,7 @@ app.include_router(runs_router, prefix="/api/v1")
 app.include_router(events_router, prefix="/api/v1")
 app.include_router(workers_router, prefix="/api/v1")
 app.include_router(task_templates_router, prefix="/api/v1")
+app.include_router(schema_templates_router, prefix="/api/v1")
 app.include_router(subgraph_templates_router, prefix="/api/v1")
 
 

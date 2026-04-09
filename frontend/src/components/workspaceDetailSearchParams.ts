@@ -1,6 +1,6 @@
 export type WorkspacePanelTab = 'graph' | 'runs' | 'templates'
 export type WorkspaceDetailTab = 'activity' | 'sandboxes'
-export type TemplatesSubTab = 'tasks' | 'subgraphs'
+export type TemplatesSubTab = 'tasks' | 'subgraphs' | 'schemas'
 
 export const WORKSPACE_DETAIL_PARAM_KEYS = {
   agentId: 'agent',
@@ -17,6 +17,7 @@ export const WORKSPACE_DETAIL_PARAM_KEYS = {
   templatesSubTab: 'templatesTab',
   templateNodeId: 'templateNode',
   subgraphTemplateId: 'subgraphTemplate',
+  schemaTemplateId: 'schemaTemplate',
   hideFailedWorkers: 'hideFailed',
 } as const
 

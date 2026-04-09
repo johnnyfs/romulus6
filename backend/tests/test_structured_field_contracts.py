@@ -50,7 +50,7 @@ def test_graph_bundle_round_trip_preserves_structured_fields(session):
         prompt="Describe the image",
         label="Vision task",
         output_schema={"answer": "string"},
-        images=[{"type": "url", "url": "https://example.com/source.png"}],
+        image_attachments=[{"type": "url", "url": "https://example.com/source.png"}],
     )
     subgraph_template = template_svc.create_subgraph_template(
         session,
@@ -66,9 +66,13 @@ def test_graph_bundle_round_trip_preserves_structured_fields(session):
                 output_schema={"answer": "string"},
             ),
             SubgraphNodeInput(
-                node_type=SubgraphTemplateNodeType.view,
-                name="gallery",
-                images=[{"type": "url", "url": "https://example.com/gallery.png"}],
+                node_type=SubgraphTemplateNodeType.agent,
+                name="pydantic-step",
+                agent_type="pydantic",
+                model="openai/gpt-4o",
+                prompt="Describe gallery",
+                image_attachments=[{"type": "url", "url": "https://example.com/gallery.png"}],
+                output_schema={"description": "string"},
             ),
         ],
         edges=[],
@@ -94,9 +98,13 @@ def test_graph_bundle_round_trip_preserves_structured_fields(session):
                 output_schema={"answer": "string"},
             ),
             NodeInput(
-                node_type=NodeType.view,
-                name="graph-gallery",
-                images=[{"type": "url", "url": "https://example.com/graph.png"}],
+                node_type=NodeType.agent,
+                name="graph-pydantic",
+                agent_type="pydantic",
+                model="openai/gpt-4o",
+                prompt="Describe graph image",
+                image_attachments=[{"type": "url", "url": "https://example.com/graph.png"}],
+                output_schema={"description": "string"},
             ),
         ],
         edges=[],
@@ -108,7 +116,7 @@ def test_graph_bundle_round_trip_preserves_structured_fields(session):
         item for item in bundle["task_templates"] if item["name"] == "vision-task"
     )
     assert exported_task["output_schema"] == {"answer": "string"}
-    assert exported_task["images"] == [
+    assert exported_task["image_attachments"] == [
         {"type": "url", "url": "https://example.com/source.png", "path": None}
     ]
 
@@ -118,10 +126,10 @@ def test_graph_bundle_round_trip_preserves_structured_fields(session):
     assert exported_graph_node["argument_bindings"] == {"topic": "cats"}
     assert exported_graph_node["output_schema"] == {"answer": "string"}
 
-    exported_view_node = next(
-        item for item in bundle["graph"]["nodes"] if item["name"] == "graph-gallery"
+    exported_pydantic_node = next(
+        item for item in bundle["graph"]["nodes"] if item["name"] == "graph-pydantic"
     )
-    assert exported_view_node["images"] == [
+    assert exported_pydantic_node["image_attachments"] == [
         {"type": "url", "url": "https://example.com/graph.png", "path": None}
     ]
 
@@ -149,7 +157,7 @@ def test_graph_bundle_round_trip_preserves_structured_fields(session):
     ).one()
 
     assert imported_task_template.output_schema == {"answer": "string"}
-    assert imported_task_template.images == [
+    assert imported_task_template.image_attachments == [
         {"type": "url", "url": "https://example.com/source.png", "path": None}
     ]
     assert imported_subgraph_template.output_schema == {"answer": "string"}
@@ -162,7 +170,7 @@ def test_graph_bundle_round_trip_preserves_structured_fields(session):
     }
     assert imported_nodes["templated-entry"].argument_bindings == {"topic": "cats"}
     assert imported_nodes["templated-entry"].output_schema == {"answer": "string"}
-    assert imported_nodes["graph-gallery"].images == [
+    assert imported_nodes["graph-pydantic"].image_attachments == [
         {"type": "url", "url": "https://example.com/graph.png", "path": None}
     ]
 
@@ -178,7 +186,7 @@ def test_graph_and_template_routes_return_structured_fields(session):
         model="openai/gpt-4o",
         prompt="Describe the image",
         output_schema={"answer": "string"},
-        images=[{"type": "url", "url": "https://example.com/source.png"}],
+        image_attachments=[{"type": "url", "url": "https://example.com/source.png"}],
     )
     graph = graph_svc.create_graph(
         session,
@@ -193,9 +201,13 @@ def test_graph_and_template_routes_return_structured_fields(session):
                 output_schema={"answer": "string"},
             ),
             NodeInput(
-                node_type=NodeType.view,
-                name="graph-gallery",
-                images=[{"type": "url", "url": "https://example.com/graph.png"}],
+                node_type=NodeType.agent,
+                name="graph-pydantic",
+                agent_type="pydantic",
+                model="openai/gpt-4o",
+                prompt="Describe graph image",
+                image_attachments=[{"type": "url", "url": "https://example.com/graph.png"}],
+                output_schema={"description": "string"},
             ),
         ],
         edges=[],
@@ -207,7 +219,7 @@ def test_graph_and_template_routes_return_structured_fields(session):
         )
         assert task_response.status_code == 200
         assert task_response.json()["output_schema"] == {"answer": "string"}
-        assert task_response.json()["images"] == [
+        assert task_response.json()["image_attachments"] == [
             {"type": "url", "url": "https://example.com/source.png", "path": None}
         ]
 
@@ -218,12 +230,10 @@ def test_graph_and_template_routes_return_structured_fields(session):
     templated_entry = next(
         node for node in graph_payload["nodes"] if node["name"] == "templated-entry"
     )
-    graph_gallery = next(
-        node for node in graph_payload["nodes"] if node["name"] == "graph-gallery"
+    graph_pydantic = next(
+        node for node in graph_payload["nodes"] if node["name"] == "graph-pydantic"
     )
 
     assert templated_entry["argument_bindings"] == {"topic": "cats"}
     assert templated_entry["output_schema"] == {"answer": "string"}
-    assert graph_gallery["view_config"]["images"] == [
-        {"type": "url", "url": "https://example.com/graph.png", "path": None}
-    ]
+    assert graph_pydantic["agent_config"]["agent_type"] == "pydantic"
