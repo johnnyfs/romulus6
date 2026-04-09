@@ -1,14 +1,22 @@
 import asyncio
 import datetime
 import json
+import logging
+import select as select_lib
+import threading
+import time
 import uuid
 from collections.abc import AsyncGenerator, Callable, Generator
 from contextlib import contextmanager
 from typing import Any
 
+import psycopg2
+from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 from sqlalchemy import and_, or_
+from sqlalchemy import text
 from sqlmodel import Session, asc, select
 
+from app.database import DATABASE_URL
 from app.models.agent import Agent, AgentStatus
 from app.models.event import Event
 from app.models.graph import Graph
@@ -19,6 +27,10 @@ MARK_COMPLETE_TOOL = "mark_node_complete"
 DEFAULT_EVENT_PAGE_SIZE = 200
 DEFAULT_KEEPALIVE_INTERVAL_SECONDS = 15.0
 CURSOR_SEPARATOR = "|"
+EVENT_NOTIFY_CHANNEL = "romulus_events"
+EVENT_PUBLISHER_ID = str(uuid.uuid4())
+
+logger = logging.getLogger(__name__)
 
 
 def encode_event_cursor(event: Event) -> str:
@@ -48,6 +60,95 @@ def _apply_after_cursor(statement, cursor: str):
 
 def _sse_payload(item: dict[str, Any]) -> bytes:
     return f"id: {item['cursor']}\ndata: {json.dumps(item)}\n\n".encode()
+
+
+def _notification_payload(event_id: str) -> str:
+    return json.dumps({"event_id": event_id, "origin": EVENT_PUBLISHER_ID})
+
+
+def _decode_notification_payload(payload: str) -> tuple[str, str | None]:
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError:
+        return payload, None
+    return str(decoded.get("event_id", "")), decoded.get("origin")
+
+
+class _DatabaseEventListener:
+    def __init__(
+        self,
+        database_url: str,
+        session_factory: Callable[[], Session] | Callable[[], Generator[Session, None, None]],
+    ) -> None:
+        self._database_url = database_url
+        self._session_factory = session_factory
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._connection: Any = None
+
+    def start(self) -> None:
+        if not self._database_url.startswith("postgresql"):
+            return
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True, name="event-listener")
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._connection is not None:
+            try:
+                self._connection.close()
+            except Exception:
+                logger.exception("failed to close event listener connection")
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        self._thread = None
+        self._connection = None
+
+    def _connect(self) -> Any:
+        dsn = self._database_url.replace("postgresql+psycopg2://", "postgresql://", 1)
+        connection = psycopg2.connect(dsn)
+        connection.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+        cursor = connection.cursor()
+        cursor.execute(f"LISTEN {EVENT_NOTIFY_CHANNEL};")
+        cursor.close()
+        return connection
+
+    def _publish_remote_event(self, event_id: str) -> None:
+        with _session_from_factory(self._session_factory) as session:
+            event = session.get(Event, event_id)
+            if event is None:
+                return
+            event_broadcaster.publish(_serialize_event(session, event))
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                if self._connection is None:
+                    self._connection = self._connect()
+                if not select_lib.select([self._connection], [], [], 1.0)[0]:
+                    continue
+                self._connection.poll()
+                while self._connection.notifies:
+                    notify = self._connection.notifies.pop(0)
+                    event_id, origin = _decode_notification_payload(notify.payload)
+                    if not event_id or origin == EVENT_PUBLISHER_ID:
+                        continue
+                    self._publish_remote_event(event_id)
+            except Exception:
+                logger.exception("event listener loop failed")
+                if self._connection is not None:
+                    try:
+                        self._connection.close()
+                    except Exception:
+                        logger.exception("failed to reset event listener connection")
+                self._connection = None
+                time.sleep(1.0)
+
+
+_event_listener: _DatabaseEventListener | None = None
 
 
 @contextmanager
@@ -109,8 +210,25 @@ def persist_event(
     )
     session.merge(event)
     session.commit()
-    event_broadcaster.publish(_serialize_event(session, event))
+    serialized = _serialize_event(session, event)
+    event_broadcaster.publish(serialized)
+    _notify_other_backends(session, event.id)
     return event
+
+
+def _notify_other_backends(session: Session, event_id: str) -> None:
+    bind = session.get_bind()
+    if bind is None or bind.dialect.name != "postgresql":
+        return
+    with bind.connect() as connection:
+        connection.execute(
+            text("SELECT pg_notify(:channel, :payload)"),
+            {
+                "channel": EVENT_NOTIFY_CHANNEL,
+                "payload": _notification_payload(event_id),
+            },
+        )
+        connection.commit()
 
 
 def _run_path_parts(session: Session, event: Event) -> list[str]:
@@ -388,6 +506,26 @@ async def stream_agent_events(
             yield _sse_payload(_serialize_agent_event_item(item))
     finally:
         event_broadcaster.unsubscribe(token, channel)
+
+
+def start_event_listener(
+    session_factory: (
+        Callable[[], Session]
+        | Callable[[], Generator[Session, None, None]]
+    ),
+) -> None:
+    global _event_listener
+    if _event_listener is None:
+        _event_listener = _DatabaseEventListener(DATABASE_URL, session_factory)
+    _event_listener.start()
+
+
+def stop_event_listener() -> None:
+    global _event_listener
+    if _event_listener is None:
+        return
+    _event_listener.stop()
+    _event_listener = None
 
 
 def ingest_worker_event(

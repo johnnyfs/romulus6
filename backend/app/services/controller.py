@@ -10,7 +10,7 @@ from sqlmodel import Session, select
 from app.database import engine
 from app.models.lease import WorkerLeaseStatus
 from app.models.reconcile import RunReconcile
-from app.models.run import GraphRun, GraphRunNode
+from app.models.run import GraphRun, GraphRunNode, RunNodeState, RunState
 from app.models.sandbox import Sandbox
 from app.models.worker import Worker, WorkerStatus
 from app.services import workers as worker_svc
@@ -114,7 +114,7 @@ def _fail_active_run_for_sandbox(session: Session, sandbox_id: uuid.UUID) -> Non
             select(GraphRun)
             .where(GraphRun.sandbox_id == sandbox.id)
             .where(GraphRun.deleted == False)  # noqa: E712
-            .where(GraphRun.state.in_(["pending", "running"]))
+            .where(GraphRun.state.in_([RunState.pending, RunState.running]))
             .order_by(GraphRun.created_at.desc())
         ).all()
     )
@@ -124,7 +124,11 @@ def _fail_active_run_for_sandbox(session: Session, sandbox_id: uuid.UUID) -> Non
                 select(GraphRunNode)
                 .where(GraphRunNode.run_id == run.id)
                 .where(GraphRunNode.deleted == False)  # noqa: E712
-                .where(GraphRunNode.state.in_(["dispatching", "running"]))
+                .where(
+                    GraphRunNode.state.in_(
+                        [RunNodeState.dispatching, RunNodeState.running]
+                    )
+                )
             ).all()
         )
         for node in active_nodes:
@@ -135,8 +139,8 @@ def _fail_active_run_for_sandbox(session: Session, sandbox_id: uuid.UUID) -> Non
                 "worker heartbeat expired",
                 release_lease=False,
             )
-        if not active_nodes and run.state != "error":
-            run.state = "error"
+        if not active_nodes and run.state != RunState.error:
+            run.state = RunState.error
             run.updated_at = datetime.datetime.utcnow()
             session.add(run)
             session.commit()

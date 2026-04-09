@@ -26,6 +26,8 @@ from app.services import workspaces as workspace_svc
 from app.services.graphs import EdgeInput, NodeInput
 from app.services.templates import SubgraphNodeInput
 
+pytestmark = pytest.mark.fast
+
 
 def test_create_graph_rejects_cross_workspace_task_template_reference(session):
     source_workspace = workspace_svc.create_workspace(session, "source")

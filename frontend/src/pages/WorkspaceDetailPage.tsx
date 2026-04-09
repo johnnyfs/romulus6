@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAutoResize } from '../hooks/useAutoResize'
-import { Link, useParams, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   type Agent,
   type AgentEvent,
@@ -224,6 +224,7 @@ function ActivityLine({
 
 export default function WorkspaceDetailPage() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const [workspace, setWorkspace] = useState<Workspace | null>(null)
   const [agents, setAgents] = useState<Agent[]>([])
@@ -318,18 +319,23 @@ export default function WorkspaceDetailPage() {
       })
       .catch((error: unknown) => {
         if (cancelled) return
-        setPageError(error instanceof Error ? error.message : 'Failed to load workspace')
+        const msg = error instanceof Error ? error.message : ''
+        if (msg.includes('not found') || msg.includes('Not found')) {
+          navigate('/workspaces', { replace: true })
+          return
+        }
+        setPageError(msg || 'Failed to load workspace')
       })
 
     return () => {
       cancelled = true
     }
-  }, [id])
+  }, [id, navigate])
 
   // ── SSE connection management ─────────────────────────────────────────────
 
   useEffect(() => {
-    if (!id) return
+    if (!id || !workspace) return
 
       const applyEvent = (event: AgentEvent) => {
       const streamKey = event.stream_key ?? event.agent_id ?? event.node_id ?? event.run_id ?? event.source_id ?? 'unknown'
@@ -425,7 +431,7 @@ export default function WorkspaceDetailPage() {
       await streamWorkspaceEvents(id, eventCursor.current, applyEvent, ctrl.signal)
     })().catch(() => {})
     return () => ctrl.abort()
-  }, [id])
+  }, [id, workspace])
 
   useEffect(() => {
     return () => workspaceStreamController.current?.abort()
@@ -473,13 +479,13 @@ export default function WorkspaceDetailPage() {
   }, [id])
 
   useEffect(() => {
-    if (!id || activeTab !== 'sandboxes') return
+    if (!id || !workspace || activeTab !== 'sandboxes') return
     loadSandboxDebug().catch(() => {})
     const interval = window.setInterval(() => {
       loadSandboxDebug().catch(() => {})
     }, 5000)
     return () => window.clearInterval(interval)
-  }, [activeTab, id, loadSandboxDebug])
+  }, [activeTab, id, workspace, loadSandboxDebug])
 
   // ── Feed building ─────────────────────────────────────────────────────────
 
@@ -490,7 +496,7 @@ export default function WorkspaceDetailPage() {
 
   const agentColorMap = useMemo(() => {
     const map: Record<string, string> = {}
-    const sorted = [...agents].sort((a, b) => a.created_at.localeCompare(b.created_at))
+    const sorted = [...agents].sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''))
     sorted.forEach((agent, i) => {
       map[agent.id] = AGENT_COLORS[i % AGENT_COLORS.length]
     })
@@ -518,7 +524,7 @@ export default function WorkspaceDetailPage() {
         },
       })
     }
-    allRaw.sort((a, b) => a.event.timestamp.localeCompare(b.event.timestamp))
+    allRaw.sort((a, b) => (a.event?.timestamp ?? '').localeCompare(b.event?.timestamp ?? ''))
 
     const items: FeedItem[] = []
     const textBuffers: Record<
@@ -741,6 +747,8 @@ export default function WorkspaceDetailPage() {
       setFormAgentType('opencode')
       setFormModel(DEFAULT_MODEL_BY_AGENT_TYPE.opencode)
       setFormSchemaId('structured_response_v1')
+    } catch (err) {
+      setPageError(err instanceof Error ? err.message : 'Failed to create agent')
     } finally {
       setCreating(false)
     }
@@ -761,6 +769,8 @@ export default function WorkspaceDetailPage() {
         setAgentTerminal((prev) => ({ ...prev, [effectiveTargetId]: false }))
       }
       setChatInput('')
+    } catch (err) {
+      setPageError(err instanceof Error ? err.message : 'Failed to send message')
     } finally {
       setCreating(false)
     }

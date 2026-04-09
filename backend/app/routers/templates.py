@@ -1,5 +1,4 @@
 import datetime
-import json
 import uuid
 from typing import Annotated, Any, Optional
 
@@ -8,7 +7,7 @@ from pydantic import BaseModel
 from sqlmodel import Session
 
 from app.database import get_session
-from app.models.agent import AgentConfig, ImageAttachment, PydanticAgentConfig
+from app.models.agent import AgentConfig, CommandConfig, ImageAttachment, PydanticAgentConfig
 from app.models.graph import NodeType
 from app.models.structured_fields import ViewConfig
 from app.models.template import (
@@ -24,6 +23,11 @@ from app.services.node_configs import (
 )
 from app.services import templates as svc
 from app.services.node_shapes import UNSET
+from app.services.structured_serialization import (
+    decoded_json_string,
+    image_attachments,
+    normalized_string_map,
+)
 from app.services.templates import ArgumentInput, SubgraphEdgeInput, SubgraphNodeInput
 
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -82,27 +86,15 @@ def _to_arg_inputs(args: list[ArgumentSchema]) -> list[ArgumentInput]:
 
 
 def _arg_response(obj: Any) -> ArgumentResponse:
-    mc = None
-    if obj.model_constraint:
-        try:
-            mc = json.loads(obj.model_constraint)
-        except (json.JSONDecodeError, TypeError):
-            mc = None
-    eo = None
-    if obj.enum_options:
-        try:
-            eo = json.loads(obj.enum_options)
-        except (json.JSONDecodeError, TypeError):
-            eo = None
     return ArgumentResponse(
         id=obj.id,
         name=obj.name,
         arg_type=obj.arg_type,
         default_value=obj.default_value,
-        model_constraint=mc,
+        model_constraint=decoded_json_string(obj.model_constraint),
         min_value=float(obj.min_value) if obj.min_value is not None else None,
         max_value=float(obj.max_value) if obj.max_value is not None else None,
-        enum_options=eo,
+        enum_options=decoded_json_string(obj.enum_options),
         created_at=obj.created_at,
     )
 
@@ -154,15 +146,6 @@ class TaskTemplateResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-def _parse_json_field(obj: Any, field: str) -> Optional[dict]:
-    raw = getattr(obj, field, None)
-    if raw is None:
-        return None
-    if isinstance(raw, dict):
-        return raw
-    return json.loads(raw)
-
-
 def _task_tmpl_response(t: Any) -> TaskTemplateResponse:
     return TaskTemplateResponse(
         id=t.id,
@@ -176,20 +159,11 @@ def _task_tmpl_response(t: Any) -> TaskTemplateResponse:
         graph_tools=t.graph_tools,
         label=t.label,
         arguments=[_arg_response(a) for a in t.arguments if not a.deleted],
-        output_schema=_parse_json_field(t, "output_schema"),
-        images=_parse_json_images(t),
+        output_schema=normalized_string_map(getattr(t, "output_schema", None)),
+        images=image_attachments(getattr(t, "images", None)),
         created_at=t.created_at,
         updated_at=t.updated_at,
     )
-
-
-def _parse_json_images(obj: Any) -> Optional[list[ImageAttachment]]:
-    raw = getattr(obj, "images", None)
-    if raw is None:
-        return None
-    if isinstance(raw, str):
-        raw = json.loads(raw)
-    return [ImageAttachment(**img) for img in raw] if raw else None
 
 
 # --- Endpoints ---
@@ -403,9 +377,6 @@ class SubgraphTemplateListResponse(BaseModel):
 # --- Helpers ---
 
 def _node_response(n: Any) -> SubgraphNodeResponse:
-    bindings = None
-    if n.argument_bindings:
-        bindings = n.argument_bindings
     return SubgraphNodeResponse(
         id=n.id,
         subgraph_template_id=n.subgraph_template_id,
@@ -416,8 +387,8 @@ def _node_response(n: Any) -> SubgraphNodeResponse:
         view_config=view_config_from_node(n),
         task_template_id=n.task_template_id,
         ref_subgraph_template_id=n.ref_subgraph_template_id,
-        argument_bindings=bindings,
-        output_schema=_parse_json_field(n, "output_schema"),
+        argument_bindings=normalized_string_map(getattr(n, "argument_bindings", None)),
+        output_schema=normalized_string_map(getattr(n, "output_schema", None)),
         created_at=n.created_at,
     )
 
@@ -438,7 +409,7 @@ def _to_detail(t: Any) -> SubgraphTemplateDetailResponse:
         nodes=[_node_response(n) for n in t.nodes if not n.deleted],
         edges=[SubgraphEdgeResponse.model_validate(e) for e in t.edges if not e.deleted],
         arguments=[_arg_response(a) for a in t.arguments if not a.deleted],
-        output_schema=_parse_json_field(t, "output_schema"),
+        output_schema=normalized_string_map(getattr(t, "output_schema", None)),
         created_at=t.created_at,
         updated_at=t.updated_at,
     )

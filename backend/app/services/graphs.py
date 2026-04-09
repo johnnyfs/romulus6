@@ -8,7 +8,14 @@ import jinja2
 from sqlmodel import Session, select
 
 from app.models.graph import Graph, GraphEdge, GraphNode, NodeType
-from app.models.run import GraphRun, GraphRunEdge, GraphRunNode
+from app.models.run import (
+    GraphRun,
+    GraphRunEdge,
+    GraphRunNode,
+    RunNodeSourceType,
+    RunNodeState,
+    RunNodeType,
+)
 from app.models.template import (
     SubgraphTemplate,
     SubgraphTemplateEdge,
@@ -615,10 +622,10 @@ def _materialize_task_template(
     rn = GraphRunNode(
         run_id=run.id,
         source_node_id=source_node_id or task_template.id,
-        source_type="template_node",
-        node_type=task_template.task_type.value,
+        source_type=RunNodeSourceType.template_node,
+        node_type=RunNodeType(task_template.task_type.value),
         name=_substitute_args(task_template.label or task_template.name, bindings),
-        state="pending",
+        state=RunNodeState.pending,
         agent_type=_substitute_args(task_template.agent_type, bindings),
         model=_substitute_args(task_template.model, bindings),
         prompt=_substitute_args(task_template.prompt, bindings),
@@ -685,10 +692,10 @@ def _materialize_subgraph(
             rn = GraphRunNode(
                 run_id=child_run.id,
                 source_node_id=tmpl_node.id,
-                source_type="template_node",
-                node_type=tmpl_node.node_type.value,
+                source_type=RunNodeSourceType.template_node,
+                node_type=RunNodeType(tmpl_node.node_type.value),
                 name=tmpl_node.name,
-                state="pending",
+                state=RunNodeState.pending,
                 agent_type=_substitute_args(tmpl_node.agent_type, bindings),
                 model=_substitute_args(tmpl_node.model, bindings),
                 prompt=_substitute_args(tmpl_node.prompt, bindings),
@@ -734,10 +741,10 @@ def _materialize_subgraph(
             rn = GraphRunNode(
                 run_id=child_run.id,
                 source_node_id=tmpl_node.id,
-                source_type="template_node",
-                node_type="subgraph",
+                source_type=RunNodeSourceType.template_node,
+                node_type=RunNodeType.subgraph,
                 name=tmpl_node.name or _substitute_args(ref_sg.label, bindings) or ref_sg.name,
-                state="pending",
+                state=RunNodeState.pending,
                 output_schema=tmpl_node.output_schema or ref_sg.output_schema,
             )
             session.add(rn)
@@ -817,10 +824,10 @@ def create_run(session: Session, graph: Graph) -> GraphRun:
             rn = GraphRunNode(
                 run_id=run.id,
                 source_node_id=node.id,
-                source_type="graph_node",
-                node_type="subgraph",
+                source_type=RunNodeSourceType.graph_node,
+                node_type=RunNodeType.subgraph,
                 name=node.name or _substitute_args(sg_tmpl.label, bindings) or sg_tmpl.name,
-                state="pending",
+                state=RunNodeState.pending,
                 output_schema=node.output_schema or sg_tmpl.output_schema,
             )
             session.add(rn)
@@ -840,9 +847,10 @@ def create_run(session: Session, graph: Graph) -> GraphRun:
             rn = GraphRunNode(
                 run_id=run.id,
                 source_node_id=node.id,
-                node_type=node.node_type.value,
+                source_type=RunNodeSourceType.graph_node,
+                node_type=RunNodeType(node.node_type.value),
                 name=node.name,
-                state="pending",
+                state=RunNodeState.pending,
                 agent_type=node.agent_type,
                 model=node.model,
                 prompt=node.prompt,

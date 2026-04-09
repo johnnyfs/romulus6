@@ -39,21 +39,31 @@ def create_sandbox(
     session: Session, workspace_id: uuid.UUID, name: str
 ) -> tuple[Sandbox, Worker]:
     sandbox = get_sandbox_by_name(session, workspace_id, name)
+    created = False
     if sandbox is None:
         sandbox = Sandbox(workspace_id=workspace_id, name=name)
         session.add(sandbox)
         session.commit()
         session.refresh(sandbox)
+        created = True
 
     worker = worker_svc.get_worker_for_sandbox(session, sandbox)
     if worker is not None and worker.worker_url:
         return sandbox, worker
 
-    _, worker = worker_svc.lease_worker_for_sandbox(
-        session,
-        workspace_id=workspace_id,
-        sandbox=sandbox,
-    )
+    try:
+        _, worker = worker_svc.lease_worker_for_sandbox(
+            session,
+            workspace_id=workspace_id,
+            sandbox=sandbox,
+        )
+    except Exception:
+        if created:
+            sandbox.deleted = True
+            sandbox.updated_at = datetime.datetime.utcnow()
+            session.add(sandbox)
+            session.commit()
+        raise
     return sandbox, worker
 
 

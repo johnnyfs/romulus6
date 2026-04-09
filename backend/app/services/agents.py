@@ -1,10 +1,8 @@
-import asyncio
 import datetime
 import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
-import httpx
 from sqlmodel import Session, select
 
 from app.models.agent import Agent, AgentStatus, AgentType
@@ -13,30 +11,9 @@ from app.models.sandbox import Sandbox
 from app.services import events as event_svc
 from app.services import sandboxes as sandbox_svc
 from app.services import workers as worker_svc
+from app.services.worker_client import post_session_message, post_session_with_retry
 
-
-async def _post_session_with_retry(
-    worker_url: str,
-    payload: dict[str, Any],
-    max_wait: int = 60,
-    interval: float = 2.0,
-) -> dict[str, Any]:
-    deadline = asyncio.get_event_loop().time() + max_wait
-    last_exc: Exception | None = None
-    while asyncio.get_event_loop().time() < deadline:
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    f"{worker_url}/sessions",
-                    json=payload,
-                    timeout=10.0,
-                )
-                resp.raise_for_status()
-                return resp.json()
-        except (httpx.ConnectError, httpx.TimeoutException) as exc:
-            last_exc = exc
-            await asyncio.sleep(interval)
-    raise RuntimeError(f"Worker did not become ready in time: {last_exc}") from last_exc
+_post_session_with_retry = post_session_with_retry
 
 
 def _persist_agent_event(
@@ -249,23 +226,17 @@ async def send_message(session: Session, agent: Agent, prompt: str) -> None:
             worker_id=worker_id,
         )
         raise RuntimeError("Agent session is no longer available; recreate the agent")
-    async with httpx.AsyncClient() as client:
-        try:
-            resp = await client.post(
-                f"{worker.worker_url}/sessions/{agent.session_id}/messages",
-                json={"prompt": prompt},
-                timeout=10.0,
-            )
-            resp.raise_for_status()
-        except Exception as exc:
-            _persist_agent_event(
-                session,
-                agent,
-                "message.dispatch.failed",
-                data={"prompt": prompt, "error": str(exc)},
-                worker_id=worker_id,
-            )
-            raise
+    try:
+        await post_session_message(worker.worker_url, agent.session_id, prompt)
+    except Exception as exc:
+        _persist_agent_event(
+            session,
+            agent,
+            "message.dispatch.failed",
+            data={"prompt": prompt, "error": str(exc)},
+            worker_id=worker_id,
+        )
+        raise
 
     _persist_agent_event(
         session,

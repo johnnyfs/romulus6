@@ -1,5 +1,4 @@
 import datetime
-import json
 import uuid
 from typing import Annotated, Any, Optional
 
@@ -10,7 +9,13 @@ from sqlmodel import Session
 from app.database import get_session
 from app.models.agent import AgentConfig, CommandConfig, PydanticAgentConfig
 from app.models.graph import Graph, NodeType
-from app.models.run import GraphRun
+from app.models.run import (
+    GraphRun,
+    RunNodeSourceType,
+    RunNodeState,
+    RunNodeType,
+    RunState,
+)
 from app.models.structured_fields import ViewConfig
 from app.models.workspace import Workspace
 from app.services import graph_transfer as transfer_svc
@@ -24,6 +29,10 @@ from app.services.node_configs import (
     view_config_from_node,
 )
 from app.services.node_shapes import UNSET
+from app.services.structured_serialization import (
+    normalized_json_object,
+    normalized_string_map,
+)
 
 router = APIRouter(
     prefix="/workspaces/{workspace_id}/graphs",
@@ -87,7 +96,7 @@ class PatchNodeRequest(BaseModel):
 
 
 class PatchRunNodeRequest(BaseModel):
-    state: Optional[str] = None
+    state: Optional[RunNodeState] = None
 
 
 class AddEdgeRequest(BaseModel):
@@ -147,13 +156,13 @@ class GraphRunNodeResponse(BaseModel):
     id: uuid.UUID
     run_id: uuid.UUID
     source_node_id: Optional[uuid.UUID] = None
-    source_type: str = "graph_node"
+    source_type: RunNodeSourceType = RunNodeSourceType.graph_node
     attempt: int = 1
     retry_of_run_node_id: Optional[uuid.UUID] = None
     next_attempt_run_node_id: Optional[uuid.UUID] = None
-    node_type: str
+    node_type: RunNodeType
     name: Optional[str] = None
-    state: str
+    state: RunNodeState
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
     view_config: Optional[ViewConfig] = None
@@ -181,7 +190,7 @@ class GraphRunResponse(BaseModel):
     id: uuid.UUID
     graph_id: Optional[uuid.UUID] = None
     workspace_id: uuid.UUID
-    state: str = "pending"
+    state: RunState = RunState.pending
     sandbox_id: Optional[uuid.UUID] = None
     parent_run_node_id: Optional[uuid.UUID] = None
     source_template_id: Optional[uuid.UUID] = None
@@ -214,17 +223,8 @@ def _require_graph(
     return graph
 
 
-def _parse_json_field(obj: Any, field: str) -> Any:
-    raw = getattr(obj, field, None)
-    if raw is None:
-        return None
-    if isinstance(raw, (dict, list)):
-        return raw
-    return json.loads(raw)
-
-
 def _parse_bindings(obj: Any) -> Optional[dict[str, str]]:
-    return _parse_json_field(obj, "argument_bindings")
+    return normalized_string_map(getattr(obj, "argument_bindings", None))
 
 
 def _node_response(n: Any) -> GraphNodeResponse:
@@ -239,7 +239,7 @@ def _node_response(n: Any) -> GraphNodeResponse:
         task_template_id=getattr(n, "task_template_id", None),
         subgraph_template_id=getattr(n, "subgraph_template_id", None),
         argument_bindings=_parse_bindings(n),
-        output_schema=_parse_json_field(n, "output_schema"),
+        output_schema=normalized_string_map(getattr(n, "output_schema", None)),
         created_at=n.created_at,
     )
 
@@ -249,7 +249,7 @@ def _run_node_response(rn: Any) -> GraphRunNodeResponse:
         id=rn.id,
         run_id=rn.run_id,
         source_node_id=rn.source_node_id,
-        source_type=getattr(rn, "source_type", "graph_node"),
+        source_type=getattr(rn, "source_type", RunNodeSourceType.graph_node),
         attempt=getattr(rn, "attempt", 1),
         retry_of_run_node_id=getattr(rn, "retry_of_run_node_id", None),
         next_attempt_run_node_id=getattr(rn, "next_attempt_run_node_id", None),
@@ -262,8 +262,8 @@ def _run_node_response(rn: Any) -> GraphRunNodeResponse:
         agent_id=rn.agent_id,
         session_id=rn.session_id,
         child_run_id=getattr(rn, "child_run_id", None),
-        output_schema=_parse_json_field(rn, "output_schema"),
-        output=_parse_json_field(rn, "output"),
+        output_schema=normalized_string_map(getattr(rn, "output_schema", None)),
+        output=normalized_json_object(getattr(rn, "output", None)),
         created_at=rn.created_at,
     )
 

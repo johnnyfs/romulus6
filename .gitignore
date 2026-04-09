@@ -43,6 +43,8 @@ Thumbs.db
 
 # Local DB data
 .pg-data/
+.local/
+.frontend-backend-target
 
 # Worker build artifacts
 worker/opencode

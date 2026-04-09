@@ -13,6 +13,8 @@ from app.services import agents as agent_svc
 from app.services import events as event_svc
 from app.services import workspaces as workspace_svc
 
+pytestmark = pytest.mark.fast
+
 
 def _parse_sse_payload(chunk: bytes) -> dict:
     for line in chunk.decode().splitlines():
