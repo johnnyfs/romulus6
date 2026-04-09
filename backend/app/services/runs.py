@@ -8,6 +8,8 @@ from sqlmodel import Session, select
 
 from app.database import engine
 from app.models.agent import Agent, AgentStatus, AgentType
+from app.models.event import Event
+from app.models.reconcile import RunReconcile
 from app.models.run import (
     GraphRun,
     GraphRunEdge,
@@ -24,13 +26,18 @@ from app.services import controller as controller_svc
 from app.services import events as event_svc
 from app.services import sandboxes as sandbox_svc
 from app.services import workers as worker_svc
-from app.services.worker_client import execute_command, post_session_with_retry
+from app.services.worker_client import (
+    execute_command,
+    interrupt_worker_session,
+    post_session_with_retry,
+)
 from app.utils.output_schema import validate_output_against_schema
 from app.utils.slugify import slugify
 from app.utils.time import utcnow
 
 logger = logging.getLogger(__name__)
 MAX_RUN_NODE_ATTEMPTS = 3
+EXPLICIT_COMPLETION_AGENT_TYPES = {"opencode", "codex", "claude_code"}
 
 TOOL_FILE_CONTENT = """\
 import { tool } from "@opencode/tool";
@@ -53,6 +60,37 @@ export default tool({
   },
 });
 """
+
+
+def _requires_explicit_completion(node: GraphRunNode) -> bool:
+    return (
+        node.node_type == RunNodeType.agent
+        and node.agent_type in EXPLICIT_COMPLETION_AGENT_TYPES
+    )
+
+
+def _completion_prompt_suffix(
+    *,
+    run: GraphRun,
+    node: GraphRunNode,
+    expanded_schema: dict[str, Any] | None,
+) -> str:
+    lines = [
+        "IMPORTANT: When you have fully completed the task described above, "
+        "you MUST call the `mark_node_complete` tool exactly once before you stop."
+    ]
+    if expanded_schema is not None:
+        lines.append(
+            "When you call `mark_node_complete`, you MUST pass an `output` object "
+            f"matching this schema: {json.dumps(expanded_schema, sort_keys=True)}."
+        )
+    else:
+        lines.append(
+            "This node does not require structured output. Call "
+            "`mark_node_complete` without an `output` object unless you have a "
+            "meaningful JSON result to return."
+        )
+    return "\n\n".join(lines)
 
 
 def _persist_run_node_event(
@@ -743,13 +781,6 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
 
         try:
             await _ensure_workspace_dir(worker.worker_url, workspace_dir)
-            if node.graph_tools and node.agent_type not in ("pydantic", "codex", "claude_code"):
-                await _place_tool_file(
-                    worker.worker_url,
-                    workspace_dir,
-                    output_schema=node.output_schema,
-                    db_session=session,
-                )
 
             agent = Agent(
                 workspace_id=run.workspace_id,
@@ -766,34 +797,23 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
             session.commit()
             session.refresh(agent)
 
+            # Expand schema references so the worker can build models without DB.
+            expanded_schema = _expand_output_schema_for_worker(
+                node.output_schema, session
+            )
             resolved_prompt = _resolve_output_references(session, run, node) or ""
             dispatch_prompt = resolved_prompt
-            if node.graph_tools and node.agent_type not in ("pydantic", "codex", "claude_code"):
-                dispatch_prompt = (
-                    f"{dispatch_prompt}\n\n"
-                    "IMPORTANT: When you have fully completed the task described above, "
-                    "you MUST call the `mark_node_complete` tool to signal completion."
+            if _requires_explicit_completion(node):
+                dispatch_prompt = f"{dispatch_prompt}\n\n" + _completion_prompt_suffix(
+                    run=run,
+                    node=node,
+                    expanded_schema=expanded_schema,
                 )
-                if node.output_schema:
-                    fields_desc = ", ".join(
-                        f'"{k}" ({v})'
-                        + (" - provide a URL or data URI" if v == "image" else "")
-                        for k, v in node.output_schema.items()
-                    )
-                    dispatch_prompt += (
-                        f"\n\nWhen calling mark_node_complete, you MUST pass an 'output' "
-                        f"object with these fields: {fields_desc}."
-                    )
 
             if node.agent_type == "pydantic" and not node.output_schema:
                 raise ValueError("pydantic agent requires output_schema")
 
             resolved_images = await _resolve_images(worker.worker_url, node.image_attachments)
-
-            # Expand schema references so the worker can build models without DB
-            expanded_schema = _expand_output_schema_for_worker(
-                node.output_schema, session
-            )
 
             data = await post_session_with_retry(
                 worker.worker_url,
@@ -807,6 +827,8 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
                     "sandbox_mode": node.sandbox_mode,
                     "workspace_id": str(run.workspace_id),
                     "sandbox_id": str(run.sandbox_id) if run.sandbox_id else None,
+                    "graph_run_id": str(run.id),
+                    "graph_run_node_id": str(node.id),
                     "images": resolved_images,
                 },
             )
@@ -911,10 +933,13 @@ def complete_node(
     node = session.get(GraphRunNode, node_id)
     if (
         node is None
+        or node.run_id != run_id
         or node.state == RunNodeState.completed
         or node.next_attempt_run_node_id is not None
     ):
         return
+    if node.state not in (RunNodeState.dispatching, RunNodeState.running):
+        raise ValueError("run node is not active")
     schema = node.output_schema
     if output is None and node.output is not None:
         output = node.output
@@ -950,12 +975,15 @@ def fail_node_and_run(
     reason: str,
     *,
     release_lease: bool = True,
+    allow_retry: bool = True,
 ) -> None:
     node = session.get(GraphRunNode, node_id)
     run = session.get(GraphRun, run_id)
     if node is not None and node.next_attempt_run_node_id is not None:
         return
     if (
+        allow_retry
+        and
         node is not None
         and run is not None
         and node.child_run_id is None
@@ -1028,6 +1056,322 @@ def _resume_run_if_terminal(session: Session, run: GraphRun) -> None:
         run.state = RunState.running
         run.updated_at = utcnow()
         session.add(run)
+
+
+def complete_run_node(
+    session: Session,
+    workspace_id: uuid.UUID,
+    run_id: uuid.UUID,
+    node_id: uuid.UUID,
+    output: dict[str, Any] | None = None,
+) -> GraphRun:
+    run = session.get(GraphRun, run_id)
+    if run is None or run.workspace_id != workspace_id or run.deleted:
+        raise ValueError("Run not found")
+    node = session.get(GraphRunNode, node_id)
+    if node is None or node.run_id != run_id:
+        raise ValueError("run node not found")
+    complete_node(session, run_id, node_id, output=output)
+    session.refresh(run)
+    return run
+
+
+def _collect_run_subtree(
+    session: Session,
+    root_run: GraphRun,
+) -> tuple[list[GraphRun], list[GraphRunNode]]:
+    run_by_id: dict[uuid.UUID, GraphRun] = {}
+    node_by_id: dict[uuid.UUID, GraphRunNode] = {}
+    stack = [root_run]
+
+    while stack:
+        current = stack.pop()
+        if current.id in run_by_id:
+            continue
+        run_by_id[current.id] = current
+        for node in current.run_nodes:
+            node_by_id[node.id] = node
+            if node.child_run_id is not None:
+                child_run = session.get(GraphRun, node.child_run_id)
+                if child_run is not None:
+                    stack.append(child_run)
+
+    return list(run_by_id.values()), list(node_by_id.values())
+
+
+def _run_delete_depth(
+    run_by_id: dict[uuid.UUID, GraphRun],
+    node_by_id: dict[uuid.UUID, GraphRunNode],
+    run: GraphRun,
+) -> int:
+    depth = 0
+    current = run
+    seen: set[uuid.UUID] = set()
+    while current.parent_run_node_id is not None and current.id not in seen:
+        seen.add(current.id)
+        parent_node = node_by_id.get(current.parent_run_node_id)
+        if parent_node is None:
+            break
+        parent_run = run_by_id.get(parent_node.run_id)
+        if parent_run is None:
+            break
+        depth += 1
+        current = parent_run
+    return depth
+
+
+def _clear_run_links(
+    session: Session,
+    run_ids: set[uuid.UUID],
+    node_ids: set[uuid.UUID],
+) -> None:
+    nodes = list(
+        session.exec(
+            select(GraphRunNode).where(
+                (GraphRunNode.id.in_(node_ids))
+                | (GraphRunNode.child_run_id.in_(run_ids))
+                | (GraphRunNode.retry_of_run_node_id.in_(node_ids))
+                | (GraphRunNode.next_attempt_run_node_id.in_(node_ids))
+            )
+        ).all()
+    )
+    for node in nodes:
+        changed = False
+        if node.child_run_id in run_ids:
+            node.child_run_id = None
+            changed = True
+        if node.retry_of_run_node_id in node_ids:
+            node.retry_of_run_node_id = None
+            changed = True
+        if node.next_attempt_run_node_id in node_ids:
+            node.next_attempt_run_node_id = None
+            changed = True
+        if changed:
+            session.add(node)
+
+    runs = list(
+        session.exec(
+            select(GraphRun).where(
+                (GraphRun.id.in_(run_ids))
+                | (GraphRun.parent_run_node_id.in_(node_ids))
+            )
+        ).all()
+    )
+    for run in runs:
+        if run.parent_run_node_id in node_ids:
+            run.parent_run_node_id = None
+            session.add(run)
+
+    session.flush()
+
+
+async def _interrupt_run_sessions(
+    session: Session,
+    runs: list[GraphRun],
+    nodes: list[GraphRunNode],
+    *,
+    reason: str,
+) -> None:
+    requests: list[tuple[str, str]] = []
+    run_by_id = {run.id: run for run in runs}
+
+    for node in nodes:
+        if node.state not in (RunNodeState.dispatching, RunNodeState.running):
+            continue
+        if not node.session_id:
+            continue
+        run = run_by_id.get(node.run_id)
+        if run is None or run.sandbox_id is None:
+            continue
+        sandbox = session.get(Sandbox, run.sandbox_id)
+        worker = worker_svc.get_worker_for_sandbox(session, sandbox)
+        if worker is None or worker.worker_url is None:
+            continue
+        requests.append((worker.worker_url, node.session_id))
+
+    for worker_url, session_id in requests:
+        try:
+            await interrupt_worker_session(worker_url, session_id, reason=reason)
+        except Exception:
+            logger.warning(
+                "failed to interrupt worker session %s for run interruption",
+                session_id,
+                exc_info=True,
+            )
+
+
+def _mark_interrupted_run_subtree(
+    session: Session,
+    root_run: GraphRun,
+    runs: list[GraphRun],
+    nodes: list[GraphRunNode],
+    *,
+    reason: str,
+) -> None:
+    touched_nodes: list[tuple[GraphRun, GraphRunNode]] = []
+    run_by_id = {run.id: run for run in runs}
+
+    for node in nodes:
+        if node.state == RunNodeState.completed:
+            continue
+        if node.state != RunNodeState.error:
+            node.state = RunNodeState.error
+            node.updated_at = utcnow()
+            session.add(node)
+            run = run_by_id.get(node.run_id)
+            if run is not None:
+                touched_nodes.append((run, node))
+
+        if node.agent_id is not None:
+            agent = session.get(Agent, node.agent_id)
+            if agent is not None:
+                agent.status = AgentStatus.interrupted
+                agent.session_id = None
+                agent.updated_at = utcnow()
+                session.add(agent)
+        node.session_id = None
+        session.add(node)
+
+    for run in runs:
+        if run.state != RunState.error:
+            run.state = RunState.error
+            run.updated_at = utcnow()
+            session.add(run)
+
+    session.commit()
+
+    for run, node in touched_nodes:
+        _persist_run_node_event(
+            session,
+            run,
+            node,
+            "run.node.failed",
+            data={"reason": reason},
+        )
+
+    event_svc.persist_event(
+        session,
+        workspace_id=root_run.workspace_id,
+        source_type="run",
+        source_id=str(root_run.id),
+        payload={
+            "id": str(uuid.uuid4()),
+            "type": "run.interrupted",
+            "timestamp": utcnow().isoformat(),
+            "data": {"reason": reason},
+        },
+        run_id=root_run.id,
+        sandbox_id=root_run.sandbox_id,
+    )
+
+    if root_run.parent_run_node_id is None:
+        _maybe_release_run_sandbox(session, root_run, failure_reason=reason)
+
+
+async def interrupt_run(
+    session: Session,
+    workspace_id: uuid.UUID,
+    run_id: uuid.UUID,
+    *,
+    reason: str = "user_requested",
+) -> GraphRun:
+    run = session.get(GraphRun, run_id)
+    if run is None or run.workspace_id != workspace_id or run.deleted:
+        raise ValueError("Run not found")
+
+    runs, nodes = _collect_run_subtree(session, run)
+    await _interrupt_run_sessions(session, runs, nodes, reason=reason)
+    _mark_interrupted_run_subtree(session, run, runs, nodes, reason=reason)
+
+    if run.parent_run_node_id is not None:
+        parent_node = session.get(GraphRunNode, run.parent_run_node_id)
+        if parent_node is not None:
+            fail_node_and_run(
+                session,
+                parent_node.run_id,
+                parent_node.id,
+                f"child run interrupted: {reason}",
+                release_lease=False,
+                allow_retry=False,
+            )
+
+    session.refresh(run)
+    return run
+
+
+async def delete_run(
+    session: Session,
+    workspace_id: uuid.UUID,
+    run_id: uuid.UUID,
+    *,
+    reason: str = "user_requested",
+) -> bool:
+    run = session.get(GraphRun, run_id)
+    if run is None or run.workspace_id != workspace_id or run.deleted:
+        return False
+
+    if run.state not in (RunState.completed, RunState.error):
+        await interrupt_run(
+            session,
+            workspace_id,
+            run_id,
+            reason=f"run deleted: {reason}",
+        )
+        run = session.get(GraphRun, run_id)
+        if run is None:
+            return False
+
+    runs, nodes = _collect_run_subtree(session, run)
+    run_ids = {item.id for item in runs}
+    node_ids = {item.id for item in nodes}
+
+    _clear_run_links(session, run_ids, node_ids)
+
+    if run_ids:
+        for reconcile in session.exec(
+            select(RunReconcile).where(RunReconcile.run_id.in_(run_ids))
+        ).all():
+            session.delete(reconcile)
+
+        for event in session.exec(
+            select(Event)
+            .where(Event.workspace_id == workspace_id)
+            .where(Event.run_id.in_(run_ids))
+        ).all():
+            session.delete(event)
+
+        for agent in session.exec(
+            select(Agent).where(Agent.graph_run_id.in_(run_ids))
+        ).all():
+            session.delete(agent)
+
+    sandbox_ids = {
+        current.sandbox_id
+        for current in runs
+        if current.sandbox_id is not None
+    }
+
+    run_by_id = {current.id: current for current in runs}
+    node_by_id = {node.id: node for node in nodes}
+    for current in sorted(
+        runs,
+        key=lambda candidate: _run_delete_depth(run_by_id, node_by_id, candidate),
+        reverse=True,
+    ):
+        session.delete(current)
+    session.flush()
+
+    for sandbox_id in sandbox_ids:
+        still_used = session.exec(
+            select(GraphRun)
+            .where(GraphRun.workspace_id == workspace_id)
+            .where(GraphRun.sandbox_id == sandbox_id)
+        ).first()
+        if still_used is None:
+            sandbox_svc.delete_sandbox(session, workspace_id, sandbox_id)
+
+    session.commit()
+    return True
 
 
 SETTABLE_NODE_STATES = {

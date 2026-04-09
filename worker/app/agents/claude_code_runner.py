@@ -42,11 +42,23 @@ class ClaudeCodeRunner(AgentRunner):
         claude_session_id = session.runner_state.get("claude_code_session_id")
 
         mcp_servers = {}
-        if session.runner_state.get("graph_tools"):
-            ws_id = session.runner_state.get("graph_tools_workspace_id", "")
-            api_url = session.runner_state.get("graph_tools_backend_url", "")
-            if ws_id and api_url:
-                mcp_servers["romulus-graph-tools"] = build_graph_tools_mcp_server(ws_id, api_url)
+        ws_id = session.runner_state.get("graph_tools_workspace_id", "")
+        api_url = session.runner_state.get("graph_tools_backend_url", "")
+        if ws_id and api_url and (
+            session.runner_state.get("graph_tools")
+            or (
+                session.runner_state.get("graph_run_id")
+                and session.runner_state.get("graph_run_node_id")
+            )
+        ):
+            mcp_servers["romulus-run-tools"] = build_graph_tools_mcp_server(
+                ws_id,
+                api_url,
+                run_id=session.runner_state.get("graph_run_id"),
+                node_id=session.runner_state.get("graph_run_node_id"),
+                output_schema=session.runner_state.get("output_schema"),
+                enable_graph_tools=bool(session.runner_state.get("graph_tools")),
+            )
 
         options = ClaudeCodeOptions(
             cwd=session.workspace_dir,

@@ -271,6 +271,23 @@ export async function getRunById(workspaceId: string, runId: string): Promise<Gr
   return res.json()
 }
 
+export async function interruptRun(workspaceId: string, runId: string): Promise<GraphRun> {
+  const res = await fetch(`${BASE}/workspaces/${workspaceId}/runs/${runId}/interrupt`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason: 'user_requested' }),
+  })
+  await _check(res)
+  return res.json()
+}
+
+export async function deleteRun(workspaceId: string, runId: string): Promise<void> {
+  const res = await fetch(`${BASE}/workspaces/${workspaceId}/runs/${runId}`, {
+    method: 'DELETE',
+  })
+  await _check(res)
+}
+
 export async function syncRunNode(
   workspaceId: string,
   runId: string,

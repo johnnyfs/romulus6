@@ -263,6 +263,47 @@ test.describe('Graph API', () => {
     }
   });
 
+  test('deleting a graph also deletes its run history', async ({ request }) => {
+    const wid = await createWorkspace(request);
+    try {
+      const graphRes = await request.post(`/api/v1/workspaces/${wid}/graphs`, {
+        data: {
+          name: 'graph-delete-runs',
+          nodes: [{ node_type: 'command', name: 'echo', command_config: { command: 'echo ok' } }],
+          edges: [],
+        },
+      });
+      expect(graphRes.status()).toBe(201);
+      const graph = await graphRes.json();
+
+      const createRunRes = await request.post(`/api/v1/workspaces/${wid}/graphs/${graph.id}/runs`);
+      expect(createRunRes.status()).toBe(201);
+      const run = await createRunRes.json();
+
+      const deadline = Date.now() + 60_000;
+      while (Date.now() < deadline) {
+        const runRes = await request.get(`/api/v1/workspaces/${wid}/runs/${run.id}`);
+        expect(runRes.status()).toBe(200);
+        const currentRun = await runRes.json();
+        if (currentRun.state === 'completed' || currentRun.state === 'error') break;
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+      }
+
+      const deleteRes = await request.delete(`/api/v1/workspaces/${wid}/graphs/${graph.id}`);
+      expect(deleteRes.status()).toBe(204);
+
+      const deletedRunRes = await request.get(`/api/v1/workspaces/${wid}/runs/${run.id}`);
+      expect(deletedRunRes.status()).toBe(404);
+
+      const eventsRes = await request.get(`/api/v1/workspaces/${wid}/events?since=0&limit=200`);
+      expect(eventsRes.status()).toBe(200);
+      const events = await eventsRes.json();
+      expect(events.some((event: any) => event.run_id === run.id)).toBe(false);
+    } finally {
+      await deleteWorkspace(request, wid);
+    }
+  });
+
   test('GET /graphs lists graphs', async ({ request }) => {
     const wid = await createWorkspace(request);
     try {

@@ -5,6 +5,7 @@ import httpx
 from romulus_common.worker_api import (
     CommandRequest,
     CreateSessionRequest,
+    InterruptRequest,
     SendMessageRequest,
 )
 
@@ -78,3 +79,20 @@ async def execute_command(
         )
         resp.raise_for_status()
         return resp.json()
+
+
+async def interrupt_worker_session(
+    worker_url: str,
+    session_id: str,
+    *,
+    reason: str = "user_requested",
+    timeout: float = 10.0,
+) -> None:
+    request_body = InterruptRequest(reason=reason)
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{worker_url}/sessions/{session_id}/interrupt",
+            json=request_body.model_dump(mode="json"),
+            timeout=timeout,
+        )
+        resp.raise_for_status()

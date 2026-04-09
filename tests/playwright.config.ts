@@ -1,4 +1,5 @@
 import { defineConfig } from '@playwright/test';
+import { resolveBackendBaseUrl } from './backend/base-url';
 
 export default defineConfig({
   testDir: './backend',
@@ -6,6 +7,6 @@ export default defineConfig({
   globalTeardown: './backend/global-teardown.ts',
   workers: 1,
   use: {
-    baseURL: process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:8000',
+    baseURL: resolveBackendBaseUrl(),
   },
 });

@@ -20,6 +20,7 @@ export function useWorkspaceEvents(
   workspaceId: string | undefined,
   enabled: boolean,
   onError: (message: string) => void,
+  resetKey: number = 0,
 ): WorkspaceEventsResult {
   const [eventMap, setEventMap] = useState<Record<string, AgentEvent[]>>({})
   const [agentBusy, setAgentBusy] = useState<Record<string, boolean>>({})
@@ -176,6 +177,7 @@ export function useWorkspaceEvents(
 
   const streamStatus = useEventStream(connectStream, {
     enabled,
+    resetKey,
     onError: (err) => onError(err.message),
   })
 

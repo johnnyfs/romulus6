@@ -177,6 +177,29 @@ def get_worker(session: Session, worker_id: uuid.UUID) -> Worker | None:
     return worker
 
 
+def delete_worker(session: Session, worker_id: uuid.UUID) -> bool:
+    worker = session.get(Worker, worker_id)
+    if worker is None or worker.deleted:
+        return False
+
+    active_lease = session.exec(
+        select(WorkerLease.id)
+        .where(WorkerLease.worker_id == worker_id)
+        .where(WorkerLease.status == WorkerLeaseStatus.active)
+        .where(WorkerLease.deleted == False)  # noqa: E712
+    ).first()
+    if active_lease is not None:
+        raise ValueError("Worker has active leases")
+
+    worker.deleted = True
+    worker.status = WorkerStatus.terminated
+    worker.worker_url = None
+    worker.updated_at = _utcnow()
+    session.add(worker)
+    session.commit()
+    return True
+
+
 def is_worker_healthy(worker: Worker | None) -> bool:
     if worker is None or worker.deleted or worker.status != WorkerStatus.running:
         return False

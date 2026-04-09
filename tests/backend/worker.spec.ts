@@ -1,34 +1,15 @@
 import { test, expect } from '@playwright/test';
-import { execFileSync } from 'node:child_process';
 
 import { UUID_RE } from './helpers';
-
-const KUBE_NAMESPACE = process.env.ROMULUS_K8S_NAMESPACE ?? 'romulus';
 
 function metadataOf(worker: any): Record<string, unknown> {
   return worker.worker_metadata ?? worker.metadata ?? {};
 }
 
-function deleteWorkerByRegistrationKey(registrationKey: string): void {
-  execFileSync(
-    'kubectl',
-    [
-      'exec',
-      '-n',
-      KUBE_NAMESPACE,
-      'deployment/romulus-postgres',
-      '--',
-      'bash',
-      '-lc',
-      `psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "delete from worker where registration_key = '${registrationKey}';"`,
-    ],
-    { encoding: 'utf8' },
-  );
-}
-
 test.describe('Worker API', () => {
   test('register reuses registration identity and heartbeat refreshes worker state', async ({ request }) => {
     const registrationKey = `playwright-${crypto.randomUUID()}`;
+    let workerId: string | null = null;
     try {
       const registerRes = await request.post('/api/v1/workers/register', {
         data: {
@@ -41,6 +22,7 @@ test.describe('Worker API', () => {
       });
       expect(registerRes.status()).toBe(201);
       const worker = await registerRes.json();
+      workerId = worker.id;
       expect(worker.id).toMatch(UUID_RE);
       expect(worker.status).toBe('running');
       expect(worker.worker_url).toBe('http://10.0.0.10:8080');
@@ -78,8 +60,13 @@ test.describe('Worker API', () => {
       expect(heartbeated.pod_ip).toBe('10.0.0.12');
       expect(metadataOf(heartbeated).heartbeat).toBe(true);
       expect(heartbeated.last_heartbeat_at).toBeTruthy();
+
+      expect((await request.delete(`/api/v1/workers/${worker.id}`)).status()).toBe(204);
+      workerId = null;
     } finally {
-      deleteWorkerByRegistrationKey(registrationKey);
+      if (workerId) {
+        await request.delete(`/api/v1/workers/${workerId}`).catch(() => undefined);
+      }
     }
   });
 

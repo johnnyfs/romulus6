@@ -59,4 +59,7 @@ app.include_router(subgraph_templates_router, prefix="/api/v1")
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "deploy_mode": os.environ.get("DEPLOY_MODE", "local"),
+    }

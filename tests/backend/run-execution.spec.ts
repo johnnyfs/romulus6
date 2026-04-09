@@ -7,13 +7,29 @@ import {
   createGraph,
   createWorkspace,
   deleteWorkspaceWithChildren,
+  getBackendDeployMode,
   getRun,
   listWorkspaceEvents,
   sleep,
+  waitForRun,
   waitForRunTerminal,
 } from './helpers';
 
 const KUBE_NAMESPACE = process.env.ROMULUS_K8S_NAMESPACE ?? 'romulus';
+const GRAPH_AGENT_CASES = [
+  {
+    agentType: 'opencode',
+    model: 'anthropic/claude-haiku-4-5',
+  },
+  {
+    agentType: 'codex',
+    model: 'openai/gpt-5.3-codex',
+  },
+  {
+    agentType: 'claude_code',
+    model: 'anthropic/claude-haiku-4-5',
+  },
+] as const;
 
 function deleteWorkerPod(podName: string): void {
   execFileSync('kubectl', ['delete', 'pod', podName, '-n', KUBE_NAMESPACE, '--wait=true'], {
@@ -28,25 +44,16 @@ function waitForWorkerRollout(): void {
 }
 
 test.describe('Graph Run Execution', () => {
-  test.describe.configure({ mode: 'serial' });
   test.setTimeout(300_000);
 
-  test('controller dispatches pending nodes and the workspace event stream captures run execution', async ({ request }) => {
+  test('controller dispatches dependent command nodes and the workspace event stream captures run execution', async ({ request }) => {
     const wid = await createWorkspace(request, 'Run Execution Test WS');
     try {
       const graph = await createGraph(
         request, wid,
         [
           { node_type: 'command', name: 'start', command_config: { command: 'sleep 2; echo ok' } },
-          {
-            node_type: 'agent',
-            name: 'worker',
-            agent_config: {
-              agent_type: 'opencode',
-              model: 'anthropic/claude-haiku-4-5',
-              prompt: "Say the word 'hello'. That is your only task.",
-            },
-          },
+          { node_type: 'command', name: 'finish', command_config: { command: 'printf hello' } },
         ],
         [{ from_index: 0, to_index: 1 }],
       );
@@ -71,20 +78,22 @@ test.describe('Graph Run Execution', () => {
       const cmdNode = run.run_nodes.find((n: any) => n.name === 'start');
       expect(cmdNode).toBeTruthy();
       expect(cmdNode.state).toBe('completed');
+      expect(cmdNode.output).toMatchObject({ stdout: 'ok\n' });
 
-      // Agent node completed with agent metadata
-      const agentNode = run.run_nodes.find((n: any) => n.node_type === 'agent');
-      expect(agentNode).toBeTruthy();
-      expect(agentNode.state).toBe('completed');
-      expect(agentNode.agent_id).toMatch(UUID_RE);
-      expect(agentNode.session_id).toBeTruthy();
+      const finishNode = run.run_nodes.find((n: any) => n.name === 'finish');
+      expect(finishNode).toBeTruthy();
+      expect(finishNode.state).toBe('completed');
+      expect(finishNode.output).toMatchObject({ stdout: 'hello' });
 
       const workspaceEvents = await listWorkspaceEvents(request, wid, 0, 200);
       const runEvents = workspaceEvents.filter((event) => event.run_id === created.id);
       expect(runEvents.length).toBeGreaterThan(0);
       expect(runEvents.some((event) => event.node_id === cmdNode.id && event.type === 'command.output')).toBe(true);
-      expect(runEvents.some((event) => event.node_id === agentNode.id && event.type === 'session.idle')).toBe(true);
-      expect(runEvents.every((event) => event.worker_id && event.sandbox_id === run.sandbox_id)).toBe(true);
+      expect(runEvents.some((event) => event.node_id === finishNode.id && event.type === 'command.output')).toBe(true);
+      expect(runEvents.some((event) => event.node_id === cmdNode.id && event.type === 'run.node.running')).toBe(true);
+      expect(runEvents.some((event) => event.node_id === finishNode.id && event.type === 'run.node.running')).toBe(true);
+      expect(runEvents.every((event) => event.sandbox_id === run.sandbox_id)).toBe(true);
+      expect(runEvents.some((event) => Boolean(event.worker_id))).toBe(true);
     } finally {
       await deleteWorkspaceWithChildren(request, wid);
     }
@@ -255,7 +264,271 @@ test.describe('Graph Run Execution', () => {
     }
   });
 
+  for (const testCase of GRAPH_AGENT_CASES) {
+    test(`${testCase.agentType} graph nodes fail if the session ends without explicit completion`, async ({ request }) => {
+      const wid = await createWorkspace(request, `Explicit Completion ${testCase.agentType}`);
+      try {
+        const graph = await createGraph(
+          request,
+          wid,
+          [
+            {
+              node_type: 'agent',
+              name: 'needs-done-tool',
+              agent_config: {
+                agent_type: testCase.agentType,
+                model: testCase.model,
+                prompt: 'Wait for further instructions. Do not call any tools yet.',
+              },
+            },
+          ],
+          [],
+        );
+
+        const createRes = await request.post(`/api/v1/workspaces/${wid}/graphs/${graph.id}/runs`);
+        expect(createRes.status()).toBe(201);
+        const created = await createRes.json();
+
+        const runningRun = await waitForRun(
+          request,
+          wid,
+          graph.id,
+          created.id,
+          (run) => run.run_nodes.some((node: any) => node.name === 'needs-done-tool' && node.state === 'running' && node.session_id),
+          120_000,
+          1_000,
+        );
+        const node = runningRun.run_nodes.find((item: any) => item.name === 'needs-done-tool');
+        expect(node?.session_id).toBeTruthy();
+
+        const workspaceEvents = await listWorkspaceEvents(request, wid, 0, 200);
+        const runningEvent = workspaceEvents.find((event) => event.node_id === node.id && event.type === 'run.node.running');
+        expect(runningEvent?.worker_id).toMatch(UUID_RE);
+
+        const ingestRes = await request.post(`/api/v1/workers/${runningEvent.worker_id}/events`, {
+          data: {
+            event: {
+              session_id: node.session_id,
+              type: 'session.idle',
+              timestamp: new Date().toISOString(),
+              data: {},
+            },
+          },
+        });
+        expect(ingestRes.status()).toBe(202);
+
+        const terminalRun = await waitForRunTerminal(request, wid, graph.id, created.id);
+        const terminalNode = terminalRun.run_nodes.find((item: any) => item.id === node.id);
+        expect(terminalRun.state).toBe('error');
+        expect(terminalNode?.state).toBe('error');
+      } finally {
+        await deleteWorkspaceWithChildren(request, wid);
+      }
+    });
+
+    test(`${testCase.agentType} graph nodes can be completed without structured output`, async ({ request }) => {
+      const wid = await createWorkspace(request, `Done Tool No Output ${testCase.agentType}`);
+      try {
+        const graph = await createGraph(
+          request,
+          wid,
+          [
+            {
+              node_type: 'agent',
+              name: 'manual-complete',
+              agent_config: {
+                agent_type: testCase.agentType,
+                model: testCase.model,
+                prompt: 'Wait for further instructions. Do not call any tools yet.',
+              },
+            },
+          ],
+          [],
+        );
+
+        const createRes = await request.post(`/api/v1/workspaces/${wid}/graphs/${graph.id}/runs`);
+        expect(createRes.status()).toBe(201);
+        const created = await createRes.json();
+
+        const runningRun = await waitForRun(
+          request,
+          wid,
+          graph.id,
+          created.id,
+          (run) => run.run_nodes.some((node: any) => node.name === 'manual-complete' && node.state === 'running'),
+          120_000,
+          1_000,
+        );
+        const node = runningRun.run_nodes.find((item: any) => item.name === 'manual-complete');
+
+        const completeRes = await request.post(
+          `/api/v1/workspaces/${wid}/runs/${created.id}/nodes/${node.id}/complete`,
+          { data: {} },
+        );
+        expect(completeRes.status()).toBe(200);
+
+        const terminalRun = await waitForRunTerminal(request, wid, graph.id, created.id);
+        const terminalNode = terminalRun.run_nodes.find((item: any) => item.id === node.id);
+        expect(terminalRun.state).toBe('completed');
+        expect(terminalNode?.state).toBe('completed');
+        expect(terminalNode?.output ?? null).toBeNull();
+      } finally {
+        await deleteWorkspaceWithChildren(request, wid);
+      }
+    });
+
+    test(`${testCase.agentType} graph node completion enforces output schemas`, async ({ request }) => {
+      const wid = await createWorkspace(request, `Done Tool Output ${testCase.agentType}`);
+      try {
+        const graph = await createGraph(
+          request,
+          wid,
+          [
+            {
+              node_type: 'agent',
+              name: 'manual-output',
+              agent_config: {
+                agent_type: testCase.agentType,
+                model: testCase.model,
+                prompt: 'Wait for further instructions. Do not call any tools yet.',
+              },
+              output_schema: { result: 'string' },
+            },
+          ],
+          [],
+        );
+
+        const createRes = await request.post(`/api/v1/workspaces/${wid}/graphs/${graph.id}/runs`);
+        expect(createRes.status()).toBe(201);
+        const created = await createRes.json();
+
+        const runningRun = await waitForRun(
+          request,
+          wid,
+          graph.id,
+          created.id,
+          (run) => run.run_nodes.some((node: any) => node.name === 'manual-output' && node.state === 'running'),
+          120_000,
+          1_000,
+        );
+        const node = runningRun.run_nodes.find((item: any) => item.name === 'manual-output');
+
+        const badCompleteRes = await request.post(
+          `/api/v1/workspaces/${wid}/runs/${created.id}/nodes/${node.id}/complete`,
+          { data: {} },
+        );
+        expect(badCompleteRes.status()).toBe(422);
+
+        const goodCompleteRes = await request.post(
+          `/api/v1/workspaces/${wid}/runs/${created.id}/nodes/${node.id}/complete`,
+          { data: { output: { result: 'ok' } } },
+        );
+        expect(goodCompleteRes.status()).toBe(200);
+
+        const terminalRun = await waitForRunTerminal(request, wid, graph.id, created.id);
+        const terminalNode = terminalRun.run_nodes.find((item: any) => item.id === node.id);
+        expect(terminalRun.state).toBe('completed');
+        expect(terminalNode?.state).toBe('completed');
+        expect(terminalNode?.output).toMatchObject({ result: 'ok' });
+      } finally {
+        await deleteWorkspaceWithChildren(request, wid);
+      }
+    });
+  }
+
+  test('running graph runs can be interrupted explicitly', async ({ request }) => {
+    const wid = await createWorkspace(request, 'Run Interrupt Test');
+    try {
+      const graph = await createGraph(
+        request,
+        wid,
+        [
+          {
+            node_type: 'command',
+            name: 'slow-command',
+            command_config: { command: 'sleep 60' },
+          },
+        ],
+        [],
+      );
+
+      const createRes = await request.post(`/api/v1/workspaces/${wid}/graphs/${graph.id}/runs`);
+      expect(createRes.status()).toBe(201);
+      const created = await createRes.json();
+
+      const runningRun = await waitForRun(
+        request,
+        wid,
+        graph.id,
+        created.id,
+        (run) => run.run_nodes.some((node: any) => node.name === 'slow-command' && node.state === 'running'),
+        60_000,
+        1_000,
+      );
+      const node = runningRun.run_nodes.find((item: any) => item.name === 'slow-command');
+
+      const interruptRes = await request.post(`/api/v1/workspaces/${wid}/runs/${created.id}/interrupt`, {
+        data: { reason: 'test_interrupt' },
+      });
+      expect(interruptRes.status()).toBe(200);
+
+      const terminalRun = await waitForRunTerminal(request, wid, graph.id, created.id, 60_000);
+      const terminalNode = terminalRun.run_nodes.find((item: any) => item.id === node.id);
+      expect(terminalRun.state).toBe('error');
+      expect(terminalNode?.state).toBe('error');
+
+      const workspaceEvents = await listWorkspaceEvents(request, wid, 0, 200);
+      expect(workspaceEvents.some((event) => event.run_id === created.id && event.type === 'run.interrupted')).toBe(true);
+    } finally {
+      await deleteWorkspaceWithChildren(request, wid);
+    }
+  });
+
+  test('deleted runs disappear from run history and workspace events', async ({ request }) => {
+    const wid = await createWorkspace(request, 'Run Delete History Test');
+    try {
+      const graph = await createGraph(
+        request,
+        wid,
+        [
+          {
+            node_type: 'command',
+            name: 'fast-command',
+            command_config: { command: 'echo done' },
+          },
+        ],
+        [],
+      );
+
+      const createRes = await request.post(`/api/v1/workspaces/${wid}/graphs/${graph.id}/runs`);
+      expect(createRes.status()).toBe(201);
+      const created = await createRes.json();
+
+      await waitForRunTerminal(request, wid, graph.id, created.id, 60_000);
+      const beforeDeleteEvents = await listWorkspaceEvents(request, wid, 0, 200);
+      expect(beforeDeleteEvents.some((event) => event.run_id === created.id)).toBe(true);
+
+      const deleteRes = await request.delete(`/api/v1/workspaces/${wid}/runs/${created.id}`);
+      expect(deleteRes.status()).toBe(204);
+
+      const getDeletedRes = await request.get(`/api/v1/workspaces/${wid}/runs/${created.id}`);
+      expect(getDeletedRes.status()).toBe(404);
+
+      const listRunsRes = await request.get(`/api/v1/workspaces/${wid}/graphs/${graph.id}/runs`);
+      expect(listRunsRes.status()).toBe(200);
+      expect(await listRunsRes.json()).toEqual([]);
+
+      const afterDeleteEvents = await listWorkspaceEvents(request, wid, 0, 200);
+      expect(afterDeleteEvents.some((event) => event.run_id === created.id)).toBe(false);
+    } finally {
+      await deleteWorkspaceWithChildren(request, wid);
+    }
+  });
+
   test('worker loss fails an active run and the pool recovers automatically', async ({ request }) => {
+    const deployMode = await getBackendDeployMode(request);
+    test.skip(deployMode !== 'kubernetes', 'worker pod-loss recovery only applies to kubernetes deploys');
+
     const wid = await createWorkspace(request, 'Run Execution Test WS');
     try {
       const graph = await createGraph(

@@ -62,13 +62,25 @@ export async function createGraph(
   return res.json();
 }
 
+export async function getBackendHealth(request: APIRequestContext): Promise<any> {
+  const res = await request.get('/health');
+  expect(res.status()).toBe(200);
+  return res.json();
+}
+
+export async function getBackendDeployMode(request: APIRequestContext): Promise<string> {
+  const health = await getBackendHealth(request);
+  return typeof health.deploy_mode === 'string' ? health.deploy_mode : 'local';
+}
+
 export async function getRun(
   request: APIRequestContext,
   workspaceId: string,
   graphId: string,
   runId: string,
 ): Promise<any> {
-  const res = await request.get(`/api/v1/workspaces/${workspaceId}/graphs/${graphId}/runs/${runId}`);
+  void graphId;
+  const res = await request.get(`/api/v1/workspaces/${workspaceId}/runs/${runId}`);
   expect(res.status()).toBe(200);
   return res.json();
 }

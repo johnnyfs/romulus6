@@ -1,6 +1,7 @@
 import { request } from '@playwright/test';
+import { resolveBackendBaseUrl } from './base-url';
 
-const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:8000';
+const BASE_URL = resolveBackendBaseUrl();
 const TEST_WORKSPACE_NAME_PREFIXES = [
   'Test Workspace',
   'To Be Deleted',

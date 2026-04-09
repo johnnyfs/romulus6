@@ -5,6 +5,8 @@ export type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'reconnecti
 interface UseEventStreamOptions {
   /** Start the stream. When false, the stream is disconnected. */
   enabled: boolean
+  /** Recreate the stream when this value changes. */
+  resetKey?: unknown
   /** Called when an error occurs (for surfacing to UI). */
   onError?: (error: Error) => void
 }
@@ -18,7 +20,7 @@ interface UseEventStreamOptions {
  */
 export function useEventStream(
   connect: (signal: AbortSignal) => Promise<void>,
-  { enabled, onError }: UseEventStreamOptions,
+  { enabled, resetKey, onError }: UseEventStreamOptions,
 ): ConnectionStatus {
   const [status, setStatus] = useState<ConnectionStatus>('idle')
   const connectRef = useRef(connect)
@@ -85,7 +87,7 @@ export function useEventStream(
       ctrl.abort()
       setStatus('idle')
     }
-  }, [enabled])
+  }, [enabled, resetKey])
 
   return status
 }

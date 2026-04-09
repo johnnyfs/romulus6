@@ -8,8 +8,10 @@ import {
   listGraphs,
   listRuns,
   createRun,
+  deleteRun,
   getRun,
   getRunById,
+  interruptRun,
   syncRunNode,
   patchRunNode,
 } from '../api/graphs'
@@ -31,15 +33,23 @@ interface RunsViewProps {
   workspaceId: string
   onNavigateToGraphNode?: (graphId: string, nodeId: string) => void
   onNavigateToTemplateNode?: (templateId: string, nodeId: string) => void
+  onRunsChanged?: () => void
 }
 
-export default function RunsView({ workspaceId, onNavigateToGraphNode, onNavigateToTemplateNode }: RunsViewProps) {
+export default function RunsView({
+  workspaceId,
+  onNavigateToGraphNode,
+  onNavigateToTemplateNode,
+  onRunsChanged,
+}: RunsViewProps) {
   const [searchParams, setSearchParams] = useSearchParams()
   const [graphs, setGraphs] = useState<Graph[]>([])
   const [runs, setRuns] = useState<GraphRun[]>([])
   const [runPath, setRunPath] = useState<GraphRun[]>([])
   const activeRun = runPath.length > 0 ? runPath[runPath.length - 1] : null
   const [creating, setCreating] = useState(false)
+  const [mutatingRun, setMutatingRun] = useState(false)
+  const [hideCompletedRuns, setHideCompletedRuns] = useState(false)
   const selectedGraphId = readStringParam(searchParams, WORKSPACE_DETAIL_PARAM_KEYS.runGraphId)
   const selectedGraphIdRef = useRef(selectedGraphId)
   useEffect(() => { selectedGraphIdRef.current = selectedGraphId }, [selectedGraphId])
@@ -173,6 +183,11 @@ export default function RunsView({ workspaceId, onNavigateToGraphNode, onNavigat
     return () => clearInterval(interval)
   }, [activeRun, workspaceId, selectedGraphId])
 
+  const visibleRuns = useMemo(
+    () => runs.filter((run) => !hideCompletedRuns || run.state !== 'completed' || run.id === selectedRunId),
+    [runs, hideCompletedRuns, selectedRunId],
+  )
+
   // Layout for active run
   const positions = useMemo(() => {
     if (!activeRun) return new Map()
@@ -274,6 +289,39 @@ export default function RunsView({ workspaceId, onNavigateToGraphNode, onNavigat
     applyRunUpdate(updated)
   }, [workspaceId, activeRun, selectedRunNode, applyRunUpdate])
 
+  const handleInterruptRun = useCallback(async () => {
+    if (!activeRun) return
+    setMutatingRun(true)
+    try {
+      const updated = await interruptRun(workspaceId, activeRun.id)
+      applyRunUpdate(updated)
+      await loadRuns()
+      onRunsChanged?.()
+    } finally {
+      setMutatingRun(false)
+    }
+  }, [workspaceId, activeRun, applyRunUpdate, loadRuns, onRunsChanged])
+
+  const handleDeleteRun = useCallback(async () => {
+    if (!activeRun) return
+    if (!window.confirm('Delete this run and its history?')) return
+    setMutatingRun(true)
+    try {
+      await deleteRun(workspaceId, activeRun.id)
+      onRunsChanged?.()
+      await loadRuns()
+      if (activeRun.id === selectedRunId) {
+        setSelectedRunId(null, true)
+        setRunPath([])
+      } else {
+        setRunPath(prev => prev.slice(0, -1))
+      }
+      setSelectedRunNodeId(null)
+    } finally {
+      setMutatingRun(false)
+    }
+  }, [workspaceId, activeRun, loadRuns, onRunsChanged, selectedRunId, setSelectedRunId, setSelectedRunNodeId])
+
   const canMutateNode = selectedRunNode != null
     && selectedRunNode.state !== 'running'
     && !selectedRunNode.child_run_id
@@ -315,13 +363,37 @@ export default function RunsView({ workspaceId, onNavigateToGraphNode, onNavigat
           value={selectedRunId ?? ''}
           onChange={(e) => setSelectedRunId(e.target.value || null)}
         >
-          {runs.length === 0 && <option value="">-- no runs --</option>}
-          {runs.map((r) => (
+          {visibleRuns.length === 0 && <option value="">-- no runs --</option>}
+          {visibleRuns.map((r) => (
             <option key={r.id} value={r.id}>
               {new Date(r.created_at).toLocaleString()} — {r.state}
             </option>
           ))}
         </select>
+        <label style={rs.toggleLabel}>
+          <input
+            type="checkbox"
+            checked={hideCompletedRuns}
+            onChange={(e) => setHideCompletedRuns(e.target.checked)}
+          />
+          hide completed
+        </label>
+        <button
+          style={rs.smallBtn}
+          onClick={() => void handleInterruptRun()}
+          disabled={!activeRun || activeRun.state === 'completed' || activeRun.state === 'error' || mutatingRun}
+          title="Interrupt run"
+        >
+          Kill
+        </button>
+        <button
+          style={rs.smallBtn}
+          onClick={() => void handleDeleteRun()}
+          disabled={!activeRun || mutatingRun}
+          title="Delete run"
+        >
+          Delete
+        </button>
         {activeRun && (
           <span style={{ ...rs.stateDot, background: runStateColor(activeRun.state) }} title={activeRun.state} />
         )}
@@ -629,6 +701,24 @@ const rs: Record<string, React.CSSProperties> = {
     fontSize: '12px',
     fontWeight: 600,
     flexShrink: 0,
+  },
+  smallBtn: {
+    padding: '4px 8px',
+    border: '1px solid var(--border)',
+    borderRadius: '4px',
+    background: 'var(--surface-2)',
+    color: 'var(--text)',
+    cursor: 'pointer',
+    fontSize: '12px',
+    flexShrink: 0,
+  },
+  toggleLabel: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
+    color: 'var(--text-muted)',
+    fontSize: '12px',
+    whiteSpace: 'nowrap',
   },
   stateDot: {
     width: 10,

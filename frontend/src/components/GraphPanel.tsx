@@ -8,6 +8,7 @@ import {
   addEdge,
   addNode,
   createGraph,
+  createRun,
   deleteGraph,
   deleteEdge,
   deleteNode,
@@ -35,7 +36,15 @@ function slugify(name: string): string {
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
-export default function GraphPanel({ workspaceId, width }: { workspaceId: string; width?: number }) {
+export default function GraphPanel({
+  workspaceId,
+  width,
+  onRunsChanged,
+}: {
+  workspaceId: string
+  width?: number
+  onRunsChanged?: () => void
+}) {
   const [searchParams, setSearchParams] = useSearchParams()
   const [graphs, setGraphs] = useState<Graph[]>([])
   const [detail, setDetail] = useState<GraphDetail | null>(null)
@@ -262,6 +271,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
     setMutating(true)
     try {
       await deleteGraph(workspaceId, activeGraphId)
+      onRunsChanged?.()
       const gs = await loadGraphs()
       setGraphs(gs)
       if (gs.length > 0) {
@@ -270,6 +280,23 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
         setActiveGraphId(null)
         setDetail(null)
       }
+    } finally {
+      setMutating(false)
+    }
+  }
+
+  async function handleRunGraph() {
+    if (!activeGraphId || mutating) return
+    setMutating(true)
+    try {
+      const run = await createRun(workspaceId, activeGraphId)
+      onRunsChanged?.()
+      setPanelState({
+        [WORKSPACE_DETAIL_PARAM_KEYS.panelTab]: 'runs',
+        [WORKSPACE_DETAIL_PARAM_KEYS.runGraphId]: activeGraphId,
+        [WORKSPACE_DETAIL_PARAM_KEYS.runId]: run.id,
+        [WORKSPACE_DETAIL_PARAM_KEYS.runNodeId]: null,
+      })
     } finally {
       setMutating(false)
     }
@@ -520,6 +547,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
             workspaceId={workspaceId}
             onNavigateToGraphNode={handleNavigateToGraphNode}
             onNavigateToTemplateNode={handleNavigateToTemplateNode}
+            onRunsChanged={onRunsChanged}
           />
         </ErrorBoundary>
       ) : activeTab === 'templates' ? (
@@ -543,6 +571,14 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
         </select>
         <button style={s.iconBtn} onClick={handleCreateGraph} disabled={mutating} title="New graph">
           +
+        </button>
+        <button
+          style={{ ...s.iconBtn, opacity: activeGraphId ? 1 : 0.4, fontSize: '12px', lineHeight: 'normal' }}
+          onClick={() => void handleRunGraph()}
+          disabled={!activeGraphId || mutating}
+          title="Run graph"
+        >
+          Run
         </button>
         <button
           style={{ ...s.iconBtn, opacity: activeGraphId ? 1 : 0.4 }}

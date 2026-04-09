@@ -95,7 +95,10 @@ def _extract_mark_complete_output(payload: dict[str, Any]) -> Any:
 
 
 def _requires_explicit_graph_completion(node: GraphRunNode) -> bool:
-    return bool(node.graph_tools and node.agent_type == "opencode")
+    return bool(
+        node.node_type == "agent"
+        and node.agent_type in {"opencode", "codex", "claude_code"}
+    )
 
 
 class _DatabaseEventListener:
@@ -557,7 +560,7 @@ def ingest_worker_event(
     *,
     worker_id: uuid.UUID,
     payload: dict[str, Any],
-) -> Event:
+) -> Event | None:
     from app.services import controller as controller_svc
     from app.services import runs as run_svc
 
@@ -596,7 +599,11 @@ def ingest_worker_event(
             run_id = node.run_id
 
     if workspace_id is None:
-        raise ValueError("Unable to resolve workspace for worker event")
+        logger.info(
+            "ignoring worker event for unknown or deleted session",
+            extra={"worker_id": str(worker_id), "payload": payload},
+        )
+        return None
 
     event = persist_event(
         session,
@@ -652,7 +659,22 @@ def ingest_worker_event(
                 try:
                     run_svc.complete_node(session, run_id, node_id, output=output)
                 except ValueError as exc:
-                    run_svc.fail_node_and_run(session, run_id, node_id, str(exc))
+                    run_svc.fail_node_and_run(
+                        session,
+                        run_id,
+                        node_id,
+                        str(exc),
+                        allow_retry=False,
+                    )
+            elif explicit_completion and event_type in ("session.idle", "session.completed"):
+                if node.state != "completed":
+                    run_svc.fail_node_and_run(
+                        session,
+                        run_id,
+                        node_id,
+                        "agent finished without calling mark_node_complete",
+                        allow_retry=False,
+                    )
             elif not explicit_completion and event_type == "session.idle":
                 try:
                     run_svc.complete_node(session, run_id, node_id)

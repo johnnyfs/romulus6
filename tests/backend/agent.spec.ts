@@ -7,8 +7,9 @@ import {
   listWorkspaceEvents,
   waitForWorkspaceEvents,
 } from './helpers';
+import { resolveBackendBaseUrl } from './base-url';
 
-const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:8000';
+const BASE_URL = resolveBackendBaseUrl();
 
 async function readFirstSseEvent(
   workspaceId: string,
@@ -83,7 +84,7 @@ test.describe('Agent API', () => {
       const badPydanticModel = await request.post(`/api/v1/workspaces/${workspaceId}/agents`, {
         data: {
           agent_type: 'pydantic',
-          model: 'anthropic/claude-sonnet-4-6',
+          model: 'openai/gpt-5.3-codex',
           name: 'bad-pydantic',
           prompt: 'hello',
           schema_id: 'structured_response_v1',

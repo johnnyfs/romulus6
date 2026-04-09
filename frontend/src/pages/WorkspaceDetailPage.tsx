@@ -243,6 +243,7 @@ export default function WorkspaceDetailPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [workspace, setWorkspace] = useState<Workspace | null>(null)
   const [agents, setAgents] = useState<Agent[]>([])
+  const [workspaceEventsVersion, setWorkspaceEventsVersion] = useState(0)
   const activeTab = readEnumParam(
     searchParams,
     WORKSPACE_DETAIL_PARAM_KEYS.workspaceTab,
@@ -266,7 +267,12 @@ export default function WorkspaceDetailPage() {
     agentWaiting, setAgentWaiting,
     resolvedFeedback, setResolvedFeedback,
     streamStatus,
-  } = useWorkspaceEvents(id, !!workspace, (msg) => setPageError(msg))
+  } = useWorkspaceEvents(
+    id,
+    !!workspace,
+    (msg) => setPageError(msg),
+    workspaceEventsVersion,
+  )
   const [expandedBlocks, setExpandedBlocks] = useState<Set<string>>(new Set())
   const [showForm, setShowForm] = useState(false)
   const [formAgentType, setFormAgentType] = useState<AgentType>('opencode')
@@ -1229,7 +1235,11 @@ export default function WorkspaceDetailPage() {
         {/* Graph editor panel */}
         {id && (
           <ErrorBoundary resetKey={id}>
-            <GraphPanel workspaceId={id} width={graphWidth} />
+            <GraphPanel
+              workspaceId={id}
+              width={graphWidth}
+              onRunsChanged={() => setWorkspaceEventsVersion((value) => value + 1)}
+            />
           </ErrorBoundary>
         )}
       </div>

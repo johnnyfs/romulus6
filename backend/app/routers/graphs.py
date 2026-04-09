@@ -97,6 +97,14 @@ class PatchRunNodeRequest(BaseModel):
     state: Optional[RunNodeState] = None
 
 
+class CompleteRunNodeRequest(BaseModel):
+    output: Optional[dict[str, Any]] = None
+
+
+class InterruptRunRequest(BaseModel):
+    reason: str = "user_requested"
+
+
 class AddEdgeRequest(BaseModel):
     from_node_id: uuid.UUID
     to_node_id: uuid.UUID
@@ -399,8 +407,15 @@ def update_graph(
 
 
 @router.delete("/{graph_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_graph(workspace_id: uuid.UUID, graph_id: uuid.UUID, session: SessionDep) -> None:
+async def delete_graph(workspace_id: uuid.UUID, graph_id: uuid.UUID, session: SessionDep) -> None:
     _require_workspace(workspace_id, session)
+    for run in svc.list_runs(session, workspace_id, graph_id):
+        await run_svc.delete_run(
+            session,
+            workspace_id,
+            run.id,
+            reason="graph deleted",
+        )
     deleted = svc.delete_graph(session, workspace_id, graph_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Graph not found")
@@ -627,6 +642,47 @@ def get_run_by_id(
 
 
 @runs_router.post(
+    "/{run_id}/interrupt",
+    response_model=GraphRunResponse,
+)
+async def interrupt_run(
+    workspace_id: uuid.UUID,
+    run_id: uuid.UUID,
+    body: InterruptRunRequest,
+    session: SessionDep,
+) -> Any:
+    _require_workspace(workspace_id, session)
+    try:
+        updated = await run_svc.interrupt_run(
+            session,
+            workspace_id,
+            run_id,
+            reason=body.reason,
+        )
+    except ValueError as e:
+        detail = str(e)
+        if "not found" in detail.lower():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
+    return _run_response(updated)
+
+
+@runs_router.delete(
+    "/{run_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_run(
+    workspace_id: uuid.UUID,
+    run_id: uuid.UUID,
+    session: SessionDep,
+) -> None:
+    _require_workspace(workspace_id, session)
+    deleted = await run_svc.delete_run(session, workspace_id, run_id)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+
+
+@runs_router.post(
     "/{run_id}/nodes/{node_id}/sync",
     response_model=GraphRunResponse,
 )
@@ -645,6 +701,34 @@ def sync_run_node(
     except ValueError as e:
         detail = str(e)
         if "not found" in detail:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
+    return _run_response(updated)
+
+
+@runs_router.post(
+    "/{run_id}/nodes/{node_id}/complete",
+    response_model=GraphRunResponse,
+)
+def complete_run_node(
+    workspace_id: uuid.UUID,
+    run_id: uuid.UUID,
+    node_id: uuid.UUID,
+    body: CompleteRunNodeRequest,
+    session: SessionDep,
+) -> Any:
+    _require_workspace(workspace_id, session)
+    try:
+        updated = run_svc.complete_run_node(
+            session,
+            workspace_id,
+            run_id,
+            node_id,
+            output=body.output,
+        )
+    except ValueError as e:
+        detail = str(e)
+        if "not found" in detail.lower():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
     return _run_response(updated)

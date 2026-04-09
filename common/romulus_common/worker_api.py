@@ -35,10 +35,12 @@ class CreateSessionRequest(BaseModel):
     agent_type: str = "opencode"
     model: str = "anthropic/claude-sonnet-4-6"
     schema_id: str | None = None
-    output_schema: dict[str, str] | None = None
+    output_schema: dict[str, Any] | None = None
     images: list[dict[str, Any]] | None = None
     workspace_name: str | None = None
     graph_tools: bool = False
+    graph_run_id: str | None = None
+    graph_run_node_id: str | None = None
     sandbox_mode: SandboxMode | None = None
     workspace_id: str | None = None
     sandbox_id: str | None = None
@@ -47,7 +49,15 @@ class CreateSessionRequest(BaseModel):
     @model_validator(mode="after")
     def validate_request(self) -> "CreateSessionRequest":
         validate_supported_model_for_agent_type(self.agent_type, self.model)
-        validate_output_schema_definition(self.output_schema)
+        if self.output_schema is not None:
+            if all(isinstance(value, str) for value in self.output_schema.values()):
+                validate_output_schema_definition(
+                    self.output_schema,  # type: ignore[arg-type]
+                )
+            elif not all(
+                isinstance(key, str) and key.strip() for key in self.output_schema
+            ):
+                raise ValueError("output_schema keys must be non-empty strings")
         if (
             self.agent_type == "pydantic"
             and self.schema_id is None

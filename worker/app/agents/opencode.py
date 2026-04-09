@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import socket
 import httpx
 from collections.abc import AsyncIterator
 from app.agents.base import AgentRunner
@@ -11,6 +12,13 @@ from app.recovery import build_recovery_prompt
 logger = logging.getLogger(__name__)
 
 OPENCODE_PORT = 4096
+
+
+def _pick_unused_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        return int(sock.getsockname()[1])
 
 
 class OpenCodeServer:
@@ -25,23 +33,25 @@ class OpenCodeServer:
     (pass workspace_dir as cwd and manage process lifecycle per session).
     """
 
-    def __init__(self):
+    def __init__(self, *, port: int | None = None):
+        self._port = port or OPENCODE_PORT
         self._proc: asyncio.subprocess.Process | None = None
         self._client: httpx.AsyncClient | None = None
         self._queues: dict[str, asyncio.Queue] = {}
         self._fan_out_task: asyncio.Task | None = None
 
-    async def start(self, workdir: str) -> None:
+    async def start(self, workdir: str, *, env: dict[str, str] | None = None) -> None:
         self._proc = await asyncio.create_subprocess_exec(
-            settings.opencode_binary, "serve", "--port", str(OPENCODE_PORT), "--hostname", "127.0.0.1",
+            settings.opencode_binary, "serve", "--port", str(self._port), "--hostname", "127.0.0.1",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=workdir,
+            env=env,
         )
-        self._client = httpx.AsyncClient(base_url=f"http://127.0.0.1:{OPENCODE_PORT}", timeout=30.0)
+        self._client = httpx.AsyncClient(base_url=f"http://127.0.0.1:{self._port}", timeout=30.0)
         await self._wait_ready()
         self._fan_out_task = asyncio.create_task(self._fan_out_events())
-        logger.info("opencode server ready at port %d (cwd=%s)", OPENCODE_PORT, workdir)
+        logger.info("opencode server ready at port %d (cwd=%s)", self._port, workdir)
 
     async def stop(self) -> None:
         if self._fan_out_task:
@@ -122,6 +132,8 @@ class OpenCodeRunner(AgentRunner):
     def __init__(self, session_id: str, server: OpenCodeServer):
         self._session_id = session_id
         self._server = server
+        self._active_server: OpenCodeServer | None = None
+        self._private_server: OpenCodeServer | None = None
         self.opencode_session_id: str | None = None
         self._queue: asyncio.Queue | None = None
         self._text_by_part_id: dict[str, str] = {}
@@ -129,7 +141,14 @@ class OpenCodeRunner(AgentRunner):
         self._pending_prompt: str | None = None
 
     async def start(self, *, prompt: str, session: Session) -> None:
-        client = self._server.client
+        server = self._server
+        if session.runner_state.get("opencode_private_server"):
+            private_server = OpenCodeServer(port=_pick_unused_port())
+            await private_server.start(workdir=session.workspace_dir)
+            self._private_server = private_server
+            server = private_server
+        self._active_server = server
+        client = server.client
         model = session.model
         opencode_session_id = session.runner_state.get("opencode_session_id")
         effective_prompt = build_recovery_prompt(prompt=prompt, recovery=session.recovery)
@@ -144,7 +163,7 @@ class OpenCodeRunner(AgentRunner):
             logger.info("created opencode session %s", self.opencode_session_id)
 
         # Subscribe before sending so we don't miss early events
-        self._queue = self._server.subscribe(self.opencode_session_id)
+        self._queue = server.subscribe(self.opencode_session_id)
 
         self._pending_prompt = effective_prompt
         provider_id, model_id = model.split("/", 1) if "/" in model else ("anthropic", model)
@@ -180,13 +199,17 @@ class OpenCodeRunner(AgentRunner):
                 if payload.get("type") in ("session.idle", "session.error"):
                     return
         finally:
-            if self.opencode_session_id:
-                self._server.unsubscribe(self.opencode_session_id)
+            if self.opencode_session_id and self._active_server is not None:
+                self._active_server.unsubscribe(self.opencode_session_id)
+            if self._private_server is not None:
+                await self._private_server.stop()
+                self._private_server = None
+            self._active_server = None
 
     async def interrupt(self) -> None:
-        if self.opencode_session_id:
+        if self.opencode_session_id and self._active_server is not None:
             try:
-                await self._server.client.post(f"/session/{self.opencode_session_id}/abort")
+                await self._active_server.client.post(f"/session/{self.opencode_session_id}/abort")
             except Exception as e:
                 logger.warning("abort failed: %s", e)
 

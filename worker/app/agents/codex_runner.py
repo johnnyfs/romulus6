@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import uuid
@@ -39,8 +40,7 @@ class CodexRunner(AgentRunner):
         # Reuse codex thread from previous turn for multi-turn continuity.
         thread_id = session.runner_state.get("codex_thread_id")
 
-        # Graph tools info passed via runner_state by session_manager.
-        graph_tools_instructions = _build_graph_tools_instructions(session.runner_state)
+        romulus_tool_instructions = _build_romulus_tool_instructions(session.runner_state)
 
         async def _run() -> None:
             # Ensure OPENAI_API_KEY is in os.environ for the OpenAI SDK.
@@ -170,6 +170,12 @@ class CodexRunner(AgentRunner):
                 codex_options_kwargs["codex_path_override"] = settings.codex_binary
             if settings.openai_api_key:
                 codex_options_kwargs["api_key"] = settings.openai_api_key
+            codex_home_dir = session.runner_state.get("codex_home_dir")
+            if codex_home_dir:
+                codex_options_kwargs["env"] = {
+                    **os.environ,
+                    "HOME": codex_home_dir,
+                }
 
             tool = codex_tool(
                 sandbox_mode=sandbox_mode,
@@ -190,8 +196,8 @@ class CodexRunner(AgentRunner):
                 "You are a coding agent. Use the codex tool to work in the "
                 "sandbox workspace and complete the task described below."
             )
-            if graph_tools_instructions:
-                instructions += "\n\n" + graph_tools_instructions
+            if romulus_tool_instructions:
+                instructions += "\n\n" + romulus_tool_instructions
 
             agent = Agent(
                 name=f"codex-{self._session_id[:8]}",
@@ -249,26 +255,34 @@ class CodexRunner(AgentRunner):
         return self._task is not None and not self._task.done()
 
 
-def _build_graph_tools_instructions(runner_state: dict) -> str:
-    """Build graph tool instructions from runner_state if present."""
-    if not runner_state.get("graph_tools"):
-        return ""
+def _build_romulus_tool_instructions(runner_state: dict[str, object]) -> str:
+    lines: list[str] = []
 
-    workspace_id = runner_state.get("graph_tools_workspace_id", "")
-    backend_url = runner_state.get("graph_tools_backend_url", "")
+    if runner_state.get("graph_tools"):
+        lines.append(
+            "Romulus graph-management MCP tools are available in this session: "
+            "`romulus__graph_create`, `romulus__graph_get`, `romulus__graph_edit`, "
+            "`romulus__graph_delete`, and `romulus__graph_describe`."
+        )
 
-    return (
-        "You have access to graph tools via the Romulus backend API.\n"
-        f"Workspace ID: {workspace_id}\n"
-        f"Backend URL: {backend_url}\n\n"
-        "Available graph operations:\n"
-        "- GET {backend_url}/workspaces/{workspace_id}/graphs — list graphs\n"
-        "- POST {backend_url}/workspaces/{workspace_id}/graphs — create a graph\n"
-        "- GET {backend_url}/workspaces/{workspace_id}/graphs/{{graph_id}} — get graph detail\n"
-        "- POST {backend_url}/workspaces/{workspace_id}/graphs/{{graph_id}}/nodes — add node\n"
-        "- PATCH {backend_url}/workspaces/{workspace_id}/graphs/{{graph_id}}/nodes/{{node_id}} — update node\n"
-        "- DELETE {backend_url}/workspaces/{workspace_id}/graphs/{{graph_id}}/nodes/{{node_id}} — delete node\n"
-        "- POST {backend_url}/workspaces/{workspace_id}/graphs/{{graph_id}}/edges — add edge\n"
-        "- DELETE {backend_url}/workspaces/{workspace_id}/graphs/{{graph_id}}/edges/{{edge_id}} — delete edge\n\n"
-        "Use the codex tool to make HTTP requests (e.g., via curl) to these endpoints."
-    )
+    run_id = runner_state.get("graph_run_id")
+    node_id = runner_state.get("graph_run_node_id")
+    output_schema = runner_state.get("output_schema")
+    if run_id and node_id:
+        lines.append(
+            "When you have fully completed the assigned graph node, you MUST call "
+            "`mark_node_complete` exactly once before ending your turn."
+        )
+        if output_schema is not None:
+            lines.append(
+                "The `mark_node_complete` tool requires an `output` object matching "
+                f"this schema: {json.dumps(output_schema, sort_keys=True)}"
+            )
+        else:
+            lines.append(
+                "This node does not require structured output. Call "
+                "`mark_node_complete` without an `output` argument unless you have "
+                "a meaningful JSON object to return."
+            )
+
+    return "\n".join(lines)

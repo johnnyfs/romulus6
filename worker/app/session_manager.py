@@ -17,6 +17,7 @@ from app.backend_client import BackendClient
 from app.config import settings
 from app.graph_tools import write_graph_tools
 from app.models import Event, EventType, Session, SessionStatus
+from app.run_tools import write_codex_mcp_config, write_completion_tool
 from app.services.pydantic_agent_service import PydanticAgentService
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,9 @@ class SessionManager:
         workspace_id: str | None = None,
         sandbox_id: str | None = None,
         schema_id: str | None = None,
-        output_schema: dict[str, str] | None = None,
+        output_schema: dict[str, Any] | None = None,
+        graph_run_id: str | None = None,
+        graph_run_node_id: str | None = None,
         images: list[dict[str, str]] | None = None,
         recovery: RecoveryContext | None = None,
         sandbox_mode: str | None = None,
@@ -67,12 +70,56 @@ class SessionManager:
                 # Write graph tools into the sandbox workdir so each sandbox has its
                 # own isolated set of tools (keyed by workspace_id for API routing).
                 write_graph_tools(workspace_dir, workspace_id, settings.romulus_backend_url)
+        if (
+            agent_type == "opencode"
+            and workspace_id
+            and graph_run_id
+            and graph_run_node_id
+        ):
+            write_completion_tool(
+                workspace_dir,
+                backend_url=settings.romulus_backend_url,
+                workspace_id=workspace_id,
+                run_id=graph_run_id,
+                node_id=graph_run_node_id,
+                output_schema=output_schema,
+            )
 
         runner_state: dict[str, Any] = {}
-        if graph_tools and workspace_id and agent_type in ("claude_code", "codex"):
-            runner_state["graph_tools"] = True
+        if workspace_id and (
+            graph_tools
+            or (graph_run_id is not None and graph_run_node_id is not None)
+        ):
+            runner_state["graph_tools"] = graph_tools
             runner_state["graph_tools_workspace_id"] = workspace_id
             runner_state["graph_tools_backend_url"] = settings.romulus_backend_url
+            runner_state["graph_run_id"] = graph_run_id
+            runner_state["graph_run_node_id"] = graph_run_node_id
+            runner_state["output_schema"] = output_schema
+
+        if agent_type == "opencode" and (graph_tools or graph_run_id or graph_run_node_id):
+            runner_state["opencode_private_server"] = True
+
+        if agent_type == "codex" and workspace_id and (
+            graph_tools
+            or (graph_run_id is not None and graph_run_node_id is not None)
+        ):
+            codex_home_dir = os.path.join(
+                workspace_dir,
+                ".romulus",
+                "codex-home",
+                session_id,
+            )
+            write_codex_mcp_config(
+                codex_home_dir,
+                backend_url=settings.romulus_backend_url,
+                workspace_id=workspace_id,
+                graph_tools=graph_tools,
+                run_id=graph_run_id,
+                node_id=graph_run_node_id,
+                output_schema=output_schema,
+            )
+            runner_state["codex_home_dir"] = codex_home_dir
 
         session = Session(
             id=session_id,
