@@ -27,5 +27,6 @@ export async function getWorkspace(id: string): Promise<Workspace> {
 
 export async function deleteWorkspace(id: string): Promise<void> {
   const res = await fetch(`/api/workspaces/${id}`, { method: 'DELETE' })
+  if (res.status === 404) return
   if (!res.ok) throw new Error('Failed to delete workspace')
 }

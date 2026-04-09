@@ -1,5 +1,4 @@
 import datetime
-import json
 import uuid
 from typing import Annotated, Any, Optional
 
@@ -8,15 +7,27 @@ from pydantic import BaseModel
 from sqlmodel import Session
 
 from app.database import get_session
-from app.models.agent import AgentConfig, CommandConfig, ImageAttachment, OpenCodeAgentConfig, PydanticAgentConfig
+from app.models.agent import AgentConfig, CommandConfig, ImageAttachment, PydanticAgentConfig
 from app.models.graph import NodeType
+from app.models.structured_fields import ViewConfig
 from app.models.template import (
     SubgraphTemplateNodeType,
     TemplateArgType,
 )
 from app.models.workspace import Workspace
+from app.services.node_configs import (
+    agent_config_from_node,
+    command_config_from_node,
+    image_payloads_from_configs,
+    view_config_from_node,
+)
 from app.services import templates as svc
-from app.services.node_shapes import UNSET, is_agent_node_type, is_command_node_type
+from app.services.node_shapes import UNSET
+from app.services.structured_serialization import (
+    decoded_json_string,
+    image_attachments,
+    normalized_string_map,
+)
 from app.services.templates import ArgumentInput, SubgraphEdgeInput, SubgraphNodeInput
 
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -75,27 +86,15 @@ def _to_arg_inputs(args: list[ArgumentSchema]) -> list[ArgumentInput]:
 
 
 def _arg_response(obj: Any) -> ArgumentResponse:
-    mc = None
-    if obj.model_constraint:
-        try:
-            mc = json.loads(obj.model_constraint)
-        except (json.JSONDecodeError, TypeError):
-            mc = None
-    eo = None
-    if obj.enum_options:
-        try:
-            eo = json.loads(obj.enum_options)
-        except (json.JSONDecodeError, TypeError):
-            eo = None
     return ArgumentResponse(
         id=obj.id,
         name=obj.name,
         arg_type=obj.arg_type,
         default_value=obj.default_value,
-        model_constraint=mc,
+        model_constraint=decoded_json_string(obj.model_constraint),
         min_value=float(obj.min_value) if obj.min_value is not None else None,
         max_value=float(obj.max_value) if obj.max_value is not None else None,
-        enum_options=eo,
+        enum_options=decoded_json_string(obj.enum_options),
         created_at=obj.created_at,
     )
 
@@ -147,15 +146,6 @@ class TaskTemplateResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-def _parse_json_field(obj: Any, field: str) -> Optional[dict]:
-    raw = getattr(obj, field, None)
-    if raw is None:
-        return None
-    if isinstance(raw, dict):
-        return raw
-    return json.loads(raw)
-
-
 def _task_tmpl_response(t: Any) -> TaskTemplateResponse:
     return TaskTemplateResponse(
         id=t.id,
@@ -169,20 +159,11 @@ def _task_tmpl_response(t: Any) -> TaskTemplateResponse:
         graph_tools=t.graph_tools,
         label=t.label,
         arguments=[_arg_response(a) for a in t.arguments if not a.deleted],
-        output_schema=_parse_json_field(t, "output_schema"),
-        images=_parse_json_images(t),
+        output_schema=normalized_string_map(getattr(t, "output_schema", None)),
+        images=image_attachments(getattr(t, "images", None)),
         created_at=t.created_at,
         updated_at=t.updated_at,
     )
-
-
-def _parse_json_images(obj: Any) -> Optional[list[ImageAttachment]]:
-    raw = getattr(obj, "images", None)
-    if raw is None:
-        return None
-    if isinstance(raw, str):
-        raw = json.loads(raw)
-    return [ImageAttachment(**img) for img in raw] if raw else None
 
 
 # --- Endpoints ---
@@ -311,10 +292,6 @@ class CreateSubgraphTemplateRequest(BaseModel):
     output_schema: Optional[dict[str, str]] = None
 
 
-class ViewConfig(BaseModel):
-    images: list[ImageAttachment] = []
-
-
 class AddSubgraphNodeRequest(BaseModel):
     node_type: SubgraphTemplateNodeType
     name: Optional[str] = None
@@ -399,66 +376,19 @@ class SubgraphTemplateListResponse(BaseModel):
 
 # --- Helpers ---
 
-def _agent_config_from(obj: Any) -> Optional[AgentConfig]:
-    if not is_agent_node_type(getattr(obj, "node_type", None)):
-        return None
-    if obj.agent_type is None:
-        return None
-    if obj.agent_type == "pydantic":
-        images_raw = _parse_json_field(obj, "images")
-        images = [ImageAttachment(**img) for img in images_raw] if images_raw else []
-        return PydanticAgentConfig(
-            agent_type=obj.agent_type,
-            model=obj.model,
-            prompt=obj.prompt,
-            images=images,
-        )
-    return OpenCodeAgentConfig(
-        agent_type=obj.agent_type,
-        model=obj.model,
-        prompt=obj.prompt,
-        graph_tools=getattr(obj, "graph_tools", False),
-    )
-
-
-def _command_config_from(obj: Any) -> Optional[CommandConfig]:
-    if not is_command_node_type(getattr(obj, "node_type", None)):
-        return None
-    if obj.command is None:
-        return None
-    return CommandConfig(command=obj.command)
-
-
-def _view_config_from(obj: Any) -> Optional[ViewConfig]:
-    node_type = getattr(obj, "node_type", None)
-    if hasattr(node_type, "value"):
-        node_type = node_type.value
-    if node_type != "view":
-        return None
-    images_raw = _parse_json_field(obj, "images")
-    images = [ImageAttachment(**img) for img in images_raw] if images_raw else []
-    return ViewConfig(images=images)
-
-
 def _node_response(n: Any) -> SubgraphNodeResponse:
-    bindings = None
-    if n.argument_bindings:
-        try:
-            bindings = json.loads(n.argument_bindings)
-        except (json.JSONDecodeError, TypeError):
-            bindings = None
     return SubgraphNodeResponse(
         id=n.id,
         subgraph_template_id=n.subgraph_template_id,
         node_type=n.node_type,
         name=n.name,
-        agent_config=_agent_config_from(n),
-        command_config=_command_config_from(n),
-        view_config=_view_config_from(n),
+        agent_config=agent_config_from_node(n),
+        command_config=command_config_from_node(n),
+        view_config=view_config_from_node(n),
         task_template_id=n.task_template_id,
         ref_subgraph_template_id=n.ref_subgraph_template_id,
-        argument_bindings=bindings,
-        output_schema=_parse_json_field(n, "output_schema"),
+        argument_bindings=normalized_string_map(getattr(n, "argument_bindings", None)),
+        output_schema=normalized_string_map(getattr(n, "output_schema", None)),
         created_at=n.created_at,
     )
 
@@ -479,7 +409,7 @@ def _to_detail(t: Any) -> SubgraphTemplateDetailResponse:
         nodes=[_node_response(n) for n in t.nodes if not n.deleted],
         edges=[SubgraphEdgeResponse.model_validate(e) for e in t.edges if not e.deleted],
         arguments=[_arg_response(a) for a in t.arguments if not a.deleted],
-        output_schema=_parse_json_field(t, "output_schema"),
+        output_schema=normalized_string_map(getattr(t, "output_schema", None)),
         created_at=t.created_at,
         updated_at=t.updated_at,
     )
@@ -491,11 +421,6 @@ def _to_node_inputs(nodes: list[SubgraphNodeInputSchema]) -> list[SubgraphNodeIn
         ac = n.agent_config
         cc = n.command_config
         vc = getattr(n, "view_config", None)
-        images = None
-        if isinstance(ac, PydanticAgentConfig) and ac.images:
-            images = [img.model_dump(mode="json") for img in ac.images]
-        elif vc and vc.images:
-            images = [img.model_dump(mode="json") for img in vc.images]
         result.append(SubgraphNodeInput(
             node_type=n.node_type,
             name=n.name,
@@ -508,7 +433,7 @@ def _to_node_inputs(nodes: list[SubgraphNodeInputSchema]) -> list[SubgraphNodeIn
             ref_subgraph_template_id=n.ref_subgraph_template_id,
             argument_bindings=n.argument_bindings,
             output_schema=n.output_schema,
-            images=images,
+            images=image_payloads_from_configs(ac, vc),
         ))
     return result
 
@@ -599,11 +524,6 @@ def add_subgraph_node(
     ac = body.agent_config
     cc = body.command_config
     vc = body.view_config
-    images = None
-    if isinstance(ac, PydanticAgentConfig) and ac.images:
-        images = [img.model_dump(mode="json") for img in ac.images]
-    elif vc and vc.images:
-        images = [img.model_dump(mode="json") for img in vc.images]
     try:
         node = svc.add_subgraph_template_node(
             session,
@@ -619,7 +539,7 @@ def add_subgraph_node(
             ref_subgraph_template_id=body.ref_subgraph_template_id,
             argument_bindings=body.argument_bindings,
             output_schema=body.output_schema,
-            images=images,
+            images=image_payloads_from_configs(ac, vc),
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
@@ -639,11 +559,6 @@ def patch_subgraph_node(
     ac = body.agent_config
     cc = body.command_config
     vc = body.view_config
-    images = None
-    if isinstance(ac, PydanticAgentConfig) and ac.images:
-        images = [img.model_dump(mode="json") for img in ac.images]
-    elif vc and vc.images:
-        images = [img.model_dump(mode="json") for img in vc.images]
     try:
         node = svc.patch_subgraph_template_node(
             session,
@@ -660,7 +575,11 @@ def patch_subgraph_node(
             ref_subgraph_template_id=body.ref_subgraph_template_id if body.ref_subgraph_template_id is not None else UNSET,
             argument_bindings=body.argument_bindings,
             output_schema=body.output_schema,
-            images=images if vc is not None or isinstance(ac, PydanticAgentConfig) else UNSET,
+            images=(
+                image_payloads_from_configs(ac, vc)
+                if vc is not None or isinstance(ac, PydanticAgentConfig)
+                else UNSET
+            ),
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))

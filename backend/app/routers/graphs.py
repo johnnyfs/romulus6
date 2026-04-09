@@ -7,15 +7,32 @@ from pydantic import BaseModel
 from sqlmodel import Session
 
 from app.database import get_session
-from app.models.agent import AgentConfig, CommandConfig, ImageAttachment, OpenCodeAgentConfig, PydanticAgentConfig
+from app.models.agent import AgentConfig, CommandConfig, PydanticAgentConfig
 from app.models.graph import Graph, NodeType
-from app.models.run import GraphRun
+from app.models.run import (
+    GraphRun,
+    RunNodeSourceType,
+    RunNodeState,
+    RunNodeType,
+    RunState,
+)
+from app.models.structured_fields import ViewConfig
 from app.models.workspace import Workspace
-from app.services import graphs as svc
 from app.services import graph_transfer as transfer_svc
+from app.services import graphs as svc
 from app.services import runs as run_svc
 from app.services.graphs import EdgeInput, NodeInput
-from app.services.node_shapes import UNSET, is_agent_node_type, is_command_node_type
+from app.services.node_configs import (
+    agent_config_from_node,
+    command_config_from_node,
+    image_payloads_from_configs,
+    view_config_from_node,
+)
+from app.services.node_shapes import UNSET
+from app.services.structured_serialization import (
+    normalized_json_object,
+    normalized_string_map,
+)
 
 router = APIRouter(
     prefix="/workspaces/{workspace_id}/graphs",
@@ -26,10 +43,6 @@ SessionDep = Annotated[Session, Depends(get_session)]
 
 
 # --- Request schemas ---
-
-class ViewConfig(BaseModel):
-    images: list[ImageAttachment] = []
-
 
 class NodeInputSchema(BaseModel):
     node_type: NodeType
@@ -83,7 +96,7 @@ class PatchNodeRequest(BaseModel):
 
 
 class PatchRunNodeRequest(BaseModel):
-    state: Optional[str] = None
+    state: Optional[RunNodeState] = None
 
 
 class AddEdgeRequest(BaseModel):
@@ -143,13 +156,13 @@ class GraphRunNodeResponse(BaseModel):
     id: uuid.UUID
     run_id: uuid.UUID
     source_node_id: Optional[uuid.UUID] = None
-    source_type: str = "graph_node"
+    source_type: RunNodeSourceType = RunNodeSourceType.graph_node
     attempt: int = 1
     retry_of_run_node_id: Optional[uuid.UUID] = None
     next_attempt_run_node_id: Optional[uuid.UUID] = None
-    node_type: str
+    node_type: RunNodeType
     name: Optional[str] = None
-    state: str
+    state: RunNodeState
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
     view_config: Optional[ViewConfig] = None
@@ -177,7 +190,7 @@ class GraphRunResponse(BaseModel):
     id: uuid.UUID
     graph_id: Optional[uuid.UUID] = None
     workspace_id: uuid.UUID
-    state: str = "pending"
+    state: RunState = RunState.pending
     sandbox_id: Optional[uuid.UUID] = None
     parent_run_node_id: Optional[uuid.UUID] = None
     source_template_id: Optional[uuid.UUID] = None
@@ -210,59 +223,8 @@ def _require_graph(
     return graph
 
 
-def _agent_config_from(obj: Any) -> Optional[AgentConfig]:
-    if not is_agent_node_type(getattr(obj, "node_type", None)):
-        return None
-    if obj.agent_type is None:
-        return None
-    if obj.agent_type == "pydantic":
-        images_raw = _parse_json_field(obj, "images")
-        images = [ImageAttachment(**img) for img in images_raw] if images_raw else []
-        return PydanticAgentConfig(
-            agent_type=obj.agent_type,
-            model=obj.model,
-            prompt=obj.prompt,
-            images=images,
-        )
-    return OpenCodeAgentConfig(
-        agent_type=obj.agent_type,
-        model=obj.model,
-        prompt=obj.prompt,
-        graph_tools=getattr(obj, "graph_tools", False),
-    )
-
-
-def _command_config_from(obj: Any) -> Optional[CommandConfig]:
-    if not is_command_node_type(getattr(obj, "node_type", None)):
-        return None
-    if obj.command is None:
-        return None
-    return CommandConfig(command=obj.command)
-
-
-def _view_config_from(obj: Any) -> Optional[ViewConfig]:
-    node_type = getattr(obj, "node_type", None)
-    if isinstance(node_type, NodeType):
-        node_type = node_type.value
-    if node_type != "view":
-        return None
-    images_raw = _parse_json_field(obj, "images")
-    images = [ImageAttachment(**img) for img in images_raw] if images_raw else []
-    return ViewConfig(images=images)
-
-
-def _parse_json_field(obj: Any, field: str) -> Optional[dict]:
-    raw = getattr(obj, field, None)
-    if raw is None:
-        return None
-    if isinstance(raw, dict):
-        return raw
-    import json
-    return json.loads(raw)
-
-
 def _parse_bindings(obj: Any) -> Optional[dict[str, str]]:
-    return _parse_json_field(obj, "argument_bindings")
+    return normalized_string_map(getattr(obj, "argument_bindings", None))
 
 
 def _node_response(n: Any) -> GraphNodeResponse:
@@ -271,13 +233,13 @@ def _node_response(n: Any) -> GraphNodeResponse:
         graph_id=n.graph_id,
         node_type=n.node_type,
         name=n.name,
-        agent_config=_agent_config_from(n),
-        command_config=_command_config_from(n),
-        view_config=_view_config_from(n),
+        agent_config=agent_config_from_node(n),
+        command_config=command_config_from_node(n),
+        view_config=view_config_from_node(n),
         task_template_id=getattr(n, "task_template_id", None),
         subgraph_template_id=getattr(n, "subgraph_template_id", None),
         argument_bindings=_parse_bindings(n),
-        output_schema=_parse_json_field(n, "output_schema"),
+        output_schema=normalized_string_map(getattr(n, "output_schema", None)),
         created_at=n.created_at,
     )
 
@@ -287,21 +249,21 @@ def _run_node_response(rn: Any) -> GraphRunNodeResponse:
         id=rn.id,
         run_id=rn.run_id,
         source_node_id=rn.source_node_id,
-        source_type=getattr(rn, "source_type", "graph_node"),
+        source_type=getattr(rn, "source_type", RunNodeSourceType.graph_node),
         attempt=getattr(rn, "attempt", 1),
         retry_of_run_node_id=getattr(rn, "retry_of_run_node_id", None),
         next_attempt_run_node_id=getattr(rn, "next_attempt_run_node_id", None),
         node_type=rn.node_type,
         name=rn.name,
         state=rn.state,
-        agent_config=_agent_config_from(rn),
-        command_config=_command_config_from(rn),
-        view_config=_view_config_from(rn),
+        agent_config=agent_config_from_node(rn),
+        command_config=command_config_from_node(rn),
+        view_config=view_config_from_node(rn),
         agent_id=rn.agent_id,
         session_id=rn.session_id,
         child_run_id=getattr(rn, "child_run_id", None),
-        output_schema=_parse_json_field(rn, "output_schema"),
-        output=_parse_json_field(rn, "output"),
+        output_schema=normalized_string_map(getattr(rn, "output_schema", None)),
+        output=normalized_json_object(getattr(rn, "output", None)),
         created_at=rn.created_at,
     )
 
@@ -337,11 +299,6 @@ def _node_input(n: NodeInputSchema) -> NodeInput:
     ac = n.agent_config
     cc = n.command_config
     vc = n.view_config
-    images = None
-    if isinstance(ac, PydanticAgentConfig) and ac.images:
-        images = [img.model_dump(mode="json") for img in ac.images]
-    elif vc and vc.images:
-        images = [img.model_dump(mode="json") for img in vc.images]
     return NodeInput(
         node_type=n.node_type,
         name=n.name,
@@ -354,7 +311,7 @@ def _node_input(n: NodeInputSchema) -> NodeInput:
         subgraph_template_id=n.subgraph_template_id,
         argument_bindings=n.argument_bindings,
         output_schema=n.output_schema,
-        images=images,
+        images=image_payloads_from_configs(ac, vc),
     )
 
 
@@ -469,11 +426,6 @@ def add_node(
     ac = body.agent_config
     cc = body.command_config
     vc = body.view_config
-    images = None
-    if isinstance(ac, PydanticAgentConfig) and ac.images:
-        images = [img.model_dump(mode="json") for img in ac.images]
-    elif vc and vc.images:
-        images = [img.model_dump(mode="json") for img in vc.images]
     try:
         node = svc.add_node(
             session,
@@ -489,7 +441,7 @@ def add_node(
             subgraph_template_id=body.subgraph_template_id,
             argument_bindings=body.argument_bindings,
             output_schema=body.output_schema,
-            images=images,
+            images=image_payloads_from_configs(ac, vc),
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
@@ -528,11 +480,6 @@ def patch_node(
     ac = body.agent_config
     cc = body.command_config
     vc = body.view_config
-    images = None
-    if isinstance(ac, PydanticAgentConfig) and ac.images:
-        images = [img.model_dump(mode="json") for img in ac.images]
-    elif vc and vc.images:
-        images = [img.model_dump(mode="json") for img in vc.images]
     try:
         node = svc.patch_node(
             session,
@@ -549,7 +496,11 @@ def patch_node(
             subgraph_template_id=body.subgraph_template_id if body.subgraph_template_id is not None else UNSET,
             argument_bindings=body.argument_bindings,
             output_schema=body.output_schema,
-            images=images if vc is not None or isinstance(ac, PydanticAgentConfig) else UNSET,
+            images=(
+                image_payloads_from_configs(ac, vc)
+                if vc is not None or isinstance(ac, PydanticAgentConfig)
+                else UNSET
+            ),
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))

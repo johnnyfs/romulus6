@@ -1,5 +1,4 @@
 import datetime
-import json
 import uuid
 from collections.abc import Iterable
 from typing import Any
@@ -21,19 +20,11 @@ from app.models.template import (
 from app.services import graphs as graph_svc
 from app.services import templates as template_svc
 from app.services.graphs import EdgeInput, NodeInput
+from app.services.structured_serialization import decoded_json_string, normalized_json_value
 from app.services.templates import ArgumentInput, SubgraphEdgeInput, SubgraphNodeInput
 
 BUNDLE_FORMAT = "romulus.graph-bundle"
 BUNDLE_VERSION = 2
-
-
-def _json_loads(value: str | None) -> Any:
-    if value is None:
-        return None
-    try:
-        return json.loads(value)
-    except (TypeError, json.JSONDecodeError):
-        return None
 
 
 def _isoformat(value: datetime.datetime | None) -> str | None:
@@ -68,10 +59,10 @@ def _serialize_task_argument(arg: TaskTemplateArgument) -> dict[str, Any]:
         "name": arg.name,
         "arg_type": arg.arg_type.value if hasattr(arg.arg_type, "value") else str(arg.arg_type),
         "default_value": arg.default_value,
-        "model_constraint": _json_loads(arg.model_constraint),
+        "model_constraint": decoded_json_string(arg.model_constraint),
         "min_value": float(arg.min_value) if arg.min_value is not None else None,
         "max_value": float(arg.max_value) if arg.max_value is not None else None,
-        "enum_options": _json_loads(arg.enum_options),
+        "enum_options": decoded_json_string(arg.enum_options),
     }
 
 
@@ -81,10 +72,10 @@ def _serialize_subgraph_argument(arg: SubgraphTemplateArgument) -> dict[str, Any
         "name": arg.name,
         "arg_type": arg.arg_type.value if hasattr(arg.arg_type, "value") else str(arg.arg_type),
         "default_value": arg.default_value,
-        "model_constraint": _json_loads(arg.model_constraint),
+        "model_constraint": decoded_json_string(arg.model_constraint),
         "min_value": float(arg.min_value) if arg.min_value is not None else None,
         "max_value": float(arg.max_value) if arg.max_value is not None else None,
-        "enum_options": _json_loads(arg.enum_options),
+        "enum_options": decoded_json_string(arg.enum_options),
     }
 
 
@@ -99,8 +90,8 @@ def _serialize_task_template(template: TaskTemplate) -> dict[str, Any]:
         "command": template.command,
         "graph_tools": template.graph_tools,
         "label": template.label,
-        "output_schema": _json_loads(template.output_schema),
-        "images": _json_loads(template.images),
+        "output_schema": normalized_json_value(template.output_schema),
+        "images": normalized_json_value(template.images),
         "arguments": [
             _serialize_task_argument(arg)
             for arg in template.arguments
@@ -114,7 +105,7 @@ def _serialize_subgraph_template(template: SubgraphTemplate) -> dict[str, Any]:
         "id": str(template.id),
         "name": template.name,
         "label": template.label,
-        "output_schema": _json_loads(template.output_schema),
+        "output_schema": normalized_json_value(template.output_schema),
         "arguments": [
             _serialize_subgraph_argument(arg)
             for arg in template.arguments
@@ -144,9 +135,9 @@ def _serialize_subgraph_template(template: SubgraphTemplate) -> dict[str, Any]:
                 "ref_subgraph_template_name": (
                     node.ref_subgraph.name if node.ref_subgraph is not None else None
                 ),
-                "argument_bindings": _json_loads(node.argument_bindings),
-                "output_schema": _json_loads(node.output_schema),
-                "images": _json_loads(node.images),
+                "argument_bindings": normalized_json_value(node.argument_bindings),
+                "output_schema": normalized_json_value(node.output_schema),
+                "images": normalized_json_value(node.images),
             }
             for node in template.nodes
             if not node.deleted
@@ -189,9 +180,9 @@ def _serialize_graph(graph: Graph) -> dict[str, Any]:
                     if node.ref_subgraph_template is not None
                     else None
                 ),
-                "argument_bindings": _json_loads(node.argument_bindings),
-                "output_schema": _json_loads(node.output_schema),
-                "images": _json_loads(node.images),
+                "argument_bindings": normalized_json_value(node.argument_bindings),
+                "output_schema": normalized_json_value(node.output_schema),
+                "images": normalized_json_value(node.images),
             }
             for node in graph.nodes
             if not node.deleted

@@ -1,14 +1,21 @@
 import datetime
 import json
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import jinja2
 from sqlmodel import Session, select
 
 from app.models.graph import Graph, GraphEdge, GraphNode, NodeType
-from app.models.run import GraphRun, GraphRunEdge, GraphRunNode
+from app.models.run import (
+    GraphRun,
+    GraphRunEdge,
+    GraphRunNode,
+    RunNodeSourceType,
+    RunNodeState,
+    RunNodeType,
+)
 from app.models.template import (
     SubgraphTemplate,
     SubgraphTemplateEdge,
@@ -17,6 +24,11 @@ from app.models.template import (
     TaskTemplate,
     TaskTemplateArgument,
     TemplateArgType,
+)
+from app.services.node_references import (
+    require_workspace_subgraph_template,
+    require_workspace_task_template,
+    validate_workspace_template_refs,
 )
 from app.services.node_shapes import UNSET, normalized_node_field_values
 from app.utils.output_schema import validate_output_schema_definition
@@ -184,6 +196,7 @@ def _resolve_bindings(
 
 def _validate_no_subgraph_cycle_in_graph(
     session: Session,
+    workspace_id: uuid.UUID,
     nodes: list,
 ) -> None:
     """Validate that subgraph_template nodes in a graph don't reference cyclic templates.
@@ -196,7 +209,21 @@ def _validate_no_subgraph_cycle_in_graph(
         node_type = node.node_type if hasattr(node, "node_type") else node.get("node_type")
         sg_id = node.subgraph_template_id if hasattr(node, "subgraph_template_id") else node.get("subgraph_template_id")
         if node_type == NodeType.subgraph_template and sg_id is not None:
-            _validate_no_materialization_cycle(session, sg_id, set())
+            template = require_workspace_subgraph_template(session, workspace_id, sg_id)
+            _validate_no_materialization_cycle(session, template.id, set())
+
+
+def _validate_graph_node_refs(
+    session: Session,
+    workspace_id: uuid.UUID,
+    node_input: NodeInput,
+) -> None:
+    validate_workspace_template_refs(
+        session,
+        workspace_id,
+        task_template_id=node_input.task_template_id,
+        subgraph_template_id=node_input.subgraph_template_id,
+    )
 
 
 def _validate_no_cycle_by_index(
@@ -212,21 +239,6 @@ def _validate_no_cycle_by_index(
 def _build_graph_node(graph_id: uuid.UUID, node_input: NodeInput) -> GraphNode:
     """Build a GraphNode from a NodeInput, including template fields."""
     validate_output_schema_definition(node_input.output_schema)
-    bindings_json = (
-        json.dumps(node_input.argument_bindings)
-        if node_input.argument_bindings
-        else None
-    )
-    output_schema_json = (
-        json.dumps(node_input.output_schema)
-        if node_input.output_schema
-        else None
-    )
-    images_json = (
-        json.dumps(node_input.images)
-        if node_input.images
-        else None
-    )
     return GraphNode(
         graph_id=graph_id,
         node_type=node_input.node_type,
@@ -238,9 +250,9 @@ def _build_graph_node(graph_id: uuid.UUID, node_input: NodeInput) -> GraphNode:
         graph_tools=node_input.graph_tools,
         task_template_id=node_input.task_template_id,
         subgraph_template_id=node_input.subgraph_template_id,
-        argument_bindings=bindings_json,
-        output_schema=output_schema_json,
-        images=images_json,
+        argument_bindings=node_input.argument_bindings,
+        output_schema=node_input.output_schema,
+        images=node_input.images,
     )
 
 
@@ -252,7 +264,7 @@ def create_graph(
     edges: list[EdgeInput],
 ) -> Graph:
     _validate_no_cycle_by_index(len(nodes), edges)
-    _validate_no_subgraph_cycle_in_graph(session, nodes)
+    _validate_no_subgraph_cycle_in_graph(session, workspace_id, nodes)
 
     graph = Graph(workspace_id=workspace_id, name=name)
     session.add(graph)
@@ -260,6 +272,7 @@ def create_graph(
 
     db_nodes = []
     for node_input in nodes:
+        _validate_graph_node_refs(session, workspace_id, node_input)
         node = _build_graph_node(graph.id, node_input)
         session.add(node)
         db_nodes.append(node)
@@ -299,7 +312,7 @@ def update_graph(
     edges: list[EdgeInput],
 ) -> Graph:
     _validate_no_cycle_by_index(len(nodes), edges)
-    _validate_no_subgraph_cycle_in_graph(session, nodes)
+    _validate_no_subgraph_cycle_in_graph(session, graph.workspace_id, nodes)
 
     # Delete existing edges first (FK constraint: edges reference nodes)
     existing_edges = session.exec(
@@ -318,6 +331,7 @@ def update_graph(
 
     db_nodes = []
     for node_input in nodes:
+        _validate_graph_node_refs(session, graph.workspace_id, node_input)
         node = _build_graph_node(graph.id, node_input)
         session.add(node)
         db_nodes.append(node)
@@ -378,12 +392,21 @@ def add_node(
     images: Optional[list[dict]] = None,
 ) -> GraphNode:
     if node_type == NodeType.subgraph_template and subgraph_template_id is not None:
-        _validate_no_materialization_cycle(session, subgraph_template_id, set())
+        template = require_workspace_subgraph_template(
+            session,
+            graph.workspace_id,
+            subgraph_template_id,
+        )
+        _validate_no_materialization_cycle(session, template.id, set())
+
+    validate_workspace_template_refs(
+        session,
+        graph.workspace_id,
+        task_template_id=task_template_id,
+        subgraph_template_id=subgraph_template_id,
+    )
 
     validate_output_schema_definition(output_schema)
-    bindings_json = json.dumps(argument_bindings) if argument_bindings else None
-    output_schema_json = json.dumps(output_schema) if output_schema else None
-    images_json = json.dumps(images) if images else None
     normalized = normalized_node_field_values(
         node_type,
         subgraph_ref_field="subgraph_template_id",
@@ -394,8 +417,8 @@ def add_node(
         graph_tools=graph_tools,
         task_template_id=task_template_id,
         subgraph_template_id=subgraph_template_id,
-        argument_bindings=bindings_json,
-        images=images_json,
+        argument_bindings=argument_bindings,
+        images=images,
     )
     node = GraphNode(
         graph_id=graph.id,
@@ -409,7 +432,7 @@ def add_node(
         task_template_id=normalized["task_template_id"],
         subgraph_template_id=normalized["subgraph_template_id"],
         argument_bindings=normalized["argument_bindings"],
-        output_schema=output_schema_json,
+        output_schema=output_schema,
         images=normalized["images"],
     )
     session.add(node)
@@ -446,7 +469,30 @@ def patch_node(
         else node.subgraph_template_id
     )
     if effective_type == NodeType.subgraph_template and effective_sg_id is not None:
-        _validate_no_materialization_cycle(session, effective_sg_id, set())
+        template = require_workspace_subgraph_template(
+            session,
+            graph.workspace_id,
+            effective_sg_id,
+        )
+        _validate_no_materialization_cycle(session, template.id, set())
+
+    effective_task_template_id = (
+        task_template_id
+        if task_template_id is not UNSET
+        else node.task_template_id
+    )
+    if effective_type == NodeType.task_template:
+        validate_workspace_template_refs(
+            session,
+            graph.workspace_id,
+            task_template_id=effective_task_template_id,
+        )
+    elif effective_type == NodeType.subgraph_template:
+        validate_workspace_template_refs(
+            session,
+            graph.workspace_id,
+            subgraph_template_id=effective_sg_id,
+        )
 
     validate_output_schema_definition(output_schema)
 
@@ -465,16 +511,8 @@ def patch_node(
         graph_tools=graph_tools,
         task_template_id=task_template_id,
         subgraph_template_id=subgraph_template_id,
-        argument_bindings=(
-            json.dumps(argument_bindings)
-            if argument_bindings is not UNSET and argument_bindings is not None
-            else argument_bindings
-        ),
-        images=(
-            json.dumps(images)
-            if images is not UNSET and images is not None
-            else images
-        ),
+        argument_bindings=argument_bindings,
+        images=images,
     )
     node.agent_type = normalized["agent_type"]
     node.model = normalized["model"]
@@ -485,7 +523,7 @@ def patch_node(
     node.subgraph_template_id = normalized["subgraph_template_id"]
     node.argument_bindings = normalized["argument_bindings"]
     if output_schema is not None:
-        node.output_schema = json.dumps(output_schema)
+        node.output_schema = output_schema
     node.images = normalized["images"]
     session.add(node)
     session.commit()
@@ -584,10 +622,10 @@ def _materialize_task_template(
     rn = GraphRunNode(
         run_id=run.id,
         source_node_id=source_node_id or task_template.id,
-        source_type="template_node",
-        node_type=task_template.task_type.value,
+        source_type=RunNodeSourceType.template_node,
+        node_type=RunNodeType(task_template.task_type.value),
         name=_substitute_args(task_template.label or task_template.name, bindings),
-        state="pending",
+        state=RunNodeState.pending,
         agent_type=_substitute_args(task_template.agent_type, bindings),
         model=_substitute_args(task_template.model, bindings),
         prompt=_substitute_args(task_template.prompt, bindings),
@@ -654,10 +692,10 @@ def _materialize_subgraph(
             rn = GraphRunNode(
                 run_id=child_run.id,
                 source_node_id=tmpl_node.id,
-                source_type="template_node",
-                node_type=tmpl_node.node_type.value,
+                source_type=RunNodeSourceType.template_node,
+                node_type=RunNodeType(tmpl_node.node_type.value),
                 name=tmpl_node.name,
-                state="pending",
+                state=RunNodeState.pending,
                 agent_type=_substitute_args(tmpl_node.agent_type, bindings),
                 model=_substitute_args(tmpl_node.model, bindings),
                 prompt=_substitute_args(tmpl_node.prompt, bindings),
@@ -676,11 +714,7 @@ def _materialize_subgraph(
                     f"task template {tmpl_node.task_template_id} not found or deleted"
                 )
             # Resolve this node's bindings against parent bindings
-            node_bindings_raw = (
-                json.loads(tmpl_node.argument_bindings)
-                if tmpl_node.argument_bindings
-                else {}
-            )
+            node_bindings_raw = tmpl_node.argument_bindings or {}
             resolved = _resolve_bindings(node_bindings_raw, bindings, task_tmpl.arguments)
             rn = _materialize_task_template(
                 session, child_run, task_tmpl, resolved, source_node_id=tmpl_node.id
@@ -693,28 +727,24 @@ def _materialize_subgraph(
             template_node_to_run_node[tmpl_node.id] = rn
 
         elif tmpl_node.node_type == SubgraphTemplateNodeType.subgraph_template:
-            ref_sg = session.get(SubgraphTemplate, tmpl_node.ref_subgraph_template_id)
-            if ref_sg is None or ref_sg.deleted:
-                raise ValueError(
-                    f"subgraph template {tmpl_node.ref_subgraph_template_id} not found or deleted"
-                )
+            ref_sg = require_workspace_subgraph_template(
+                session,
+                parent_run.workspace_id,
+                tmpl_node.ref_subgraph_template_id,
+            )
             _validate_no_materialization_cycle(session, ref_sg.id, set(seen))
 
-            node_bindings_raw = (
-                json.loads(tmpl_node.argument_bindings)
-                if tmpl_node.argument_bindings
-                else {}
-            )
+            node_bindings_raw = tmpl_node.argument_bindings or {}
             resolved = _resolve_bindings(node_bindings_raw, bindings, ref_sg.arguments)
 
             # Create the subgraph run node
             rn = GraphRunNode(
                 run_id=child_run.id,
                 source_node_id=tmpl_node.id,
-                source_type="template_node",
-                node_type="subgraph",
+                source_type=RunNodeSourceType.template_node,
+                node_type=RunNodeType.subgraph,
                 name=tmpl_node.name or _substitute_args(ref_sg.label, bindings) or ref_sg.name,
-                state="pending",
+                state=RunNodeState.pending,
                 output_schema=tmpl_node.output_schema or ref_sg.output_schema,
             )
             session.add(rn)
@@ -758,12 +788,12 @@ def create_run(session: Session, graph: Graph) -> GraphRun:
     for node in graph.nodes:
         if node.node_type == NodeType.task_template:
             # Materialize task template into concrete run node
-            task_tmpl = session.get(TaskTemplate, node.task_template_id)
-            if task_tmpl is None or task_tmpl.deleted:
-                raise ValueError(
-                    f"task template {node.task_template_id} not found or deleted"
-                )
-            bindings = json.loads(node.argument_bindings) if node.argument_bindings else {}
+            task_tmpl = require_workspace_task_template(
+                session,
+                graph.workspace_id,
+                node.task_template_id,
+            )
+            bindings = node.argument_bindings or {}
             rn = _materialize_task_template(
                 session, run, task_tmpl, bindings, source_node_id=node.id
             )
@@ -777,14 +807,14 @@ def create_run(session: Session, graph: Graph) -> GraphRun:
 
         elif node.node_type == NodeType.subgraph_template:
             # Materialize subgraph template into subgraph run node + child run
-            sg_tmpl = session.get(SubgraphTemplate, node.subgraph_template_id)
-            if sg_tmpl is None or sg_tmpl.deleted:
-                raise ValueError(
-                    f"subgraph template {node.subgraph_template_id} not found or deleted"
-                )
+            sg_tmpl = require_workspace_subgraph_template(
+                session,
+                graph.workspace_id,
+                node.subgraph_template_id,
+            )
             _validate_no_materialization_cycle(session, sg_tmpl.id, set())
 
-            bindings = json.loads(node.argument_bindings) if node.argument_bindings else {}
+            bindings = node.argument_bindings or {}
             # Fill in defaults from template arguments
             for arg in sg_tmpl.arguments:
                 if arg.name not in bindings and arg.default_value is not None:
@@ -794,10 +824,10 @@ def create_run(session: Session, graph: Graph) -> GraphRun:
             rn = GraphRunNode(
                 run_id=run.id,
                 source_node_id=node.id,
-                source_type="graph_node",
-                node_type="subgraph",
+                source_type=RunNodeSourceType.graph_node,
+                node_type=RunNodeType.subgraph,
                 name=node.name or _substitute_args(sg_tmpl.label, bindings) or sg_tmpl.name,
-                state="pending",
+                state=RunNodeState.pending,
                 output_schema=node.output_schema or sg_tmpl.output_schema,
             )
             session.add(rn)
@@ -817,9 +847,10 @@ def create_run(session: Session, graph: Graph) -> GraphRun:
             rn = GraphRunNode(
                 run_id=run.id,
                 source_node_id=node.id,
-                node_type=node.node_type.value,
+                source_type=RunNodeSourceType.graph_node,
+                node_type=RunNodeType(node.node_type.value),
                 name=node.name,
-                state="pending",
+                state=RunNodeState.pending,
                 agent_type=node.agent_type,
                 model=node.model,
                 prompt=node.prompt,

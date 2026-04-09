@@ -1,38 +1,77 @@
-import asyncio
 import datetime
-import json
 import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
-import httpx
-from sqlmodel import Session, asc, select
+from sqlmodel import Session, select
 
 from app.models.agent import Agent, AgentStatus, AgentType
 from app.models.event import Event
 from app.models.sandbox import Sandbox
+from app.services import events as event_svc
 from app.services import sandboxes as sandbox_svc
 from app.services import workers as worker_svc
+from app.services.worker_client import post_session_message, post_session_with_retry
+
+_post_session_with_retry = post_session_with_retry
 
 
-async def _post_session_with_retry(
-    worker_url: str,
-    payload: dict[str, Any],
-    max_wait: int = 60,
-    interval: float = 2.0,
-) -> dict[str, Any]:
-    deadline = asyncio.get_event_loop().time() + max_wait
-    last_exc: Exception | None = None
-    while asyncio.get_event_loop().time() < deadline:
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(f"{worker_url}/sessions", json=payload, timeout=10.0)
-                resp.raise_for_status()
-                return resp.json()
-        except (httpx.ConnectError, httpx.TimeoutException) as exc:
-            last_exc = exc
-            await asyncio.sleep(interval)
-    raise RuntimeError(f"Worker did not become ready in time: {last_exc}") from last_exc
+def _persist_agent_event(
+    session: Session,
+    agent: Agent,
+    event_type: str,
+    *,
+    data: dict[str, Any] | None = None,
+    worker_id: uuid.UUID | None = None,
+) -> None:
+    event_svc.persist_event(
+        session,
+        workspace_id=agent.workspace_id,
+        source_type="agent",
+        source_id=str(agent.id),
+        payload={
+            "id": str(uuid.uuid4()),
+            "type": event_type,
+            "session_id": agent.session_id,
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "data": data or {},
+        },
+        source_name=agent.name,
+        session_id=agent.session_id,
+        agent_id=agent.id,
+        sandbox_id=agent.sandbox_id,
+        worker_id=worker_id,
+    )
+
+
+def _mark_agent_launch_failed(
+    session: Session,
+    agent: Agent,
+    *,
+    worker_id: uuid.UUID | None,
+    error: Exception | str,
+) -> None:
+    agent.status = AgentStatus.error
+    agent.session_id = None
+    agent.updated_at = datetime.datetime.utcnow()
+    session.add(agent)
+    session.commit()
+
+    _persist_agent_event(
+        session,
+        agent,
+        "session.create.failed",
+        data={"error": str(error)},
+        worker_id=worker_id,
+    )
+
+    if agent.sandbox_id is not None:
+        sandbox_id = agent.sandbox_id
+        sandbox_svc.delete_sandbox(session, agent.workspace_id, sandbox_id)
+        agent.sandbox_id = None
+        agent.updated_at = datetime.datetime.utcnow()
+        session.add(agent)
+        session.commit()
 
 
 async def create_agent(
@@ -47,9 +86,6 @@ async def create_agent(
 ) -> Agent:
     resolved_name = name or f"{agent_type.value}-{uuid.uuid4().hex[:8]}"
     sandbox, worker = sandbox_svc.create_sandbox(session, workspace_id, resolved_name)
-    if worker.worker_url is None:
-        sandbox_svc.delete_sandbox(session, workspace_id, sandbox.id)
-        raise RuntimeError("Worker URL not available")
 
     agent = Agent(
         workspace_id=workspace_id,
@@ -66,6 +102,28 @@ async def create_agent(
     session.commit()
     session.refresh(agent)
 
+    _persist_agent_event(
+        session,
+        agent,
+        "session.create.requested",
+        data={
+            "agent_type": agent_type.value,
+            "model": model,
+            "graph_tools": graph_tools,
+            "schema_id": schema_id,
+        },
+        worker_id=worker.id,
+    )
+
+    if worker.worker_url is None:
+        _mark_agent_launch_failed(
+            session,
+            agent,
+            worker_id=worker.id,
+            error="Worker URL not available",
+        )
+        raise RuntimeError("Worker URL not available")
+
     try:
         data = await _post_session_with_retry(
             worker.worker_url,
@@ -80,8 +138,8 @@ async def create_agent(
                 "schema_id": schema_id,
             },
         )
-    except Exception:
-        delete_agent(session, workspace_id, agent.id)
+    except Exception as exc:
+        _mark_agent_launch_failed(session, agent, worker_id=worker.id, error=exc)
         raise
 
     agent.session_id = data["session"]["id"]
@@ -90,6 +148,14 @@ async def create_agent(
     session.add(agent)
     session.commit()
     session.refresh(agent)
+
+    _persist_agent_event(
+        session,
+        agent,
+        "session.create.acknowledged",
+        data={"session": data.get("session", {})},
+        worker_id=worker.id,
+    )
     return agent
 
 
@@ -98,7 +164,11 @@ def list_agents(session: Session, workspace_id: uuid.UUID) -> list[Agent]:
         session.exec(
             Agent.active()
             .where(Agent.workspace_id == workspace_id)
-            .order_by(Agent.dismissed.asc(), Agent.updated_at.desc(), Agent.created_at.desc())
+            .order_by(
+                Agent.dismissed.asc(),
+                Agent.updated_at.desc(),
+                Agent.created_at.desc(),
+            )
         ).all()
     )
 
@@ -118,19 +188,63 @@ def get_agent(
 
 
 async def send_message(session: Session, agent: Agent, prompt: str) -> None:
-    if agent.session_id is None:
-        raise RuntimeError("Agent has no active session")
     sandbox = session.get(Sandbox, agent.sandbox_id)
     worker = worker_svc.get_worker_for_sandbox(session, sandbox)
-    if worker is None or worker.worker_url is None:
-        raise RuntimeError("Agent session is no longer available; recreate the agent")
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{worker.worker_url}/sessions/{agent.session_id}/messages",
-            json={"prompt": prompt},
-            timeout=10.0,
+    worker_id = worker.id if worker is not None else None
+
+    agent.status = AgentStatus.busy
+    agent.updated_at = datetime.datetime.utcnow()
+    session.add(agent)
+    session.commit()
+
+    _persist_agent_event(
+        session,
+        agent,
+        "message.dispatch.requested",
+        data={"prompt": prompt},
+        worker_id=worker_id,
+    )
+
+    if agent.session_id is None:
+        _persist_agent_event(
+            session,
+            agent,
+            "message.dispatch.failed",
+            data={"prompt": prompt, "error": "Agent has no active session"},
+            worker_id=worker_id,
         )
-        resp.raise_for_status()
+        raise RuntimeError("Agent has no active session")
+    if worker is None or worker.worker_url is None:
+        _persist_agent_event(
+            session,
+            agent,
+            "message.dispatch.failed",
+            data={
+                "prompt": prompt,
+                "error": "Agent session is no longer available; recreate the agent",
+            },
+            worker_id=worker_id,
+        )
+        raise RuntimeError("Agent session is no longer available; recreate the agent")
+    try:
+        await post_session_message(worker.worker_url, agent.session_id, prompt)
+    except Exception as exc:
+        _persist_agent_event(
+            session,
+            agent,
+            "message.dispatch.failed",
+            data={"prompt": prompt, "error": str(exc)},
+            worker_id=worker_id,
+        )
+        raise
+
+    _persist_agent_event(
+        session,
+        agent,
+        "message.dispatched",
+        data={"prompt": prompt},
+        worker_id=worker_id,
+    )
 
 
 def set_agent_dismissed(
@@ -163,14 +277,12 @@ async def send_feedback(
     feedback_type: str,
     response: str,
 ) -> None:
-    from app.services.events import persist_event
-
     agent.status = AgentStatus.busy
     agent.updated_at = datetime.datetime.utcnow()
     session.add(agent)
     session.commit()
 
-    persist_event(
+    event_svc.persist_event(
         session,
         workspace_id=agent.workspace_id,
         source_type="user",
@@ -194,7 +306,11 @@ async def send_feedback(
     await send_message(session, agent, response)
 
 
-def delete_agent(session: Session, workspace_id: uuid.UUID, agent_id: uuid.UUID) -> bool:
+def delete_agent(
+    session: Session,
+    workspace_id: uuid.UUID,
+    agent_id: uuid.UUID,
+) -> bool:
     agent = get_agent(session, workspace_id, agent_id)
     if agent is None:
         return False
@@ -217,38 +333,32 @@ def delete_agent(session: Session, workspace_id: uuid.UUID, agent_id: uuid.UUID)
     return True
 
 
-async def get_agent_events(session: Session, agent: Agent, since: int = 0) -> list[dict[str, Any]]:
-    results = session.exec(
-        select(Event)
-        .where(Event.workspace_id == agent.workspace_id)
-        .where(Event.type == "agent")
-        .where(Event.source_id == str(agent.id))
-        .order_by(asc(Event.received_at), asc(Event.id))
-        .offset(since)
-    ).all()
-    return [
-        {
-            "id": e.id,
-            "session_id": e.session_id or "",
-            "type": e.event_type,
-            "timestamp": e.timestamp,
-            "received_at": e.received_at.isoformat(),
-            "data": e.data.get("data", e.data),
-            "source_name": e.source_name,
-            "agent_id": str(e.agent_id) if e.agent_id else None,
-        }
-        for e in results
-    ]
+async def get_agent_events(
+    session: Session,
+    agent: Agent,
+    since: int = 0,
+    after: str | None = None,
+) -> list[dict[str, Any]]:
+    return event_svc.list_agent_events(
+        session,
+        agent.workspace_id,
+        agent.id,
+        since=since,
+        after=after,
+    )
 
 
-async def stream_agent_events(session: Session, agent: Agent, since: int = 0) -> AsyncGenerator[bytes, None]:
-    cursor = since
-    while True:
-        events = await get_agent_events(session, agent, since=cursor)
-        if events:
-            for item in events:
-                cursor += 1
-                yield f"id: {item['id']}\ndata: {json.dumps(item)}\n\n".encode()
-        else:
-            yield b": keepalive\n\n"
-        await asyncio.sleep(1.0)
+async def stream_agent_events(
+    session_factory,
+    agent: Agent,
+    since: int = 0,
+    after: str | None = None,
+) -> AsyncGenerator[bytes, None]:
+    async for chunk in event_svc.stream_agent_events(
+        session_factory,
+        agent.workspace_id,
+        agent.id,
+        since=since,
+        after=after,
+    ):
+        yield chunk

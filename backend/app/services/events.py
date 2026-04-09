@@ -1,18 +1,177 @@
+import asyncio
 import datetime
 import json
+import logging
+import select as select_lib
+import threading
+import time
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable, Generator
+from contextlib import contextmanager
 from typing import Any
 
+import psycopg2
+from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+from sqlalchemy import and_, or_
+from sqlalchemy import text
 from sqlmodel import Session, asc, select
 
+from app.database import DATABASE_URL
 from app.models.agent import Agent, AgentStatus
 from app.models.event import Event
 from app.models.graph import Graph
-from app.models.run import GraphRun
-from app.models.run import GraphRunNode
+from app.models.run import GraphRun, GraphRunNode
+from app.services.event_broadcast import event_broadcaster
 
 MARK_COMPLETE_TOOL = "mark_node_complete"
+DEFAULT_EVENT_PAGE_SIZE = 200
+DEFAULT_KEEPALIVE_INTERVAL_SECONDS = 15.0
+CURSOR_SEPARATOR = "|"
+EVENT_NOTIFY_CHANNEL = "romulus_events"
+EVENT_PUBLISHER_ID = str(uuid.uuid4())
+
+logger = logging.getLogger(__name__)
+
+
+def encode_event_cursor(event: Event) -> str:
+    return f"{event.received_at.isoformat()}{CURSOR_SEPARATOR}{event.id}"
+
+
+def decode_event_cursor(cursor: str) -> tuple[datetime.datetime, str]:
+    timestamp_text, separator, event_id = cursor.rpartition(CURSOR_SEPARATOR)
+    if not separator or not timestamp_text or not event_id:
+        raise ValueError("Invalid event cursor")
+    try:
+        received_at = datetime.datetime.fromisoformat(timestamp_text)
+    except ValueError as exc:
+        raise ValueError("Invalid event cursor") from exc
+    return received_at, event_id
+
+
+def _apply_after_cursor(statement, cursor: str):
+    received_at, event_id = decode_event_cursor(cursor)
+    return statement.where(
+        or_(
+            Event.received_at > received_at,
+            and_(Event.received_at == received_at, Event.id > event_id),
+        )
+    )
+
+
+def _sse_payload(item: dict[str, Any]) -> bytes:
+    return f"id: {item['cursor']}\ndata: {json.dumps(item)}\n\n".encode()
+
+
+def _notification_payload(event_id: str) -> str:
+    return json.dumps({"event_id": event_id, "origin": EVENT_PUBLISHER_ID})
+
+
+def _decode_notification_payload(payload: str) -> tuple[str, str | None]:
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError:
+        return payload, None
+    return str(decoded.get("event_id", "")), decoded.get("origin")
+
+
+class _DatabaseEventListener:
+    def __init__(
+        self,
+        database_url: str,
+        session_factory: Callable[[], Session] | Callable[[], Generator[Session, None, None]],
+    ) -> None:
+        self._database_url = database_url
+        self._session_factory = session_factory
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._connection: Any = None
+
+    def start(self) -> None:
+        if not self._database_url.startswith("postgresql"):
+            return
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True, name="event-listener")
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._connection is not None:
+            try:
+                self._connection.close()
+            except Exception:
+                logger.exception("failed to close event listener connection")
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        self._thread = None
+        self._connection = None
+
+    def _connect(self) -> Any:
+        dsn = self._database_url.replace("postgresql+psycopg2://", "postgresql://", 1)
+        connection = psycopg2.connect(dsn)
+        connection.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+        cursor = connection.cursor()
+        cursor.execute(f"LISTEN {EVENT_NOTIFY_CHANNEL};")
+        cursor.close()
+        return connection
+
+    def _publish_remote_event(self, event_id: str) -> None:
+        with _session_from_factory(self._session_factory) as session:
+            event = session.get(Event, event_id)
+            if event is None:
+                return
+            event_broadcaster.publish(_serialize_event(session, event))
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                if self._connection is None:
+                    self._connection = self._connect()
+                if not select_lib.select([self._connection], [], [], 1.0)[0]:
+                    continue
+                self._connection.poll()
+                while self._connection.notifies:
+                    notify = self._connection.notifies.pop(0)
+                    event_id, origin = _decode_notification_payload(notify.payload)
+                    if not event_id or origin == EVENT_PUBLISHER_ID:
+                        continue
+                    self._publish_remote_event(event_id)
+            except Exception:
+                logger.exception("event listener loop failed")
+                if self._connection is not None:
+                    try:
+                        self._connection.close()
+                    except Exception:
+                        logger.exception("failed to reset event listener connection")
+                self._connection = None
+                time.sleep(1.0)
+
+
+_event_listener: _DatabaseEventListener | None = None
+
+
+@contextmanager
+def _session_from_factory(
+    session_factory: (
+        Callable[[], Session]
+        | Callable[[], Generator[Session, None, None]]
+    ),
+):
+    session_or_context = session_factory()
+    if (
+        hasattr(session_or_context, "__enter__")
+        and hasattr(session_or_context, "__exit__")
+    ):
+        with session_or_context as session:
+            yield session
+        return
+    try:
+        yield session_or_context
+    finally:
+        close = getattr(session_or_context, "close", None)
+        if callable(close):
+            close()
 
 
 def persist_event(
@@ -51,7 +210,25 @@ def persist_event(
     )
     session.merge(event)
     session.commit()
+    serialized = _serialize_event(session, event)
+    event_broadcaster.publish(serialized)
+    _notify_other_backends(session, event.id)
     return event
+
+
+def _notify_other_backends(session: Session, event_id: str) -> None:
+    bind = session.get_bind()
+    if bind is None or bind.dialect.name != "postgresql":
+        return
+    with bind.connect() as connection:
+        connection.execute(
+            text("SELECT pg_notify(:channel, :payload)"),
+            {
+                "channel": EVENT_NOTIFY_CHANNEL,
+                "payload": _notification_payload(event_id),
+            },
+        )
+        connection.commit()
 
 
 def _run_path_parts(session: Session, event: Event) -> list[str]:
@@ -99,6 +276,7 @@ def _serialize_event(session: Session, event: Event) -> dict[str, Any]:
 
     return {
         "id": event.id,
+        "cursor": encode_event_cursor(event),
         "workspace_id": str(event.workspace_id),
         "source_type": event.type,
         "source_id": event.source_id,
@@ -120,21 +298,142 @@ def _serialize_event(session: Session, event: Event) -> dict[str, Any]:
     }
 
 
+def _serialize_agent_event_item(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": item["id"],
+        "cursor": item["cursor"],
+        "session_id": item["session_id"] or "",
+        "type": item["type"],
+        "timestamp": item["event_time"],
+        "received_at": item["received_at"],
+        "data": item["data"],
+        "raw": item["raw"],
+        "source_name": item["source_name"],
+        "source_type": item["source_type"],
+        "agent_id": item["agent_id"],
+    }
+
+
+def _list_events(
+    session: Session,
+    statement,
+    *,
+    since: int = 0,
+    after: str | None = None,
+    limit: int = DEFAULT_EVENT_PAGE_SIZE,
+) -> list[Event]:
+    if after is not None:
+        statement = _apply_after_cursor(statement, after)
+    else:
+        statement = statement.offset(since)
+    return session.exec(
+        statement
+        .order_by(asc(Event.received_at), asc(Event.id))
+        .limit(limit)
+    ).all()
+
+
+def _iter_workspace_event_items(
+    session_factory: (
+        Callable[[], Session]
+        | Callable[[], Generator[Session, None, None]]
+    ),
+    workspace_id: uuid.UUID,
+    *,
+    since: int = 0,
+    after: str | None = None,
+) -> Generator[dict[str, Any], None, None]:
+    cursor = after
+    offset = since
+    while True:
+        with _session_from_factory(session_factory) as session:
+            items = list_workspace_events(
+                session,
+                workspace_id,
+                since=offset,
+                after=cursor,
+                limit=DEFAULT_EVENT_PAGE_SIZE,
+            )
+        if not items:
+            return
+        for item in items:
+            yield item
+        if len(items) < DEFAULT_EVENT_PAGE_SIZE:
+            return
+        cursor = items[-1]["cursor"]
+        offset = 0
+
+
+def _iter_agent_event_items(
+    session_factory: (
+        Callable[[], Session]
+        | Callable[[], Generator[Session, None, None]]
+    ),
+    workspace_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    *,
+    since: int = 0,
+    after: str | None = None,
+) -> Generator[dict[str, Any], None, None]:
+    cursor = after
+    offset = since
+    while True:
+        with _session_from_factory(session_factory) as session:
+            items = list_agent_events(
+                session,
+                workspace_id,
+                agent_id,
+                since=offset,
+                after=cursor,
+                limit=DEFAULT_EVENT_PAGE_SIZE,
+            )
+        if not items:
+            return
+        for item in items:
+            yield item
+        if len(items) < DEFAULT_EVENT_PAGE_SIZE:
+            return
+        cursor = items[-1]["cursor"]
+        offset = 0
+
+
 def list_workspace_events(
     session: Session,
     workspace_id: uuid.UUID,
     *,
     since: int = 0,
+    after: str | None = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
-    results = session.exec(
+    results = _list_events(
+        session,
+        select(Event).where(Event.workspace_id == workspace_id),
+        since=since,
+        after=after,
+        limit=limit,
+    )
+    return [_serialize_event(session, e) for e in results]
+
+
+def list_agent_events(
+    session: Session,
+    workspace_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    *,
+    since: int = 0,
+    after: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    results = _list_events(
+        session,
         select(Event)
         .where(Event.workspace_id == workspace_id)
-        .order_by(asc(Event.received_at), asc(Event.id))
-        .offset(since)
-        .limit(limit)
-    ).all()
-    return [_serialize_event(session, e) for e in results]
+        .where(Event.agent_id == agent_id),
+        since=since,
+        after=after,
+        limit=limit,
+    )
+    return [_serialize_agent_event_item(_serialize_event(session, e)) for e in results]
 
 
 async def stream_workspace_events(
@@ -142,18 +441,91 @@ async def stream_workspace_events(
     workspace_id: uuid.UUID,
     *,
     since: int = 0,
+    after: str | None = None,
+    keepalive_interval: float = DEFAULT_KEEPALIVE_INTERVAL_SECONDS,
 ) -> AsyncGenerator[bytes, None]:
-    cursor = since
-    while True:
-        with session_factory() as session:
-            items = list_workspace_events(session, workspace_id, since=cursor, limit=200)
-        if items:
-            for item in items:
-                cursor += 1
-                yield f"id: {item['id']}\ndata: {json.dumps(item)}\n\n".encode()
-        else:
-            yield b": keepalive\n\n"
-        await __import__("asyncio").sleep(1.0)
+    channel = event_broadcaster.workspace_channel(workspace_id)
+    token, queue = event_broadcaster.subscribe(channel)
+    backlog_ids: set[str] = set()
+    try:
+        for item in _iter_workspace_event_items(
+            session_factory,
+            workspace_id,
+            since=since,
+            after=after,
+        ):
+            backlog_ids.add(item["id"])
+            yield _sse_payload(item)
+
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=keepalive_interval)
+            except asyncio.TimeoutError:
+                yield b": keepalive\n\n"
+                continue
+            if item["id"] in backlog_ids:
+                backlog_ids.remove(item["id"])
+                continue
+            yield _sse_payload(item)
+    finally:
+        event_broadcaster.unsubscribe(token, channel)
+
+
+async def stream_agent_events(
+    session_factory,
+    workspace_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    *,
+    since: int = 0,
+    after: str | None = None,
+    keepalive_interval: float = DEFAULT_KEEPALIVE_INTERVAL_SECONDS,
+) -> AsyncGenerator[bytes, None]:
+    channel = event_broadcaster.agent_channel(agent_id)
+    token, queue = event_broadcaster.subscribe(channel)
+    backlog_ids: set[str] = set()
+    try:
+        for item in _iter_agent_event_items(
+            session_factory,
+            workspace_id,
+            agent_id,
+            since=since,
+            after=after,
+        ):
+            backlog_ids.add(item["id"])
+            yield _sse_payload(item)
+
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=keepalive_interval)
+            except asyncio.TimeoutError:
+                yield b": keepalive\n\n"
+                continue
+            if item["id"] in backlog_ids:
+                backlog_ids.remove(item["id"])
+                continue
+            yield _sse_payload(_serialize_agent_event_item(item))
+    finally:
+        event_broadcaster.unsubscribe(token, channel)
+
+
+def start_event_listener(
+    session_factory: (
+        Callable[[], Session]
+        | Callable[[], Generator[Session, None, None]]
+    ),
+) -> None:
+    global _event_listener
+    if _event_listener is None:
+        _event_listener = _DatabaseEventListener(DATABASE_URL, session_factory)
+    _event_listener.start()
+
+
+def stop_event_listener() -> None:
+    global _event_listener
+    if _event_listener is None:
+        return
+    _event_listener.stop()
+    _event_listener = None
 
 
 def ingest_worker_event(
@@ -165,8 +537,16 @@ def ingest_worker_event(
     from app.services import controller as controller_svc
     from app.services import runs as run_svc
 
-    session_id = str(payload.get("session_id") or payload.get("data", {}).get("session_id") or "")
-    agent = session.exec(select(Agent).where(Agent.session_id == session_id)).first() if session_id else None
+    session_id = str(
+        payload.get("session_id")
+        or payload.get("data", {}).get("session_id")
+        or ""
+    )
+    agent = (
+        session.exec(select(Agent).where(Agent.session_id == session_id)).first()
+        if session_id
+        else None
+    )
 
     workspace_id = agent.workspace_id if agent is not None else None
     source_type = "worker"
@@ -184,7 +564,9 @@ def ingest_worker_event(
         workspace_id = agent.workspace_id
         agent_id = agent.id
         sandbox_id = agent.sandbox_id
-        node = session.exec(select(GraphRunNode).where(GraphRunNode.session_id == session_id)).first()
+        node = session.exec(
+            select(GraphRunNode).where(GraphRunNode.session_id == session_id)
+        ).first()
         if node is not None:
             node_id = node.id
             run_id = node.run_id
@@ -232,11 +614,15 @@ def ingest_worker_event(
             if event_type == "text.delta":
                 structured = payload.get("data", {}).get("structured_output")
                 if structured:
-                    node.output = json.dumps(structured)
+                    node.output = structured
                     session.add(node)
                     session.commit()
 
-            if node.graph_tools and event_type == "tool.use" and payload.get("data", {}).get("tool_name") == MARK_COMPLETE_TOOL:
+            if (
+                node.graph_tools
+                and event_type == "tool.use"
+                and payload.get("data", {}).get("tool_name") == MARK_COMPLETE_TOOL
+            ):
                 tool_input = payload.get("data", {}).get("tool_input", {})
                 output = tool_input.get("output")
                 try:
@@ -249,8 +635,17 @@ def ingest_worker_event(
                 except ValueError as exc:
                     run_svc.fail_node_and_run(session, run_id, node_id, str(exc))
             elif event_type == "session.error":
-                run_svc.fail_node_and_run(session, run_id, node_id, "worker session error")
+                run_svc.fail_node_and_run(
+                    session,
+                    run_id,
+                    node_id,
+                    "worker session error",
+                )
             else:
-                controller_svc.enqueue_run_reconcile(session, run_id, reason=f"event:{event_type}")
+                controller_svc.enqueue_run_reconcile(
+                    session,
+                    run_id,
+                    reason=f"event:{event_type}",
+                )
 
     return event

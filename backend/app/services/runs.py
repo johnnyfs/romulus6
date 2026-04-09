@@ -5,18 +5,26 @@ import logging
 import uuid
 from typing import Any
 
-import httpx
 from sqlmodel import Session, select
 
 from app.database import engine
 from app.models.agent import Agent, AgentStatus, AgentType
-from app.models.run import GraphRun, GraphRunEdge, GraphRunNode
+from app.models.run import (
+    GraphRun,
+    GraphRunEdge,
+    GraphRunNode,
+    RunNodeSourceType,
+    RunNodeState,
+    RunNodeType,
+    RunState,
+)
 from app.models.sandbox import Sandbox
 from app.models.worker import Worker
 from app.services import controller as controller_svc
 from app.services import events as event_svc
 from app.services import sandboxes as sandbox_svc
 from app.services import workers as worker_svc
+from app.services.worker_client import execute_command, post_session_with_retry
 from app.utils.output_schema import validate_output_against_schema
 from app.utils.slugify import slugify
 
@@ -46,6 +54,41 @@ export default tool({
 """
 
 
+def _persist_run_node_event(
+    session: Session,
+    run: GraphRun,
+    node: GraphRunNode,
+    event_type: str,
+    *,
+    data: dict[str, Any] | None = None,
+    worker_id: uuid.UUID | None = None,
+) -> None:
+    event_svc.persist_event(
+        session,
+        workspace_id=run.workspace_id,
+        source_type="run",
+        source_id=str(node.id),
+        payload={
+            "id": str(uuid.uuid4()),
+            "type": event_type,
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "data": {
+                "node_type": node.node_type,
+                "node_state": node.state,
+                "attempt": node.attempt,
+                **(data or {}),
+            },
+        },
+        source_name=node.name,
+        session_id=node.session_id,
+        agent_id=node.agent_id,
+        run_id=run.id,
+        node_id=node.id,
+        sandbox_id=run.sandbox_id,
+        worker_id=worker_id,
+    )
+
+
 def _build_predecessor_context(session: Session, run: GraphRun, node: GraphRunNode) -> dict[str, Any]:
     """Build Jinja2 context from completed predecessor nodes."""
     predecessor_ids = {
@@ -54,16 +97,16 @@ def _build_predecessor_context(session: Session, run: GraphRun, node: GraphRunNo
     context: dict[str, Any] = {}
     for pred_id in predecessor_ids:
         pred = session.get(GraphRunNode, pred_id)
-        if pred and pred.state == "completed" and pred.name:
+        if pred and pred.state == RunNodeState.completed and pred.name:
             slug = slugify(pred.name)
-            output_data = json.loads(pred.output) if pred.output else {}
+            output_data = pred.output or {}
             context[slug] = {**output_data, "output": output_data}
     return context
 
 
 def _resolve_output_references(session: Session, run: GraphRun, node: GraphRunNode) -> str | None:
     """Resolve {{ slug.field }} references in a node's prompt/command using completed predecessors."""
-    text = node.prompt if node.node_type == "agent" else node.command
+    text = node.prompt if node.node_type == RunNodeType.agent else node.command
     if not text or "{{" not in text:
         return text
 
@@ -73,12 +116,16 @@ def _resolve_output_references(session: Session, run: GraphRun, node: GraphRunNo
     return _jinja_env.from_string(text).render(context)
 
 
-def _resolve_image_references(session: Session, run: GraphRun, node: GraphRunNode) -> str | None:
+def _resolve_image_references(
+    session: Session,
+    run: GraphRun,
+    node: GraphRunNode,
+) -> list[dict[str, Any]] | None:
     """Resolve {{ slug.field }} references in image URLs/paths using completed predecessors."""
     if not node.images:
         return node.images
 
-    images = json.loads(node.images)
+    images = node.images
     has_templates = any(
         "{{" in (img.get("url", "") or img.get("path", "") or "")
         for img in images
@@ -98,23 +145,27 @@ def _resolve_image_references(session: Session, run: GraphRun, node: GraphRunNod
             new_img["path"] = _jinja_env.from_string(img["path"]).render(context)
         resolved.append(new_img)
 
-    return json.dumps(resolved)
+    return resolved
 
 
 def _collect_child_run_output(session: Session, run: GraphRun) -> dict | None:
     """Collect outputs from leaf nodes (no outgoing edges) of a completed run."""
     outgoing = {e.from_run_node_id for e in run.run_edges}
-    leaf_nodes = [n for n in run.run_nodes if n.id not in outgoing and n.state == "completed"]
+    leaf_nodes = [
+        n
+        for n in run.run_nodes
+        if n.id not in outgoing and n.state == RunNodeState.completed
+    ]
     if not leaf_nodes:
         return None
     # Single leaf: use its output directly
     if len(leaf_nodes) == 1 and leaf_nodes[0].output:
-        return json.loads(leaf_nodes[0].output)
+        return leaf_nodes[0].output
     # Multiple leaves: merge keyed by slugified node name
     merged: dict = {}
     for leaf in leaf_nodes:
         if leaf.output:
-            leaf_data = json.loads(leaf.output)
+            leaf_data = leaf.output
             if leaf.name:
                 merged[slugify(leaf.name)] = leaf_data
             else:
@@ -142,26 +193,6 @@ def _parent_run(session: Session, child_run: GraphRun) -> GraphRun | None:
     return session.get(GraphRun, parent_node.run_id)
 
 
-async def _post_session_with_retry(
-    worker_url: str,
-    payload: dict[str, Any],
-    max_wait: int = 60,
-    interval: float = 2.0,
-) -> dict[str, Any]:
-    deadline = asyncio.get_event_loop().time() + max_wait
-    last_exc: Exception | None = None
-    while asyncio.get_event_loop().time() < deadline:
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(f"{worker_url}/sessions", json=payload, timeout=10.0)
-                resp.raise_for_status()
-                return resp.json()
-        except (httpx.ConnectError, httpx.TimeoutException) as exc:
-            last_exc = exc
-            await asyncio.sleep(interval)
-    raise RuntimeError(f"Worker did not become ready in time: {last_exc}") from last_exc
-
-
 def _get_unblocked_nodes(
     run_nodes: list[GraphRunNode],
     run_edges: list[GraphRunEdge],
@@ -170,11 +201,12 @@ def _get_unblocked_nodes(
     for edge in run_edges:
         predecessors[edge.to_run_node_id].add(edge.from_run_node_id)
 
-    completed_ids = {n.id for n in run_nodes if n.state == "completed"}
+    completed_ids = {n.id for n in run_nodes if n.state == RunNodeState.completed}
     return [
         node
         for node in run_nodes
-        if node.state == "pending" and predecessors[node.id].issubset(completed_ids)
+        if node.state == RunNodeState.pending
+        and predecessors[node.id].issubset(completed_ids)
     ]
 
 
@@ -207,7 +239,7 @@ def _create_retry_attempt(
         retry_of_run_node_id=node.id,
         node_type=node.node_type,
         name=node.name,
-        state="pending",
+        state=RunNodeState.pending,
         agent_type=node.agent_type,
         model=node.model,
         prompt=node.prompt,
@@ -250,13 +282,13 @@ def _create_retry_attempt(
 
 
 async def _ensure_workspace_dir(worker_url: str, workspace_dir: str) -> None:
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{worker_url}/commands",
-            json={"command": ["bash", "-c", f"mkdir -p '{workspace_dir}'"], "cwd": "/", "timeout": 10},
-            timeout=15.0,
-        )
-        resp.raise_for_status()
+    await execute_command(
+        worker_url,
+        command=["bash", "-c", f"mkdir -p '{workspace_dir}'"],
+        cwd="/",
+        timeout=10,
+        request_timeout=15.0,
+    )
 
 
 _MEDIA_TYPE_MAP = {
@@ -276,26 +308,23 @@ def _guess_media_type(path: str) -> str:
 
 async def _read_sandbox_file_base64(worker_url: str, path: str) -> str:
     """Read a file from the sandbox and return its base64-encoded content."""
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{worker_url}/commands",
-            json={"command": ["base64", path], "cwd": "/", "timeout": 30},
-            timeout=35.0,
-        )
-        resp.raise_for_status()
-        result = resp.json()
-        if result.get("exit_code", 1) != 0:
-            raise RuntimeError(f"Failed to read image {path}: {result.get('stderr', '')}")
-        return result["stdout"].strip()
+    result = await execute_command(
+        worker_url,
+        command=["base64", path],
+        cwd="/",
+        timeout=30,
+        request_timeout=35.0,
+    )
+    if result.get("exit_code", 1) != 0:
+        raise RuntimeError(f"Failed to read image {path}: {result.get('stderr', '')}")
+    return result["stdout"].strip()
 
 
 async def _resolve_images(
-    worker_url: str, images_json: str | None
+    worker_url: str,
+    images: list[dict[str, Any]] | None,
 ) -> list[dict[str, str]] | None:
     """Resolve image attachments, reading sandbox files as base64."""
-    if not images_json:
-        return None
-    images = json.loads(images_json)
     if not images:
         return None
     resolved = []
@@ -371,16 +400,15 @@ async def _place_tool_file(
         f"cat > '{workspace_dir}/.opencode/tools/mark_node_complete.ts' << 'TOOLEOF'\n"
         f"{tool_content}TOOLEOF"
     )
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{worker_url}/commands",
-            json={"command": ["bash", "-c", script], "cwd": "/", "timeout": 10},
-            timeout=15.0,
-        )
-        resp.raise_for_status()
-        result = resp.json()
-        if result.get("exit_code", 1) != 0:
-            raise RuntimeError(f"Failed to place tool file: {result.get('stderr', '')}")
+    result = await execute_command(
+        worker_url,
+        command=["bash", "-c", script],
+        cwd="/",
+        timeout=10,
+        request_timeout=15.0,
+    )
+    if result.get("exit_code", 1) != 0:
+        raise RuntimeError(f"Failed to place tool file: {result.get('stderr', '')}")
 
 
 async def reconcile_run(run_id: uuid.UUID) -> None:
@@ -389,7 +417,7 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
         if run is None or run.deleted:
             return
 
-        if run.state == "error":
+        if run.state == RunState.error:
             if run.parent_run_node_id is None:
                 _maybe_release_run_sandbox(session, run)
             return
@@ -397,8 +425,8 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
         active_nodes = _active_run_nodes(list(run.run_nodes))
         active_edges = _active_run_edges(list(run.run_edges), active_nodes)
 
-        if active_nodes and all(node.state == "completed" for node in active_nodes):
-            run.state = "completed"
+        if active_nodes and all(node.state == RunNodeState.completed for node in active_nodes):
+            run.state = RunState.completed
             run.updated_at = datetime.datetime.utcnow()
             session.add(run)
             session.commit()
@@ -410,8 +438,8 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
                 _maybe_release_run_sandbox(session, run)
             return
 
-        if any(node.state == "error" for node in active_nodes):
-            run.state = "error"
+        if any(node.state == RunNodeState.error for node in active_nodes):
+            run.state = RunState.error
             run.updated_at = datetime.datetime.utcnow()
             session.add(run)
             session.commit()
@@ -429,7 +457,8 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
 
         # Subgraph child runs don't need their own sandbox/worker — they share the parent's
         has_dispatchable_nodes = any(
-            n.node_type in ("agent", "command") and n.state == "pending"
+            n.node_type in (RunNodeType.agent, RunNodeType.command)
+            and n.state == RunNodeState.pending
             for n in active_nodes
         )
         worker = None
@@ -439,36 +468,38 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
                 enqueue_run(session, run.id, reason="awaiting worker capacity")
                 return
 
-        if run.state == "pending":
-            run.state = "running"
+        if run.state == RunState.pending:
+            run.state = RunState.running
             run.updated_at = datetime.datetime.utcnow()
             session.add(run)
             session.commit()
 
         unblocked = _get_unblocked_nodes(active_nodes, active_edges)
         for node in unblocked:
-            if node.state != "pending":
+            if node.state != RunNodeState.pending:
                 continue
 
-            if node.node_type == "subgraph":
+            if node.node_type == RunNodeType.subgraph:
                 # Start the child run by enqueueing it
-                node.state = "running"
+                node.state = RunNodeState.running
                 node.updated_at = datetime.datetime.utcnow()
                 session.add(node)
                 session.commit()
+                _persist_run_node_event(session, run, node, "run.node.running")
                 if node.child_run_id:
                     enqueue_run(session, node.child_run_id, reason="parent node unblocked")
                 continue
 
-            if node.node_type == "view":
-                node.state = "dispatching"
+            if node.node_type == RunNodeType.view:
+                node.state = RunNodeState.dispatching
                 node.updated_at = datetime.datetime.utcnow()
                 session.add(node)
                 session.commit()
+                _persist_run_node_event(session, run, node, "run.node.dispatching")
                 # Only need a worker if images reference sandbox paths
                 needs_worker = False
                 if node.images:
-                    for img in json.loads(node.images):
+                    for img in node.images:
                         if img.get("type") == "sandbox_path":
                             needs_worker = True
                             break
@@ -481,18 +512,19 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
                 asyncio.create_task(_dispatch_view_node(run.id, node.id, view_worker_id))
                 continue
 
-            node.state = "dispatching"
+            node.state = RunNodeState.dispatching
             node.updated_at = datetime.datetime.utcnow()
             session.add(node)
             session.commit()
+            _persist_run_node_event(session, run, node, "run.node.dispatching")
             if worker is None:
                 worker = _ensure_run_sandbox_worker(session, run)
                 if worker is None:
                     enqueue_run(session, run.id, reason="awaiting worker capacity")
                     return
-            if node.node_type == "agent":
+            if node.node_type == RunNodeType.agent:
                 asyncio.create_task(_dispatch_agent_node(run.id, node.id, worker.id))
-            elif node.node_type == "command":
+            elif node.node_type == RunNodeType.command:
                 asyncio.create_task(_dispatch_command_node(run.id, node.id, worker.id))
 
 
@@ -519,7 +551,7 @@ def _ensure_run_sandbox_worker(session: Session, run: GraphRun) -> Worker | None
 
     sandbox = session.get(Sandbox, run.sandbox_id)
     if sandbox is None:
-        run.state = "error"
+        run.state = RunState.error
         run.updated_at = datetime.datetime.utcnow()
         session.add(run)
         session.commit()
@@ -537,7 +569,7 @@ def _ensure_run_sandbox_worker(session: Session, run: GraphRun) -> Worker | None
             logger.info("run %s is waiting for worker capacity", run.id)
             return None
     if worker is None or worker.worker_url is None:
-        run.state = "error"
+        run.state = RunState.error
         run.updated_at = datetime.datetime.utcnow()
         session.add(run)
         session.commit()
@@ -559,8 +591,11 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
         try:
             await _ensure_workspace_dir(worker.worker_url, workspace_dir)
             if node.graph_tools and node.agent_type != "pydantic":
-                schema = json.loads(node.output_schema) if node.output_schema else None
-                await _place_tool_file(worker.worker_url, workspace_dir, output_schema=schema)
+                await _place_tool_file(
+                    worker.worker_url,
+                    workspace_dir,
+                    output_schema=node.output_schema,
+                )
 
             agent = Agent(
                 workspace_id=run.workspace_id,
@@ -585,8 +620,9 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
                     "you MUST call the `mark_node_complete` tool to signal completion."
                 )
                 if node.output_schema:
-                    schema = json.loads(node.output_schema)
-                    fields_desc = ", ".join(f'"{k}" ({v})' for k, v in schema.items())
+                    fields_desc = ", ".join(
+                        f'"{k}" ({v})' for k, v in node.output_schema.items()
+                    )
                     dispatch_prompt += (
                         f"\n\nWhen calling mark_node_complete, you MUST pass an 'output' "
                         f"object with these fields: {fields_desc}."
@@ -597,13 +633,13 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
 
             resolved_images = await _resolve_images(worker.worker_url, node.images)
 
-            data = await _post_session_with_retry(
+            data = await post_session_with_retry(
                 worker.worker_url,
                 payload={
                     "prompt": dispatch_prompt,
                     "agent_type": node.agent_type,
                     "model": node.model,
-                    "output_schema": json.loads(node.output_schema) if node.output_schema else None,
+                    "output_schema": node.output_schema,
                     "workspace_name": str(run.workspace_id),
                     "graph_tools": node.graph_tools,
                     "workspace_id": str(run.workspace_id),
@@ -617,11 +653,22 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
             agent.updated_at = datetime.datetime.utcnow()
             node.agent_id = agent.id
             node.session_id = agent.session_id
-            node.state = "running"
+            node.state = RunNodeState.running
             node.updated_at = datetime.datetime.utcnow()
             session.add(agent)
             session.add(node)
             session.commit()
+            _persist_run_node_event(
+                session,
+                run,
+                node,
+                "run.node.running",
+                data={
+                    "agent_id": str(agent.id),
+                    "session_id": agent.session_id,
+                },
+                worker_id=worker.id,
+            )
         except Exception:
             logger.exception("failed to dispatch agent node %s", node_id)
             fail_node_and_run(session, run_id, node_id, "agent dispatch failed")
@@ -638,26 +685,28 @@ async def _dispatch_command_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_i
             fail_node_and_run(session, run_id, node_id, "missing command")
             return
 
-        node.state = "running"
+        node.state = RunNodeState.running
         node.updated_at = datetime.datetime.utcnow()
         session.add(node)
         session.commit()
+        _persist_run_node_event(
+            session,
+            run,
+            node,
+            "run.node.running",
+            worker_id=worker.id,
+        )
 
         try:
             resolved_command = _resolve_output_references(session, run, node) or node.command
             await _ensure_workspace_dir(worker.worker_url, f"/workspaces/{run.workspace_id}")
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    f"{worker.worker_url}/commands",
-                    json={
-                        "command": ["bash", "-c", resolved_command],
-                        "cwd": f"/workspaces/{run.workspace_id}",
-                        "timeout": 300,
-                    },
-                    timeout=310.0,
-                )
-                resp.raise_for_status()
-                resp_data = resp.json()
+            resp_data = await execute_command(
+                worker.worker_url,
+                command=["bash", "-c", resolved_command],
+                cwd=f"/workspaces/{run.workspace_id}",
+                timeout=300,
+                request_timeout=310.0,
+            )
 
             event_svc.persist_event(
                 session,
@@ -697,10 +746,17 @@ async def _dispatch_view_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id: 
         if run is None or node is None:
             return
 
-        node.state = "running"
+        node.state = RunNodeState.running
         node.updated_at = datetime.datetime.utcnow()
         session.add(node)
         session.commit()
+        _persist_run_node_event(
+            session,
+            run,
+            node,
+            "run.node.running",
+            worker_id=worker_id,
+        )
 
         try:
             resolved_images_json = _resolve_image_references(session, run, node)
@@ -713,13 +769,12 @@ async def _dispatch_view_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id: 
 
             resolved_images: list[dict] = []
             if resolved_images_json:
-                parsed = json.loads(resolved_images_json)
                 if worker_url:
                     resolved_images = await _resolve_images(worker_url, resolved_images_json) or []
                 else:
                     # Without a worker, keep URL images as-is, skip sandbox_path
                     resolved_images = [
-                        img for img in parsed if img.get("type") == "url"
+                        img for img in resolved_images_json if img.get("type") == "url"
                     ]
 
             event_svc.persist_event(
@@ -756,18 +811,31 @@ def complete_node(
     output: dict | None = None,
 ) -> None:
     node = session.get(GraphRunNode, node_id)
-    if node is None or node.state == "completed" or node.next_attempt_run_node_id is not None:
+    if (
+        node is None
+        or node.state == RunNodeState.completed
+        or node.next_attempt_run_node_id is not None
+    ):
         return
-    schema = json.loads(node.output_schema) if node.output_schema else None
+    schema = node.output_schema
     if output is None and node.output is not None:
-        output = json.loads(node.output)
+        output = node.output
     validate_output_against_schema(output, schema)
     if output is not None:
-        node.output = json.dumps(output)
-    node.state = "completed"
+        node.output = output
+    node.state = RunNodeState.completed
     node.updated_at = datetime.datetime.utcnow()
     session.add(node)
     session.commit()
+    run = session.get(GraphRun, run_id)
+    if run is not None:
+        _persist_run_node_event(
+            session,
+            run,
+            node,
+            "run.node.completed",
+            data={"output": output},
+        )
     enqueue_run(session, run_id, reason="node completed")
 
 
@@ -789,23 +857,46 @@ def fail_node_and_run(
         and node.child_run_id is None
         and node.attempt < MAX_RUN_NODE_ATTEMPTS
     ):
-        node.state = "error"
+        node.state = RunNodeState.error
         node.updated_at = datetime.datetime.utcnow()
         session.add(node)
         _create_retry_attempt(session, run, node)
         _resume_run_if_terminal(session, run)
         session.commit()
+        if run is not None:
+            _persist_run_node_event(
+                session,
+                run,
+                node,
+                "run.node.retry_scheduled",
+                data={
+                    "reason": reason,
+                    "next_attempt_run_node_id": (
+                        str(node.next_attempt_run_node_id)
+                        if node.next_attempt_run_node_id
+                        else None
+                    ),
+                },
+            )
         enqueue_run(session, run_id, reason=f"node retry scheduled: {reason}")
         return
-    if node is not None and node.state != "error":
-        node.state = "error"
+    if node is not None and node.state != RunNodeState.error:
+        node.state = RunNodeState.error
         node.updated_at = datetime.datetime.utcnow()
         session.add(node)
-    if run is not None and run.state != "error":
-        run.state = "error"
+    if run is not None and run.state != RunState.error:
+        run.state = RunState.error
         run.updated_at = datetime.datetime.utcnow()
         session.add(run)
     session.commit()
+    if node is not None and run is not None:
+        _persist_run_node_event(
+            session,
+            run,
+            node,
+            "run.node.failed",
+            data={"reason": reason},
+        )
     if release_lease and run is not None:
         _maybe_release_run_sandbox(session, run, failure_reason=reason)
 
@@ -829,13 +920,17 @@ def _maybe_release_run_sandbox(
 
 def _resume_run_if_terminal(session: Session, run: GraphRun) -> None:
     """Set run back to 'running' if it was in a terminal state."""
-    if run.state in ("error", "completed"):
-        run.state = "running"
+    if run.state in (RunState.error, RunState.completed):
+        run.state = RunState.running
         run.updated_at = datetime.datetime.utcnow()
         session.add(run)
 
 
-SETTABLE_NODE_STATES = {"pending", "completed", "error"}
+SETTABLE_NODE_STATES = {
+    RunNodeState.pending,
+    RunNodeState.completed,
+    RunNodeState.error,
+}
 
 
 def sync_run_node(session: Session, run_id: uuid.UUID, node_id: uuid.UUID) -> GraphRun:
@@ -844,9 +939,9 @@ def sync_run_node(session: Session, run_id: uuid.UUID, node_id: uuid.UUID) -> Gr
     node = session.get(GraphRunNode, node_id)
     if node is None or node.run_id != run_id:
         raise ValueError("run node not found")
-    if node.source_type != "graph_node":
+    if node.source_type != RunNodeSourceType.graph_node:
         raise ValueError("sync is only supported for graph_node source type")
-    if node.state in ("running", "dispatching"):
+    if node.state in (RunNodeState.running, RunNodeState.dispatching):
         raise ValueError("cannot sync a node that is running or dispatching")
     if node.child_run_id is not None:
         raise ValueError("cannot sync subgraph nodes")
@@ -856,7 +951,7 @@ def sync_run_node(session: Session, run_id: uuid.UUID, node_id: uuid.UUID) -> Gr
         raise ValueError("source graph node not found or deleted")
 
     node.name = source.name
-    node.node_type = source.node_type.value
+    node.node_type = RunNodeType(source.node_type.value)
     node.agent_type = source.agent_type
     node.model = source.model
     node.prompt = source.prompt
@@ -865,7 +960,7 @@ def sync_run_node(session: Session, run_id: uuid.UUID, node_id: uuid.UUID) -> Gr
     node.output_schema = source.output_schema
     node.images = source.images
     node.output = None
-    node.state = "pending"
+    node.state = RunNodeState.pending
     node.agent_id = None
     node.session_id = None
     node.updated_at = datetime.datetime.utcnow()
@@ -883,7 +978,10 @@ def sync_run_node(session: Session, run_id: uuid.UUID, node_id: uuid.UUID) -> Gr
 
 
 def patch_run_node_state(
-    session: Session, run_id: uuid.UUID, node_id: uuid.UUID, new_state: str
+    session: Session,
+    run_id: uuid.UUID,
+    node_id: uuid.UUID,
+    new_state: RunNodeState,
 ) -> GraphRun:
     if new_state not in SETTABLE_NODE_STATES:
         raise ValueError(f"state must be one of {SETTABLE_NODE_STATES}")
@@ -891,20 +989,20 @@ def patch_run_node_state(
     node = session.get(GraphRunNode, node_id)
     if node is None or node.run_id != run_id:
         raise ValueError("run node not found")
-    if node.state in ("running", "dispatching"):
+    if node.state in (RunNodeState.running, RunNodeState.dispatching):
         raise ValueError("cannot change state of a node that is running or dispatching")
     if node.child_run_id is not None:
         raise ValueError("cannot change state of subgraph nodes")
 
     node.state = new_state
     node.updated_at = datetime.datetime.utcnow()
-    if new_state == "pending":
+    if new_state == RunNodeState.pending:
         node.agent_id = None
         node.session_id = None
     session.add(node)
 
     run = session.get(GraphRun, run_id)
-    if run is not None and new_state == "pending":
+    if run is not None and new_state == RunNodeState.pending:
         _resume_run_if_terminal(session, run)
 
     session.commit()

@@ -209,6 +209,52 @@ test.describe('Graph Run Execution', () => {
     }
   });
 
+  test('workspace delete succeeds after a retrying run creates retry links', async ({ request }) => {
+    const wid = await createWorkspace(request, 'Run Execution Retry Delete WS');
+    try {
+      const graph = await createGraph(
+        request,
+        wid,
+        [
+          {
+            node_type: 'command',
+            name: 'flaky',
+            command_config: {
+              command: [
+                'count_file=.retry-delete-count',
+                'count=$(cat "$count_file" 2>/dev/null || echo 0)',
+                'count=$((count + 1))',
+                'echo "$count" > "$count_file"',
+                'if [ "$count" -lt 2 ]; then exit 1; fi',
+                'printf ok',
+              ].join('; '),
+            },
+          },
+        ],
+        [],
+      );
+
+      const createRes = await request.post(`/api/v1/workspaces/${wid}/graphs/${graph.id}/runs`);
+      expect(createRes.status()).toBe(201);
+      const created = await createRes.json();
+
+      const run = await waitForRunTerminal(request, wid, graph.id, created.id);
+      expect(run.state).toBe('completed');
+
+      const flakyAttempts = run.run_nodes
+        .filter((n: any) => n.name === 'flaky')
+        .sort((a: any, b: any) => a.attempt - b.attempt);
+      expect(flakyAttempts).toHaveLength(2);
+      expect(flakyAttempts[0].next_attempt_run_node_id).toBe(flakyAttempts[1].id);
+      expect(flakyAttempts[1].retry_of_run_node_id).toBe(flakyAttempts[0].id);
+
+      const deleteRes = await request.delete(`/api/v1/workspaces/${wid}`);
+      expect(deleteRes.status()).toBe(204);
+    } finally {
+      await deleteWorkspaceWithChildren(request, wid);
+    }
+  });
+
   test('worker loss fails an active run and the pool recovers automatically', async ({ request }) => {
     const wid = await createWorkspace(request, 'Run Execution Test WS');
     try {
