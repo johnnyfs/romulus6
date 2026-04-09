@@ -51,6 +51,7 @@ class Session(BaseModel):
     output_schema: dict[str, str] | None = None
     images: list[dict[str, str]] | None = None
     recovery: RecoveryContext | None = None
+    sandbox_mode: str | None = None
     runner_state: dict[str, Any] = Field(default_factory=dict)
     status: SessionStatus = SessionStatus.STARTING
     workspace_dir: str

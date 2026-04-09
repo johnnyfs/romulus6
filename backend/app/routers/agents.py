@@ -60,8 +60,34 @@ class CreatePydanticAgentRequest(BaseModel):
         return self
 
 
+class CreateCodexAgentRequest(BaseModel):
+    agent_type: Literal["codex"] = "codex"
+    model: SupportedModel
+    prompt: str
+    name: str | None = None
+    graph_tools: bool = False
+
+    @model_validator(mode="after")
+    def validate_model(self) -> "CreateCodexAgentRequest":
+        validate_supported_model_for_agent_type(self.agent_type, self.model.value)
+        return self
+
+
+class CreateClaudeCodeAgentRequest(BaseModel):
+    agent_type: Literal["claude_code"] = "claude_code"
+    model: SupportedModel
+    prompt: str
+    name: str | None = None
+    graph_tools: bool = False
+
+    @model_validator(mode="after")
+    def validate_model(self) -> "CreateClaudeCodeAgentRequest":
+        validate_supported_model_for_agent_type(self.agent_type, self.model.value)
+        return self
+
+
 CreateAgentRequest = Annotated[
-    CreateOpenCodeAgentRequest | CreatePydanticAgentRequest,
+    CreateOpenCodeAgentRequest | CreatePydanticAgentRequest | CreateCodexAgentRequest | CreateClaudeCodeAgentRequest,
     Field(discriminator="agent_type"),
 ]
 
@@ -81,16 +107,18 @@ async def create_agent(
 ) -> Any:
     _require_workspace(workspace_id, session)
     try:
-        return await svc.create_agent(
+        agent = await svc.create_agent(
             session,
             workspace_id=workspace_id,
             agent_type=AgentType(body.agent_type),
             model=body.model.value,
             prompt=body.prompt,
             name=body.name,
-            graph_tools=body.graph_tools if body.agent_type == "opencode" else False,
+            graph_tools=body.graph_tools if body.agent_type in ("opencode", "codex", "claude_code") else False,
             schema_id=body.schema_id.value if body.agent_type == "pydantic" else None,
         )
+        session.refresh(agent)
+        return agent
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except RuntimeError as e:

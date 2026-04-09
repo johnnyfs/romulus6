@@ -38,6 +38,7 @@ class CreateSessionRequest(BaseModel):
     images: list[dict[str, Any]] | None = None
     workspace_name: str | None = None
     graph_tools: bool = False
+    sandbox_mode: str | None = None
     workspace_id: str | None = None
     sandbox_id: str | None = None
     recovery: RecoveryContext | None = None

@@ -180,7 +180,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
         setEditAgentType(node.agent_config.agent_type)
         setEditModel(node.agent_config.model)
         setEditPrompt(node.agent_config.prompt)
-        setEditGraphTools(node.agent_config.agent_type === 'opencode' ? (node.agent_config.graph_tools ?? false) : false)
+        setEditGraphTools((node.agent_config.agent_type === 'opencode' || node.agent_config.agent_type === 'codex' || node.agent_config.agent_type === 'claude_code') ? (node.agent_config.graph_tools ?? false) : false)
       } else {
         setEditAgentType('opencode')
         setEditModel(DEFAULT_MODEL_BY_AGENT_TYPE.opencode)
@@ -386,7 +386,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
     if (editType === 'agent') {
       patch.agent_config = editAgentType === 'pydantic'
         ? { agent_type: 'pydantic', model: editModel, prompt: editPrompt }
-        : { agent_type: 'opencode', model: editModel, prompt: editPrompt, graph_tools: editGraphTools }
+        : { agent_type: editAgentType, model: editModel, prompt: editPrompt, graph_tools: editGraphTools }
       if (Object.keys(editOutputSchema).length > 0) patch.output_schema = editOutputSchema
     } else if (editType === 'command') {
       patch.command_config = { command: editCommand }
@@ -825,13 +825,15 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
                     const nextType = e.target.value as AgentType
                     markDirty(setEditAgentType)(nextType)
                     setEditModel(DEFAULT_MODEL_BY_AGENT_TYPE[nextType])
-                    if (nextType !== 'opencode') {
+                    if (nextType !== 'opencode' && nextType !== 'codex' && nextType !== 'claude_code') {
                       setEditGraphTools(false)
                     }
                   }}
                 >
                   <option value="opencode">opencode</option>
                   <option value="pydantic">pydantic</option>
+                  <option value="codex">codex</option>
+                  <option value="claude_code">claude_code</option>
                 </select>
               </div>
               <div style={s.inspectorRow}>
@@ -849,7 +851,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
                   value={editPrompt} onChange={(e) => markDirty(setEditPrompt)(e.target.value)}
                   placeholder="Enter agent prompt..." />
               </div>
-              {editAgentType === 'opencode' && (
+              {(editAgentType === 'opencode' || editAgentType === 'codex' || editAgentType === 'claude_code') && (
                 <div style={s.inspectorRow}>
                   <label style={s.inspectorLabel}>
                     <input type="checkbox" checked={editGraphTools}

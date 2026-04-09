@@ -238,6 +238,9 @@ local-worker: check-local-worker-opencode
 		WORKER_WORKSPACE_ROOT=$(LOCAL_WORKSPACE_ROOT) \
 		WORKER_ROMULUS_BACKEND_URL=http://localhost:$(HOST_BACKEND_PORT)/api/v1 \
 		WORKER_ADVERTISE_URL=http://localhost:$(LOCAL_WORKER_PORT) \
+		OPENAI_API_KEY=$(OPENAI_API_KEY) \
+		ANTHROPIC_API_KEY=$(ANTHROPIC_API_KEY) \
+		GOOGLE_API_KEY=$(GOOGLE_API_KEY) \
 		uv run uvicorn app.main:app --host 0.0.0.0 --port $(LOCAL_WORKER_PORT) --reload --reload-dir app --reload-dir ../common/romulus_common
 
 local-clean:

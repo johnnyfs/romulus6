@@ -23,6 +23,8 @@ import {
   readStringParam,
 } from './workspaceDetailSearchParams'
 
+const OUTPUT_FIELD_TYPES = ['string', 'number', 'boolean'] as const
+
 const NODE_W = 130
 const NODE_H = 32
 const H_GAP = 16
@@ -94,6 +96,7 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
   const [editTaskTemplateId, setEditTaskTemplateId] = useState('')
   const [editRefSubgraphId, setEditRefSubgraphId] = useState('')
   const [editBindings, setEditBindings] = useState<Record<string, string>>({})
+  const [editOutputSchema, setEditOutputSchema] = useState<Record<string, string>>({})
   const [nodeDirty, setNodeDirty] = useState(false)
   const modelOptions = useMemo(() => SUPPORTED_MODELS_BY_AGENT_TYPE[editAgentType], [editAgentType])
 
@@ -207,12 +210,13 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
       setEditAgentType(agType)
       setEditModel(node.agent_config?.model ?? DEFAULT_MODEL_BY_AGENT_TYPE[agType])
       setEditPrompt(node.agent_config?.prompt ?? '')
-      setEditGraphTools(node.agent_config?.agent_type === 'opencode' ? (node.agent_config.graph_tools ?? false) : false)
+      setEditGraphTools((node.agent_config?.agent_type === 'opencode' || node.agent_config?.agent_type === 'claude_code') ? (node.agent_config.graph_tools ?? false) : false)
       setEditCommand(node.command_config?.command ?? '')
       setEditImages(node.view_config?.images ?? [])
       setEditTaskTemplateId(node.task_template_id ?? '')
       setEditRefSubgraphId(node.ref_subgraph_template_id ?? '')
       setEditBindings(node.argument_bindings ?? {})
+      setEditOutputSchema(node.output_schema ?? {})
       setNodeDirty(false)
     }
   }, [selectedNodeId, detail])
@@ -329,9 +333,11 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
     if (editNodeType === 'agent') {
       patch.agent_config = editAgentType === 'pydantic'
         ? { agent_type: 'pydantic', model: editModel, prompt: editPrompt }
-        : { agent_type: 'opencode', model: editModel, prompt: editPrompt, graph_tools: editGraphTools }
+        : { agent_type: editAgentType, model: editModel, prompt: editPrompt, graph_tools: editGraphTools }
+      if (Object.keys(editOutputSchema).length > 0) patch.output_schema = editOutputSchema
     } else if (editNodeType === 'command') {
       patch.command_config = { command: editCommand }
+      if (Object.keys(editOutputSchema).length > 0) patch.output_schema = editOutputSchema
     } else if (editNodeType === 'view') {
       patch.view_config = { images: editImages }
     } else if (editNodeType === 'task_template') {
@@ -579,10 +585,12 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
                     const nextType = e.target.value as AgentType
                     editNode(setEditAgentType)(nextType)
                     setEditModel(DEFAULT_MODEL_BY_AGENT_TYPE[nextType])
-                    if (nextType !== 'opencode') setEditGraphTools(false)
+                    if (nextType !== 'opencode' && nextType !== 'codex' && nextType !== 'claude_code') setEditGraphTools(false)
                   }}>
                   <option value="opencode">opencode</option>
                   <option value="pydantic">pydantic</option>
+                  <option value="codex">codex</option>
+                  <option value="claude_code">claude_code</option>
                 </select>
               </div>
               <div style={s.row}>
@@ -598,7 +606,7 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
                   value={editPrompt} onChange={e => editNode(setEditPrompt)(e.target.value)}
                   placeholder="Enter agent prompt..." />
               </div>
-              {editAgentType === 'opencode' && (
+              {(editAgentType === 'opencode' || editAgentType === 'codex' || editAgentType === 'claude_code') && (
                 <div style={s.row}>
                   <label style={s.label}>
                     <input type="checkbox" checked={editGraphTools}
@@ -712,6 +720,43 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
                   setNodeDirty(true)
                 }}>
                 [ + Add Image ]
+              </button>
+            </>
+          )}
+
+          {/* Output Schema (agent + command) */}
+          {(editNodeType === 'agent' || editNodeType === 'command') && (
+            <>
+              <div style={{ ...s.inspTitle, marginTop: 6 }}>OUTPUT SCHEMA</div>
+              {Object.entries(editOutputSchema).map(([field, type]) => (
+                <div key={field} style={{ ...s.row, gap: 4 }}>
+                  <input style={{ ...s.input, flex: 2 }} value={field} readOnly title={field} />
+                  <select style={{ ...s.sel, flex: 1 }} value={type}
+                    onChange={(e) => {
+                      setEditOutputSchema(prev => ({ ...prev, [field]: e.target.value }))
+                      setNodeDirty(true)
+                    }}>
+                    {OUTPUT_FIELD_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                  <button style={s.deleteBtn}
+                    onClick={() => {
+                      setEditOutputSchema(prev => {
+                        const next = { ...prev }
+                        delete next[field]
+                        return next
+                      })
+                      setNodeDirty(true)
+                    }}>x</button>
+                </div>
+              ))}
+              <button style={{ ...s.addBtn, fontSize: '11px', marginTop: 2 }}
+                onClick={() => {
+                  const name = window.prompt('Field name:')
+                  if (!name?.trim()) return
+                  setEditOutputSchema(prev => ({ ...prev, [name.trim()]: 'string' }))
+                  setNodeDirty(true)
+                }}>
+                [ + Add Field ]
               </button>
             </>
           )}

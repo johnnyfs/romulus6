@@ -10,7 +10,12 @@ dependencies = [
     "pydantic-ai>=1.70.0",
     "pydantic-settings>=2.0",
     "httpx>=0.28.0",
+    "openai-agents @ git+ssh://git@github.com/OpenAI-Early-Access/openai-agents-python-preview.git",
+    "claude-code-sdk>=0.0.25",
 ]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

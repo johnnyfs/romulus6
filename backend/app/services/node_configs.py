@@ -2,6 +2,7 @@ from typing import Any
 
 from app.models.agent import (
     AgentConfig,
+    CodexAgentConfig,
     CommandConfig,
     ImageAttachment,
     OpenCodeAgentConfig,
@@ -24,6 +25,13 @@ def agent_config_from_node(obj: Any) -> AgentConfig | None:
             model=obj.model,
             prompt=obj.prompt,
             images=images,
+        )
+    if obj.agent_type == "codex":
+        return CodexAgentConfig(
+            agent_type=obj.agent_type,
+            model=obj.model,
+            prompt=obj.prompt,
+            graph_tools=getattr(obj, "graph_tools", False),
         )
     return OpenCodeAgentConfig(
         agent_type=obj.agent_type,

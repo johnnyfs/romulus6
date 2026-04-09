@@ -22,6 +22,8 @@ if TYPE_CHECKING:
 class AgentType(str, Enum):
     opencode = "opencode"
     pydantic = "pydantic"
+    codex = "codex"
+    claude_code = "claude_code"
 
 
 class AgentStatus(str, Enum):
@@ -79,8 +81,39 @@ class PydanticAgentConfig(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class CodexAgentConfig(BaseModel):
+    """Codex configuration used by graph and template agent nodes."""
+    agent_type: Literal["codex"] = "codex"
+    model: SupportedModel
+    prompt: str
+    graph_tools: bool = False
+    sandbox_mode: str = "read-only"
+
+    @model_validator(mode="after")
+    def validate_model(self) -> "CodexAgentConfig":
+        validate_supported_model_for_agent_type(self.agent_type, self.model.value)
+        return self
+
+    model_config = {"from_attributes": True}
+
+
+class ClaudeCodeAgentConfig(BaseModel):
+    """Claude Code configuration used by graph and template agent nodes."""
+    agent_type: Literal["claude_code"] = "claude_code"
+    model: SupportedModel
+    prompt: str
+    graph_tools: bool = False
+
+    @model_validator(mode="after")
+    def validate_model(self) -> "ClaudeCodeAgentConfig":
+        validate_supported_model_for_agent_type(self.agent_type, self.model.value)
+        return self
+
+    model_config = {"from_attributes": True}
+
+
 AgentConfig = Annotated[
-    OpenCodeAgentConfig | PydanticAgentConfig,
+    OpenCodeAgentConfig | PydanticAgentConfig | CodexAgentConfig | ClaudeCodeAgentConfig,
     PydanticField(discriminator="agent_type"),
 ]
 

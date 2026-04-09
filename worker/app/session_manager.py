@@ -9,6 +9,8 @@ from typing import Any
 from romulus_common.worker_api import RecoveryContext
 
 from app.agents.base import AgentRunner
+from app.agents.claude_code_runner import ClaudeCodeRunner
+from app.agents.codex_runner import CodexRunner
 from app.agents.pydantic_runner import PydanticRunner
 from app.agents.opencode import OpenCodeRunner, OpenCodeServer
 from app.backend_client import BackendClient
@@ -51,17 +53,26 @@ class SessionManager:
         output_schema: dict[str, str] | None = None,
         images: list[dict[str, str]] | None = None,
         recovery: RecoveryContext | None = None,
+        sandbox_mode: str | None = None,
     ) -> Session:
         session_id = str(uuid.uuid4())
         workspace_name = workspace_name or session_id
         workspace_dir = os.path.join(settings.workspace_root, workspace_name)
         os.makedirs(workspace_dir, exist_ok=True)
-        os.makedirs(os.path.join(workspace_dir, ".opencode", "tools"), exist_ok=True)
+        if agent_type == "opencode":
+            os.makedirs(os.path.join(workspace_dir, ".opencode", "tools"), exist_ok=True)
 
         if graph_tools and workspace_id:
-            # Write graph tools into the sandbox workdir so each sandbox has its
-            # own isolated set of tools (keyed by workspace_id for API routing).
-            write_graph_tools(workspace_dir, workspace_id, settings.romulus_backend_url)
+            if agent_type == "opencode":
+                # Write graph tools into the sandbox workdir so each sandbox has its
+                # own isolated set of tools (keyed by workspace_id for API routing).
+                write_graph_tools(workspace_dir, workspace_id, settings.romulus_backend_url)
+
+        runner_state: dict[str, Any] = {}
+        if graph_tools and workspace_id and agent_type in ("claude_code", "codex"):
+            runner_state["graph_tools"] = True
+            runner_state["graph_tools_workspace_id"] = workspace_id
+            runner_state["graph_tools_backend_url"] = settings.romulus_backend_url
 
         session = Session(
             id=session_id,
@@ -71,6 +82,8 @@ class SessionManager:
             output_schema=output_schema,
             images=images,
             recovery=recovery,
+            sandbox_mode=sandbox_mode,
+            runner_state=runner_state,
             workspace_dir=workspace_dir,
         )
         self._sessions[session_id] = session
@@ -138,6 +151,10 @@ class SessionManager:
             return OpenCodeRunner(session.id, self._server)
         if session.agent_type == "pydantic":
             return PydanticRunner(session.id, self._pydantic_service)
+        if session.agent_type == "codex":
+            return CodexRunner(session.id)
+        if session.agent_type == "claude_code":
+            return ClaudeCodeRunner(session.id)
         raise ValueError(f"Unsupported agent type: {session.agent_type}")
 
     async def _run_agent(self, session_id: str, prompt: str) -> None:
