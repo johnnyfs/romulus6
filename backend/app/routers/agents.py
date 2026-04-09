@@ -60,8 +60,34 @@ class CreatePydanticAgentRequest(BaseModel):
         return self
 
 
+class CreateCodexAgentRequest(BaseModel):
+    agent_type: Literal["codex"] = "codex"
+    model: SupportedModel
+    prompt: str
+    name: str | None = None
+    graph_tools: bool = False
+
+    @model_validator(mode="after")
+    def validate_model(self) -> "CreateCodexAgentRequest":
+        validate_supported_model_for_agent_type(self.agent_type, self.model.value)
+        return self
+
+
+class CreateClaudeCodeAgentRequest(BaseModel):
+    agent_type: Literal["claude_code"] = "claude_code"
+    model: SupportedModel
+    prompt: str
+    name: str | None = None
+    graph_tools: bool = False
+
+    @model_validator(mode="after")
+    def validate_model(self) -> "CreateClaudeCodeAgentRequest":
+        validate_supported_model_for_agent_type(self.agent_type, self.model.value)
+        return self
+
+
 CreateAgentRequest = Annotated[
-    CreateOpenCodeAgentRequest | CreatePydanticAgentRequest,
+    CreateOpenCodeAgentRequest | CreatePydanticAgentRequest | CreateCodexAgentRequest | CreateClaudeCodeAgentRequest,
     Field(discriminator="agent_type"),
 ]
 
@@ -88,7 +114,7 @@ async def create_agent(
             model=body.model.value,
             prompt=body.prompt,
             name=body.name,
-            graph_tools=body.graph_tools if body.agent_type == "opencode" else False,
+            graph_tools=body.graph_tools if body.agent_type in ("opencode", "codex", "claude_code") else False,
             schema_id=body.schema_id.value if body.agent_type == "pydantic" else None,
         )
     except ValueError as e:

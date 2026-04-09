@@ -63,7 +63,23 @@ export interface CreatePydanticAgentRequest {
   schema_id: PydanticSchemaId
 }
 
-export type CreateAgentRequest = CreateOpenCodeAgentRequest | CreatePydanticAgentRequest
+export interface CreateCodexAgentRequest {
+  agent_type: 'codex'
+  model: string
+  prompt: string
+  name?: string
+  graph_tools?: boolean
+}
+
+export interface CreateClaudeCodeAgentRequest {
+  agent_type: 'claude_code'
+  model: string
+  prompt: string
+  name?: string
+  graph_tools?: boolean
+}
+
+export type CreateAgentRequest = CreateOpenCodeAgentRequest | CreatePydanticAgentRequest | CreateCodexAgentRequest | CreateClaudeCodeAgentRequest
 
 export const TERMINAL_STATUSES: AgentStatus[] = ['completed', 'error', 'interrupted']
 

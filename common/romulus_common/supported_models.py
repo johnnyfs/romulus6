@@ -10,6 +10,8 @@ class SupportedModel(StrEnum):
     o3_mini = "openai/o3-mini"
     gemini_25_pro = "google/gemini-2.5-pro"
     gemini_25_flash = "google/gemini-2.5-flash"
+    gpt_52_codex = "openai/gpt-5.2-codex"
+    gpt_53_codex = "openai/gpt-5.3-codex"
 
 
 SUPPORTED_MODELS_BY_AGENT_TYPE: dict[str, tuple[SupportedModel, ...]] = {
@@ -24,6 +26,15 @@ SUPPORTED_MODELS_BY_AGENT_TYPE: dict[str, tuple[SupportedModel, ...]] = {
     "pydantic": (
         SupportedModel.gemini_25_pro,
         SupportedModel.gemini_25_flash,
+    ),
+    "codex": (
+        SupportedModel.gpt_52_codex,
+        SupportedModel.gpt_53_codex,
+    ),
+    "claude_code": (
+        SupportedModel.claude_sonnet_46,
+        SupportedModel.claude_opus_46,
+        SupportedModel.claude_haiku_45,
     ),
 }
 

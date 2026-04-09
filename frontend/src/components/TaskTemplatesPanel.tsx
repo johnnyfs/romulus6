@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAutoResize } from '../hooks/useAutoResize'
 import { useSearchParams } from 'react-router-dom'
 import type { NodeType } from '../api/graphs'
-import { SUPPORTED_MODELS_BY_AGENT_TYPE } from '../api/models'
+import { DEFAULT_MODEL_BY_AGENT_TYPE, SUPPORTED_MODELS_BY_AGENT_TYPE, type AgentType } from '../api/models'
 import {
   type TaskTemplate,
   type TaskTemplateArgType,
@@ -18,7 +18,7 @@ import {
   readStringParam,
 } from './workspaceDetailSearchParams'
 
-const MODEL_OPTIONS = SUPPORTED_MODELS_BY_AGENT_TYPE.opencode
+const OUTPUT_FIELD_TYPES = ['string', 'number', 'boolean'] as const
 
 export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: string }) {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -32,8 +32,8 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
   const [editName, setEditName] = useState('')
   const [editLabel, setEditLabel] = useState('')
   const [editTaskType, setEditTaskType] = useState<NodeType>('agent')
-  const [editAgentType, setEditAgentType] = useState('opencode')
-  const [editModel, setEditModel] = useState(MODEL_OPTIONS[0].value)
+  const [editAgentType, setEditAgentType] = useState<AgentType>('opencode')
+  const [editModel, setEditModel] = useState(DEFAULT_MODEL_BY_AGENT_TYPE.opencode)
   const [editPrompt, setEditPrompt] = useState('')
   const [editCommand, setEditCommand] = useState('')
   const promptRef = useAutoResize(editPrompt, 300, 50)
@@ -41,6 +41,8 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
   const [editGraphTools, setEditGraphTools] = useState(false)
   const argIdCounter = useRef(0)
   const [editArgs, setEditArgs] = useState<{ _id: number; name: string; arg_type: TaskTemplateArgType; default_value: string; model_constraint: string[]; min_value: string; max_value: string; enum_options: string[] }[]>([])
+  const [editOutputSchema, setEditOutputSchema] = useState<Record<string, string>>({})
+  const modelOptions = useMemo(() => SUPPORTED_MODELS_BY_AGENT_TYPE[editAgentType], [editAgentType])
 
   function markDirty<T>(setter: (v: T) => void) {
     return (v: T) => { setter(v); setDirty(true) }
@@ -91,11 +93,13 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
         setEditName(t.name)
         setEditLabel(t.label ?? '')
         setEditTaskType(t.task_type)
-        setEditAgentType(t.agent_type ?? 'opencode')
-        setEditModel(t.model ?? MODEL_OPTIONS[0].value)
+        const agType = (t.agent_type ?? 'opencode') as AgentType
+        setEditAgentType(agType)
+        setEditModel(t.model ?? DEFAULT_MODEL_BY_AGENT_TYPE[agType])
         setEditPrompt(t.prompt ?? '')
         setEditCommand(t.command ?? '')
         setEditGraphTools(t.graph_tools)
+        setEditOutputSchema(t.output_schema ?? {})
         setEditArgs(
           t.arguments.map((a) => ({
             _id: argIdCounter.current++,
@@ -163,6 +167,7 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
           max_value: a.max_value ? parseFloat(a.max_value) : undefined,
           enum_options: a.enum_options.length > 0 ? a.enum_options : undefined,
         })),
+        output_schema: Object.keys(editOutputSchema).length > 0 ? editOutputSchema : undefined,
       })
       await loadList()
       await loadDetail(activeId)
@@ -236,9 +241,23 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
           {editTaskType === 'agent' && (
             <>
               <div style={s.row}>
+                <span style={s.label}>Agent</span>
+                <select style={s.sel} value={editAgentType}
+                  onChange={(e) => {
+                    const nextType = e.target.value as AgentType
+                    markDirty(setEditAgentType)(nextType)
+                    setEditModel(DEFAULT_MODEL_BY_AGENT_TYPE[nextType])
+                    if (nextType !== 'opencode' && nextType !== 'claude_code') setEditGraphTools(false)
+                  }}>
+                  <option value="opencode">opencode</option>
+                  <option value="pydantic">pydantic</option>
+                  <option value="claude_code">claude_code</option>
+                </select>
+              </div>
+              <div style={s.row}>
                 <span style={s.label}>Model</span>
                 <select style={s.sel} value={editModel} onChange={(e) => markDirty(setEditModel)(e.target.value)}>
-                  {MODEL_OPTIONS.map((m) => (
+                  {modelOptions.map((m) => (
                     <option key={m.value} value={m.value}>{m.label}</option>
                   ))}
                 </select>
@@ -252,12 +271,14 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
                   onChange={(e) => markDirty(setEditPrompt)(e.target.value)}
                 />
               </div>
-              <div style={s.row}>
-                <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <input type="checkbox" checked={editGraphTools} onChange={(e) => markDirty(setEditGraphTools)(e.target.checked)} />
-                  Graph tools
-                </label>
-              </div>
+              {(editAgentType === 'opencode' || editAgentType === 'claude_code') && (
+                <div style={s.row}>
+                  <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <input type="checkbox" checked={editGraphTools} onChange={(e) => markDirty(setEditGraphTools)(e.target.checked)} />
+                    Graph tools
+                  </label>
+                </div>
+              )}
             </>
           )}
 
@@ -330,6 +351,36 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
             </div>
           ))}
           <button style={s.addBtn} onClick={addArg}>+ Add Argument</button>
+
+          {/* Output Schema */}
+          <div style={{ ...s.sectionTitle, marginTop: '8px' }}>Output Schema</div>
+          {Object.entries(editOutputSchema).map(([field, type]) => (
+            <div key={field} style={{ ...s.row, gap: '4px' }}>
+              <input style={{ ...s.input, flex: 2 }} value={field} readOnly title={field} />
+              <select style={{ ...s.sel, flex: 1 }} value={type}
+                onChange={(e) => {
+                  setEditOutputSchema(prev => ({ ...prev, [field]: e.target.value }))
+                  setDirty(true)
+                }}>
+                {OUTPUT_FIELD_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+              <button style={s.removeBtn}
+                onClick={() => {
+                  setEditOutputSchema(prev => {
+                    const next = { ...prev }
+                    delete next[field]
+                    return next
+                  })
+                  setDirty(true)
+                }}>x</button>
+            </div>
+          ))}
+          <button style={s.addBtn} onClick={() => {
+            const name = window.prompt('Field name:')
+            if (!name?.trim()) return
+            setEditOutputSchema(prev => ({ ...prev, [name.trim()]: 'string' }))
+            setDirty(true)
+          }}>+ Add Field</button>
 
           <button style={{ ...s.saveBtn, opacity: dirty ? 1 : 0.5 }} onClick={handleSave} disabled={mutating || !dirty}>
             Save

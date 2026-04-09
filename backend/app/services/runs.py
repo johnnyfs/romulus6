@@ -590,7 +590,7 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
 
         try:
             await _ensure_workspace_dir(worker.worker_url, workspace_dir)
-            if node.graph_tools and node.agent_type != "pydantic":
+            if node.graph_tools and node.agent_type not in ("pydantic", "codex", "claude_code"):
                 await _place_tool_file(
                     worker.worker_url,
                     workspace_dir,
@@ -613,7 +613,7 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
 
             resolved_prompt = _resolve_output_references(session, run, node) or ""
             dispatch_prompt = resolved_prompt
-            if node.graph_tools and node.agent_type != "pydantic":
+            if node.graph_tools and node.agent_type not in ("pydantic", "codex", "claude_code"):
                 dispatch_prompt = (
                     f"{dispatch_prompt}\n\n"
                     "IMPORTANT: When you have fully completed the task described above, "

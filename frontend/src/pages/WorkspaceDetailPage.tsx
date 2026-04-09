@@ -228,6 +228,8 @@ export default function WorkspaceDetailPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [workspace, setWorkspace] = useState<Workspace | null>(null)
   const [agents, setAgents] = useState<Agent[]>([])
+  // Filter out malformed agent objects (can occur during Vite HMR state reuse)
+  const validAgents = useMemo(() => agents.filter((a) => a.id && a.name), [agents])
   const activeTab = readEnumParam(
     searchParams,
     WORKSPACE_DETAIL_PARAM_KEYS.workspaceTab,
@@ -259,11 +261,14 @@ export default function WorkspaceDetailPage() {
   const [chatInput, setChatInput] = useState('')
   const chatRef = useAutoResize(chatInput, 144)
   const promptRef = useAutoResize(formPrompt, 234, 60)
-  const [targetAgentId, setTargetAgentId] = useState<string>('new')
-  // Reset target if the selected agent gets dismissed
-  const effectiveTargetId = targetAgentId === 'new' ? 'new'
-    : agents.find((a) => a.id === targetAgentId && !a.dismissed) ? targetAgentId
-    : 'new'
+  const [targetAgentId, setTargetAgentId] = useState<string | null>(null)
+  // Fall back to selected agent or first non-dismissed agent
+  const effectiveTargetId = (() => {
+    if (targetAgentId && agents.find((a) => a.id && a.id === targetAgentId && !a.dismissed)) return targetAgentId
+    if (selectedAgentId && agents.find((a) => a.id && a.id === selectedAgentId && !a.dismissed)) return selectedAgentId
+    const first = agents.find((a) => a.id && !a.dismissed)
+    return first?.id ?? null
+  })()
   const [userMessages, setUserMessages] = useState<
     { agentId: string; prompt: string; timestamp: string; isDispatch?: boolean }[]
   >(() => {
@@ -491,26 +496,25 @@ export default function WorkspaceDetailPage() {
 
   // Dead agent IDs for filter (must be before `feed` which depends on it)
   const dismissedAgentIds = useMemo(() => {
-    return new Set(agents.filter((a) => a.dismissed).map((a) => a.id))
-  }, [agents])
+    return new Set(validAgents.filter((a) => a.dismissed).map((a) => a.id))
+  }, [validAgents])
 
   const knownAgentIds = useMemo(() => {
-    return new Set(agents.map((a) => a.id))
-  }, [agents])
+    return new Set(validAgents.map((a) => a.id))
+  }, [validAgents])
 
-  useEffect(() => {
-    if (!workspace) return
-    setUserMessages((prev) => prev.filter((message) => knownAgentIds.has(message.agentId)))
-  }, [knownAgentIds, workspace])
+  // NOTE: Do NOT prune userMessages when knownAgentIds changes — the agents
+  // list can temporarily be stale (e.g., after page reload before listAgents
+  // returns) and pruning would permanently destroy messages from localStorage.
 
   const agentColorMap = useMemo(() => {
     const map: Record<string, string> = {}
-    const sorted = [...agents].sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''))
+    const sorted = [...validAgents].sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''))
     sorted.forEach((agent, i) => {
       map[agent.id] = AGENT_COLORS[i % AGENT_COLORS.length]
     })
     return map
-  }, [agents])
+  }, [validAgents])
 
   function agentColor(agentId: string, event?: AgentEvent): string {
     return event?.display_color ?? agentColorMap[agentId] ?? 'var(--accent)'
@@ -640,8 +644,8 @@ export default function WorkspaceDetailPage() {
   // ── Helpers ───────────────────────────────────────────────────────────────
 
   function agentName(agentId: string): string {
-    const a = agents.find((x) => x.id === agentId)
-    if (!a) return 'agent'
+    const a = validAgents.find((x) => x.id === agentId)
+    if (!a) return agentId.slice(0, 8)
     return a.name ?? `${a.agent_type}/${a.model?.split('/')[1] ?? 'agent'}`
   }
 
@@ -653,21 +657,21 @@ export default function WorkspaceDetailPage() {
   }
 
   // Partition agents into ad-hoc and run-grouped
-  const adHocAgents = useMemo(() => agents.filter((a) => !a.graph_run_id), [agents])
+  const adHocAgents = useMemo(() => validAgents.filter((a) => !a.graph_run_id), [validAgents])
   const visibleAdHocAgents = useMemo(
     () => adHocAgents.filter((a) => showDismissedAgents || !a.dismissed),
     [adHocAgents, showDismissedAgents],
   )
   const runAgentGroups = useMemo(() => {
     const groups = new Map<string, Agent[]>()
-    for (const a of agents) {
+    for (const a of validAgents) {
       if (!a.graph_run_id) continue
       const list = groups.get(a.graph_run_id) ?? []
       list.push(a)
       groups.set(a.graph_run_id, list)
     }
     return groups
-  }, [agents])
+  }, [validAgents])
   const visibleRunAgentGroups = useMemo(() => {
     const groups = new Map<string, Agent[]>()
     for (const [runId, runAgents] of runAgentGroups.entries()) {
@@ -726,24 +730,39 @@ export default function WorkspaceDetailPage() {
     if (!id || !prompt.trim()) return
     setCreating(true)
     try {
-      const agent = await createAgent(
-        id,
+      const body =
         agentType === 'pydantic'
           ? {
-              agent_type: 'pydantic',
+              agent_type: 'pydantic' as const,
               model,
               prompt: prompt.trim(),
               name: name.trim() || undefined,
               schema_id: schemaId,
             }
-          : {
-              agent_type: 'opencode',
+          : agentType === 'codex'
+          ? {
+              agent_type: 'codex' as const,
               model,
               prompt: prompt.trim(),
               name: name.trim() || undefined,
               graph_tools: graphTools || undefined,
-            },
-      )
+            }
+          : agentType === 'claude_code'
+          ? {
+              agent_type: 'claude_code' as const,
+              model,
+              prompt: prompt.trim(),
+              name: name.trim() || undefined,
+              graph_tools: graphTools || undefined,
+            }
+          : {
+              agent_type: 'opencode' as const,
+              model,
+              prompt: prompt.trim(),
+              name: name.trim() || undefined,
+              graph_tools: graphTools || undefined,
+            }
+      const agent = await createAgent(id, body)
       setAgents((prev) => [...prev, agent])
       setUserMessages((prev) => [
         ...prev,
@@ -765,19 +784,16 @@ export default function WorkspaceDetailPage() {
   }
 
   async function handleChatSend() {
-    if (!id || !chatInput.trim()) return
+    const targetId = effectiveTargetId
+    if (!id || !chatInput.trim() || !targetId) return
     setCreating(true)
     try {
-      if (effectiveTargetId === 'new') {
-        await handleCreateAgent(chatInput.trim(), DEFAULT_MODEL_BY_AGENT_TYPE.opencode, '')
-      } else {
-        setUserMessages((prev) => [
-          ...prev,
-          { agentId: effectiveTargetId, prompt: chatInput.trim(), timestamp: new Date().toISOString() },
-        ])
-        await sendMessage(id, effectiveTargetId, chatInput.trim())
-        setAgentTerminal((prev) => ({ ...prev, [effectiveTargetId]: false }))
-      }
+      setUserMessages((prev) => [
+        ...prev,
+        { agentId: targetId, prompt: chatInput.trim(), timestamp: new Date().toISOString() },
+      ])
+      await sendMessage(id, targetId, chatInput.trim())
+      setAgentTerminal((prev) => ({ ...prev, [targetId]: false }))
       setChatInput('')
     } catch (err) {
       setPageError(err instanceof Error ? err.message : 'Failed to send message')
@@ -879,6 +895,8 @@ export default function WorkspaceDetailPage() {
                 >
                   <option value="opencode">OpenCode</option>
                   <option value="pydantic">Pydantic</option>
+                  <option value="codex">Codex</option>
+                  <option value="claude_code">Claude Code</option>
                 </select>
               </div>
               <div style={styles.formRow}>
@@ -930,7 +948,7 @@ export default function WorkspaceDetailPage() {
                   placeholder="What should this agent do?"
                 />
               </div>
-              {formAgentType === 'opencode' && (
+              {(formAgentType === 'opencode' || formAgentType === 'codex' || formAgentType === 'claude_code') && (
                 <div style={styles.formRow}>
                   <label style={styles.label}>
                     <input
@@ -1172,9 +1190,9 @@ export default function WorkspaceDetailPage() {
                 <div ref={feedBottomRef} />
               </div>
 
-              {agents.some((a) => !agentTerminal[a.id]) && (
+              {validAgents.some((a) => !agentTerminal[a.id]) && (
                 <div style={styles.statusBar}>
-                  {agents
+                  {validAgents
                     .filter((a) => !agentTerminal[a.id])
                     .map((a) => (
                       <span key={a.id} style={styles.statusItem}>
@@ -1198,11 +1216,12 @@ export default function WorkspaceDetailPage() {
               <div style={styles.inputBar}>
                 <select
                   style={styles.targetSelect}
-                  value={effectiveTargetId}
-                  onChange={(e) => setTargetAgentId(e.target.value)}
+                  value={effectiveTargetId ?? ''}
+                  onChange={(e) => setTargetAgentId(e.target.value || null)}
+                  disabled={!effectiveTargetId}
                 >
-                  <option value="new">+ New agent</option>
-                  {agents.filter((a) => !a.dismissed).map((a) => (
+                  {!effectiveTargetId && <option value="">No agents</option>}
+                  {validAgents.filter((a) => !a.dismissed).map((a) => (
                     <option key={a.id} value={a.id}>
                       {a.name ?? `${a.agent_type}/${a.model?.split('/')[1] ?? 'agent'}`}
                     </option>
@@ -1214,7 +1233,8 @@ export default function WorkspaceDetailPage() {
                   style={styles.chatInput}
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
-                  placeholder={effectiveTargetId === 'new' ? 'Dispatch a new agent…' : 'Send a message…'}
+                  placeholder={effectiveTargetId ? 'Send a message…' : 'Create an agent first…'}
+                  disabled={!effectiveTargetId}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault()
@@ -1223,8 +1243,8 @@ export default function WorkspaceDetailPage() {
                   }}
                 />
                 <button
-                  style={{ ...styles.sendBtn, opacity: creating || !chatInput.trim() ? 0.4 : 1 }}
-                  disabled={creating || !chatInput.trim()}
+                  style={{ ...styles.sendBtn, opacity: creating || !chatInput.trim() || !effectiveTargetId ? 0.4 : 1 }}
+                  disabled={creating || !chatInput.trim() || !effectiveTargetId}
                   onClick={handleChatSend}
                 >
                   Send

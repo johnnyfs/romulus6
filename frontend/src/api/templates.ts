@@ -102,6 +102,7 @@ export async function createTaskTemplate(
     command?: string
     graph_tools?: boolean
     arguments?: { name: string; arg_type?: TaskTemplateArgType; default_value?: string; model_constraint?: string[]; min_value?: number; max_value?: number; enum_options?: string[] }[]
+    output_schema?: Record<string, string>
   },
 ): Promise<TaskTemplate> {
   const res = await fetch(`${BASE}/workspaces/${workspaceId}/task-templates`, {
@@ -132,6 +133,7 @@ export async function updateTaskTemplate(
     command?: string
     graph_tools?: boolean
     arguments?: { name: string; arg_type?: TaskTemplateArgType; default_value?: string; model_constraint?: string[]; min_value?: number; max_value?: number; enum_options?: string[] }[]
+    output_schema?: Record<string, string>
   },
 ): Promise<TaskTemplate> {
   const res = await fetch(`${BASE}/workspaces/${workspaceId}/task-templates/${templateId}`, {

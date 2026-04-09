@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     advertise_url: str | None = None
     heartbeat_interval_seconds: float = 5.0
     register_retry_seconds: float = 2.0
+    codex_binary: str = "codex"
+    openai_api_key: str | None = None
 
     model_config = SettingsConfigDict(env_prefix="WORKER_")
 

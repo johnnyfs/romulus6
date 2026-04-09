@@ -15,7 +15,14 @@ export interface PydanticAgentConfig {
   prompt: string
 }
 
-export type AgentConfig = OpenCodeAgentConfig | PydanticAgentConfig
+export interface CodexAgentConfig {
+  agent_type: 'codex'
+  model: string
+  prompt: string
+  graph_tools?: boolean
+}
+
+export type AgentConfig = OpenCodeAgentConfig | PydanticAgentConfig | CodexAgentConfig
 
 export interface CommandConfig {
   command: string
