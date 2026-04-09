@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   type SchemaTemplate,
-  buildTypeOptions,
   createSchemaTemplate,
   deleteSchemaTemplate,
   listSchemaTemplates,
@@ -13,6 +12,7 @@ import {
   mergeSearchParams,
   readStringParam,
 } from './workspaceDetailSearchParams'
+import TypeSelector from './TypeSelector'
 
 export default function SchemaTemplatesPanel({ workspaceId }: { workspaceId: string }) {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -142,7 +142,6 @@ export default function SchemaTemplatesPanel({ workspaceId }: { workspaceId: str
   }
 
   // Build type options excluding the current schema to prevent self-reference
-  const typeOptions = buildTypeOptions(templates, activeId ?? undefined)
 
   const active = templates.find(t => t.id === activeId)
 
@@ -182,15 +181,13 @@ export default function SchemaTemplatesPanel({ workspaceId }: { workspaceId: str
                 value={field.name}
                 onChange={(e) => updateField(i, 'name', e.target.value)}
               />
-              <select
-                style={{ ...s.sel, flex: '1 1 100px' }}
+              <TypeSelector
                 value={field.type}
-                onChange={(e) => updateField(i, 'type', e.target.value)}
-              >
-                {typeOptions.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
+                onChange={(v) => updateField(i, 'type', v)}
+                schemaTemplates={templates}
+                excludeSchemaId={activeId ?? undefined}
+                selectStyle={{ ...s.sel, flex: '1 1 50px' }}
+              />
               <button style={s.removeBtn} onClick={() => removeField(i)}>x</button>
             </div>
           ))}

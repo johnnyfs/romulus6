@@ -7,7 +7,6 @@ import {
   type SchemaTemplate,
   type TaskTemplate,
   type TaskTemplateArgType,
-  buildTypeOptions,
   createTaskTemplate,
   deleteTaskTemplate,
   getTaskTemplate,
@@ -20,6 +19,7 @@ import {
   mergeSearchParams,
   readStringParam,
 } from './workspaceDetailSearchParams'
+import TypeSelector from './TypeSelector'
 
 export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: string }) {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -45,7 +45,6 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
   const [editArgs, setEditArgs] = useState<{ _id: number; name: string; arg_type: TaskTemplateArgType; default_value: string; model_constraint: string[]; min_value: string; max_value: string; enum_options: string[] }[]>([])
   const [editOutputSchema, setEditOutputSchema] = useState<Record<string, string>>({})
   const [schemaTemplates, setSchemaTemplates] = useState<SchemaTemplate[]>([])
-  const outputTypeOptions = useMemo(() => buildTypeOptions(schemaTemplates), [schemaTemplates])
   const modelOptions = useMemo(() => SUPPORTED_MODELS_BY_AGENT_TYPE[editAgentType], [editAgentType])
 
   function markDirty<T>(setter: (v: T) => void) {
@@ -383,13 +382,15 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
           {Object.entries(editOutputSchema).map(([field, type]) => (
             <div key={field} style={{ ...s.row, gap: '4px' }}>
               <input style={{ ...s.input, flex: 2 }} value={field} readOnly title={field} />
-              <select style={{ ...s.sel, flex: 1 }} value={type}
-                onChange={(e) => {
-                  setEditOutputSchema(prev => ({ ...prev, [field]: e.target.value }))
+              <TypeSelector
+                value={type}
+                onChange={(v) => {
+                  setEditOutputSchema(prev => ({ ...prev, [field]: v }))
                   setDirty(true)
-                }}>
-                {outputTypeOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-              </select>
+                }}
+                schemaTemplates={schemaTemplates}
+                selectStyle={{ ...s.sel, flex: 1 }}
+              />
               <button style={s.removeBtn}
                 onClick={() => {
                   setEditOutputSchema(prev => {

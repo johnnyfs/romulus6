@@ -6,7 +6,6 @@ import type { SchemaTemplate, TaskTemplate, TaskTemplateArgument, SubgraphTempla
 import {
   addSubgraphTemplateEdge,
   addSubgraphTemplateNode,
-  buildTypeOptions,
   createSubgraphTemplate,
   deleteSubgraphTemplate,
   deleteSubgraphTemplateEdge,
@@ -23,6 +22,7 @@ import {
   mergeSearchParams,
   readStringParam,
 } from './workspaceDetailSearchParams'
+import TypeSelector from './TypeSelector'
 
 const NODE_W = 130
 const NODE_H = 32
@@ -97,7 +97,6 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
   const [editBindings, setEditBindings] = useState<Record<string, string>>({})
   const [editOutputSchema, setEditOutputSchema] = useState<Record<string, string>>({})
   const [schemaTemplates, setSchemaTemplates] = useState<SchemaTemplate[]>([])
-  const outputTypeOptions = useMemo(() => buildTypeOptions(schemaTemplates), [schemaTemplates])
   const [nodeDirty, setNodeDirty] = useState(false)
   const modelOptions = useMemo(() => SUPPORTED_MODELS_BY_AGENT_TYPE[editAgentType], [editAgentType])
 
@@ -716,13 +715,15 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
               {Object.entries(editOutputSchema).map(([field, type]) => (
                 <div key={field} style={{ ...s.row, gap: 4 }}>
                   <input style={{ ...s.input, flex: 2 }} value={field} readOnly title={field} />
-                  <select style={{ ...s.sel, flex: 1 }} value={type}
-                    onChange={(e) => {
-                      setEditOutputSchema(prev => ({ ...prev, [field]: e.target.value }))
+                  <TypeSelector
+                    value={type}
+                    onChange={(v) => {
+                      setEditOutputSchema(prev => ({ ...prev, [field]: v }))
                       setNodeDirty(true)
-                    }}>
-                    {outputTypeOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-                  </select>
+                    }}
+                    schemaTemplates={schemaTemplates}
+                    selectStyle={{ ...s.sel, flex: 1 }}
+                  />
                   <button style={s.deleteBtn}
                     onClick={() => {
                       setEditOutputSchema(prev => {

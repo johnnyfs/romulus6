@@ -88,38 +88,43 @@ export interface SchemaTemplate {
   updated_at: string
 }
 
-/**
- * Build output-type options from primitives + containers + schema templates.
- * Used by output schema editors across TaskTemplatesPanel, SubgraphTemplatesPanel,
- * GraphPanel, and SchemaTemplatesPanel.
- */
-export function buildTypeOptions(
+export type ContainerKind = 'value' | 'list' | 'map'
+
+export const CONTAINER_OPTIONS: { value: ContainerKind; label: string }[] = [
+  { value: 'value', label: 'value' },
+  { value: 'list', label: 'list' },
+  { value: 'map', label: 'map' },
+]
+
+/** Parse a composed type string into container and base parts. */
+export function parseTypeValue(value: string): { container: ContainerKind; base: string } {
+  if (value.startsWith('list:')) return { container: 'list', base: value.slice(5) }
+  if (value.startsWith('map:')) return { container: 'map', base: value.slice(4) }
+  return { container: 'value', base: value }
+}
+
+/** Compose container and base parts back into a type string. */
+export function composeTypeValue(container: ContainerKind, base: string): string {
+  if (container === 'list') return `list:${base}`
+  if (container === 'map') return `map:${base}`
+  return base
+}
+
+/** Build base type options (primitives + schema templates, no container variants). */
+export function buildBaseTypeOptions(
   schemaTemplates: SchemaTemplate[],
-  /** Exclude a specific schema template ID (e.g., the one being edited) to prevent self-reference */
   excludeId?: string,
 ): { value: string; label: string }[] {
-  const primitives = ['string', 'number', 'boolean', 'image'] as const
-  const options: { value: string; label: string }[] = []
-
-  // Bare primitives
-  for (const p of primitives) {
-    options.push({ value: p, label: p })
-  }
-
-  // Container variants of primitives
-  for (const p of primitives) {
-    options.push({ value: `list:${p}`, label: `list of ${p}` })
-    options.push({ value: `map:${p}`, label: `map of ${p}` })
-  }
-
-  // Schema templates + container variants
+  const options: { value: string; label: string }[] = [
+    { value: 'string', label: 'string' },
+    { value: 'number', label: 'number' },
+    { value: 'boolean', label: 'boolean' },
+    { value: 'image', label: 'image' },
+  ]
   for (const st of schemaTemplates) {
     if (st.id === excludeId) continue
     options.push({ value: `schema:${st.id}`, label: st.name })
-    options.push({ value: `list:schema:${st.id}`, label: `list of ${st.name}` })
-    options.push({ value: `map:schema:${st.id}`, label: `map of ${st.name}` })
   }
-
   return options
 }
 

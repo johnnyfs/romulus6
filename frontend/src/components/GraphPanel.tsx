@@ -18,7 +18,8 @@ import {
 } from '../api/graphs'
 import type { SchemaTemplate, TaskTemplate, SubgraphTemplate, SubgraphTemplateDetail } from '../api/templates'
 import { DEFAULT_MODEL_BY_AGENT_TYPE, SANDBOX_MODE_OPTIONS, SUPPORTED_MODELS_BY_AGENT_TYPE, type AgentType, type SandboxMode } from '../api/models'
-import { buildTypeOptions, listSchemaTemplates, listTaskTemplates, listSubgraphTemplates, getSubgraphTemplate } from '../api/templates'
+import { listSchemaTemplates, listTaskTemplates, listSubgraphTemplates, getSubgraphTemplate } from '../api/templates'
+import TypeSelector from './TypeSelector'
 import { NODE_W, NODE_H, CANVAS_WIDTH, computeLayout, type Pos } from './graphLayout'
 import ErrorBoundary from './ErrorBoundary'
 import RunsView from './RunsView'
@@ -72,7 +73,6 @@ export default function GraphPanel({
   const [taskTemplates, setTaskTemplates] = useState<TaskTemplate[]>([])
   const [subgraphTemplates, setSubgraphTemplates] = useState<SubgraphTemplate[]>([])
   const [schemaTemplates, setSchemaTemplates] = useState<SchemaTemplate[]>([])
-  const outputTypeOptions = useMemo(() => buildTypeOptions(schemaTemplates), [schemaTemplates])
   const [sgDetailCache, setSgDetailCache] = useState<Record<string, SubgraphTemplateDetail>>({})
   const sgDetailCacheRef = useRef(sgDetailCache)
   useEffect(() => { sgDetailCacheRef.current = sgDetailCache }, [sgDetailCache])
@@ -990,13 +990,15 @@ export default function GraphPanel({
                 <div key={field} style={{ ...s.inspectorRow, gap: 4 }}>
                   <input style={{ ...s.inspectorInput, flex: 2 }} value={field} readOnly
                     title={field} />
-                  <select style={{ ...s.inspectorSelect, flex: 1 }} value={type}
-                    onChange={(e) => {
-                      setEditOutputSchema(prev => ({ ...prev, [field]: e.target.value }))
+                  <TypeSelector
+                    value={type}
+                    onChange={(v) => {
+                      setEditOutputSchema(prev => ({ ...prev, [field]: v }))
                       setNodeDirty(true)
-                    }}>
-                    {outputTypeOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-                  </select>
+                    }}
+                    schemaTemplates={schemaTemplates}
+                    selectStyle={{ ...s.inspectorSelect, flex: 1 }}
+                  />
                   <button style={s.edgeDeleteBtn}
                     onClick={() => {
                       setEditOutputSchema(prev => {

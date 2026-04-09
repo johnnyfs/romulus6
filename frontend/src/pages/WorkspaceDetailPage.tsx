@@ -270,7 +270,13 @@ export default function WorkspaceDetailPage() {
   } = useWorkspaceEvents(
     id,
     !!workspace,
-    (msg) => setPageError(msg),
+    (msg) => {
+      if (msg.includes('not found') || msg.includes('Not found')) {
+        navigate('/workspaces', { replace: true })
+        return
+      }
+      setPageError(msg)
+    },
     workspaceEventsVersion,
   )
   const [expandedBlocks, setExpandedBlocks] = useState<Set<string>>(new Set())
@@ -337,14 +343,13 @@ export default function WorkspaceDetailPage() {
     if (!id) return
     let cancelled = false
 
-    void Promise.all([getWorkspace(id), listAgents(id)])
-      .then(([ws, agts]) => {
+    void (async () => {
+      try {
+        const ws = await getWorkspace(id)
         if (cancelled) return
         setWorkspace(ws)
-        setAgents(agts)
         setPageError(null)
-      })
-      .catch((error: unknown) => {
+      } catch (error: unknown) {
         if (cancelled) return
         const msg = error instanceof Error ? error.message : ''
         if (msg.includes('not found') || msg.includes('Not found')) {
@@ -352,7 +357,19 @@ export default function WorkspaceDetailPage() {
           return
         }
         setPageError(msg || 'Failed to load workspace')
-      })
+        return
+      }
+
+      try {
+        const agts = await listAgents(id)
+        if (cancelled) return
+        setAgents(agts)
+      } catch (error: unknown) {
+        if (cancelled) return
+        const msg = error instanceof Error ? error.message : ''
+        setPageError(msg || 'Failed to load agents')
+      }
+    })()
 
     return () => {
       cancelled = true

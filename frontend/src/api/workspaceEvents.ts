@@ -12,6 +12,7 @@ export async function listWorkspaceEvents(
   const res = await fetch(
     `/api/workspaces/${workspaceId}/events?since=${since}&limit=${limit}`,
   )
+  if (res.status === 404) throw new Error('Workspace not found')
   if (!res.ok) throw new Error('Failed to fetch workspace events')
   const raw = await res.json()
   return raw.map((item: any) => ({
@@ -46,6 +47,7 @@ export async function streamWorkspaceEvents(
     `/api/workspaces/${workspaceId}/events/stream?since=${since}`,
     { signal },
   )
+  if (res.status === 404) throw new Error('Workspace not found')
   if (!res.ok || !res.body) return
 
   const reader = res.body.getReader()

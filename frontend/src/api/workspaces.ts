@@ -21,7 +21,8 @@ export async function createWorkspace(name: string): Promise<Workspace> {
 
 export async function getWorkspace(id: string): Promise<Workspace> {
   const res = await fetch(`/api/workspaces/${id}`)
-  if (!res.ok) throw new Error('Workspace not found')
+  if (res.status === 404) throw new Error('Workspace not found')
+  if (!res.ok) throw new Error('Failed to fetch workspace')
   return res.json()
 }
 
