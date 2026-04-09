@@ -1,4 +1,4 @@
-import type { AgentType, PydanticSchemaId } from './models'
+import type { AgentType, PydanticSchemaId, SandboxMode } from './models'
 export { DEFAULT_MODEL_BY_AGENT_TYPE, PYDANTIC_SCHEMA_OPTIONS, SUPPORTED_MODELS_BY_AGENT_TYPE } from './models'
 
 export type AgentStatus =
@@ -22,6 +22,7 @@ export interface Agent {
   name: string | null
   prompt: string
   graph_run_id: string | null
+  sandbox_mode?: SandboxMode | null
   created_at: string
   updated_at: string
 }
@@ -69,6 +70,7 @@ export interface CreateCodexAgentRequest {
   prompt: string
   name?: string
   graph_tools?: boolean
+  sandbox_mode?: SandboxMode
 }
 
 export interface CreateClaudeCodeAgentRequest {
@@ -202,7 +204,9 @@ export async function streamAgentEvents(
           if (line.startsWith('data: ')) {
             try {
               onEvent(JSON.parse(line.slice(6)))
-            } catch {}
+            } catch (err) {
+              console.warn('SSE parse error:', line, err)
+            }
           }
         }
       }

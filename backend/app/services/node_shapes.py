@@ -13,13 +13,15 @@ from __future__ import annotations
 
 from typing import Any
 
+from romulus_common.sandbox_modes import normalize_codex_sandbox_mode
+
 from app.models.graph import NodeType
 
 UNSET = object()
 
-INLINE_NODE_TYPES = frozenset({NodeType.agent, NodeType.command, NodeType.view})
+INLINE_NODE_TYPES = frozenset({NodeType.agent, NodeType.command})
 TEMPLATE_REFERENCE_NODE_TYPES = frozenset({NodeType.task_template, NodeType.subgraph_template})
-TASK_TEMPLATE_ALLOWED_TYPES = frozenset({NodeType.agent, NodeType.command, NodeType.view})
+TASK_TEMPLATE_ALLOWED_TYPES = frozenset({NodeType.agent, NodeType.command})
 
 
 def coerce_node_type(node_type: NodeType | str | None) -> NodeType | None:
@@ -37,10 +39,6 @@ def is_agent_node_type(node_type: NodeType | str | None) -> bool:
 
 def is_command_node_type(node_type: NodeType | str | None) -> bool:
     return coerce_node_type(node_type) == NodeType.command
-
-
-def is_view_node_type(node_type: NodeType | str | None) -> bool:
-    return coerce_node_type(node_type) == NodeType.view
 
 
 def validate_task_template_type(task_type: NodeType) -> None:
@@ -72,11 +70,12 @@ def normalized_node_field_values(
     prompt: Any = UNSET,
     command: Any = UNSET,
     graph_tools: Any = UNSET,
+    sandbox_mode: Any = UNSET,
     task_template_id: Any = UNSET,
     subgraph_template_id: Any = UNSET,
     ref_subgraph_template_id: Any = UNSET,
     argument_bindings: Any = UNSET,
-    images: Any = UNSET,
+    image_attachments: Any = UNSET,
 ) -> dict[str, Any]:
     values: dict[str, Any] = {}
 
@@ -86,11 +85,16 @@ def normalized_node_field_values(
         values["prompt"] = _pick(current, "prompt", prompt)
         picked_graph_tools = _pick(current, "graph_tools", graph_tools)
         values["graph_tools"] = bool(picked_graph_tools) if picked_graph_tools is not None else False
+        values["sandbox_mode"] = normalize_codex_sandbox_mode(
+            agent_type=values["agent_type"],
+            sandbox_mode=_pick(current, "sandbox_mode", sandbox_mode),
+        )
     else:
         values["agent_type"] = None
         values["model"] = None
         values["prompt"] = None
         values["graph_tools"] = False
+        values["sandbox_mode"] = None
 
     if is_command_node_type(node_type):
         values["command"] = _pick(current, "command", command)
@@ -113,9 +117,9 @@ def normalized_node_field_values(
     else:
         values["argument_bindings"] = None
 
-    if is_agent_node_type(node_type) or is_view_node_type(node_type):
-        values["images"] = _pick(current, "images", images)
+    if is_agent_node_type(node_type):
+        values["image_attachments"] = _pick(current, "image_attachments", image_attachments)
     else:
-        values["images"] = None
+        values["image_attachments"] = None
 
     return values

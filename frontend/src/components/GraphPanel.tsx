@@ -5,7 +5,6 @@ import {
   type Graph,
   type GraphDetail,
   type NodeType,
-  type ViewImage,
   addEdge,
   addNode,
   createGraph,
@@ -16,10 +15,11 @@ import {
   listGraphs,
   patchNode,
 } from '../api/graphs'
-import type { TaskTemplate, SubgraphTemplate, SubgraphTemplateDetail } from '../api/templates'
-import { DEFAULT_MODEL_BY_AGENT_TYPE, SUPPORTED_MODELS_BY_AGENT_TYPE, type AgentType } from '../api/models'
-import { listTaskTemplates, listSubgraphTemplates, getSubgraphTemplate } from '../api/templates'
+import type { SchemaTemplate, TaskTemplate, SubgraphTemplate, SubgraphTemplateDetail } from '../api/templates'
+import { DEFAULT_MODEL_BY_AGENT_TYPE, SANDBOX_MODE_OPTIONS, SUPPORTED_MODELS_BY_AGENT_TYPE, type AgentType, type SandboxMode } from '../api/models'
+import { buildTypeOptions, listSchemaTemplates, listTaskTemplates, listSubgraphTemplates, getSubgraphTemplate } from '../api/templates'
 import { NODE_W, NODE_H, CANVAS_WIDTH, computeLayout, type Pos } from './graphLayout'
+import ErrorBoundary from './ErrorBoundary'
 import RunsView from './RunsView'
 import TemplatesView from './TemplatesView'
 import {
@@ -32,8 +32,6 @@ import {
 function slugify(name: string): string {
   return name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')
 }
-
-const OUTPUT_FIELD_TYPES = ['string', 'number', 'boolean'] as const
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
@@ -53,10 +51,10 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
   const [editModel, setEditModel] = useState(DEFAULT_MODEL_BY_AGENT_TYPE.opencode)
   const [editPrompt, setEditPrompt] = useState('')
   const [editCommand, setEditCommand] = useState('')
-  const [editImages, setEditImages] = useState<ViewImage[]>([])
   const promptRef = useAutoResize(editPrompt, 300, 60)
   const commandRef = useAutoResize(editCommand, 300, 80)
   const [editGraphTools, setEditGraphTools] = useState(false)
+  const [editSandboxMode, setEditSandboxMode] = useState<SandboxMode>('read-only')
   const [editTaskTemplateId, setEditTaskTemplateId] = useState('')
   const [editSubgraphTemplateId, setEditSubgraphTemplateId] = useState('')
   const [editBindings, setEditBindings] = useState<Record<string, string>>({})
@@ -64,6 +62,8 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
   const [nodeDirty, setNodeDirty] = useState(false)
   const [taskTemplates, setTaskTemplates] = useState<TaskTemplate[]>([])
   const [subgraphTemplates, setSubgraphTemplates] = useState<SubgraphTemplate[]>([])
+  const [schemaTemplates, setSchemaTemplates] = useState<SchemaTemplate[]>([])
+  const outputTypeOptions = useMemo(() => buildTypeOptions(schemaTemplates), [schemaTemplates])
   const [sgDetailCache, setSgDetailCache] = useState<Record<string, SubgraphTemplateDetail>>({})
   const sgDetailCacheRef = useRef(sgDetailCache)
   useEffect(() => { sgDetailCacheRef.current = sgDetailCache }, [sgDetailCache])
@@ -135,6 +135,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
     loadGraphs()
     listTaskTemplates(workspaceId).then(setTaskTemplates)
     listSubgraphTemplates(workspaceId).then(setSubgraphTemplates)
+    listSchemaTemplates(workspaceId).then(setSchemaTemplates)
   }, [loadGraphs, workspaceId])
 
   // Auto-select first graph if current selection is invalid
@@ -181,21 +182,18 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
         setEditModel(node.agent_config.model)
         setEditPrompt(node.agent_config.prompt)
         setEditGraphTools((node.agent_config.agent_type === 'opencode' || node.agent_config.agent_type === 'codex' || node.agent_config.agent_type === 'claude_code') ? (node.agent_config.graph_tools ?? false) : false)
+        setEditSandboxMode(node.agent_config.agent_type === 'codex' ? (node.agent_config.sandbox_mode ?? 'read-only') : 'read-only')
       } else {
         setEditAgentType('opencode')
         setEditModel(DEFAULT_MODEL_BY_AGENT_TYPE.opencode)
         setEditPrompt('')
         setEditGraphTools(false)
+        setEditSandboxMode('read-only')
       }
       if (node.command_config) {
         setEditCommand(node.command_config.command)
       } else {
         setEditCommand('')
-      }
-      if (node.view_config) {
-        setEditImages(node.view_config.images)
-      } else {
-        setEditImages([])
       }
       setEditTaskTemplateId(node.task_template_id ?? '')
       setEditSubgraphTemplateId(node.subgraph_template_id ?? '')
@@ -210,7 +208,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
     if (editSubgraphTemplateId && !sgDetailCacheRef.current[editSubgraphTemplateId]) {
       getSubgraphTemplate(workspaceId, editSubgraphTemplateId).then(d => {
         setSgDetailCache(prev => ({ ...prev, [d.id]: d }))
-      }).catch(() => {})
+      }).catch((err) => console.warn('Failed to fetch subgraph template:', err))
     }
   }, [editSubgraphTemplateId, workspaceId])
 
@@ -324,8 +322,8 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
       for (const parentId of parentIds) {
         try {
           await addEdge(workspaceId, activeGraphId, parentId, newNode.id)
-        } catch {
-          // skip if this edge would create a cycle (shouldn't happen for siblings)
+        } catch (err) {
+          console.warn('Skipping edge (possible cycle):', err)
         }
       }
       await loadDetail(activeGraphId)
@@ -386,7 +384,13 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
     if (editType === 'agent') {
       patch.agent_config = editAgentType === 'pydantic'
         ? { agent_type: 'pydantic', model: editModel, prompt: editPrompt }
-        : { agent_type: editAgentType, model: editModel, prompt: editPrompt, graph_tools: editGraphTools }
+        : {
+            agent_type: editAgentType,
+            model: editModel,
+            prompt: editPrompt,
+            graph_tools: editGraphTools,
+            ...(editAgentType === 'codex' ? { sandbox_mode: editSandboxMode } : {}),
+          }
       if (Object.keys(editOutputSchema).length > 0) patch.output_schema = editOutputSchema
     } else if (editType === 'command') {
       patch.command_config = { command: editCommand }
@@ -397,8 +401,6 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
     } else if (editType === 'subgraph_template') {
       patch.subgraph_template_id = editSubgraphTemplateId || undefined
       if (Object.keys(editBindings).length > 0) patch.argument_bindings = editBindings
-    } else if (editType === 'view') {
-      patch.view_config = { images: editImages }
     }
     try {
       const updated = await patchNode(workspaceId, activeGraphId, selectedNodeId, patch)
@@ -513,13 +515,17 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
       </div>
 
       {activeTab === 'runs' ? (
-        <RunsView
-          workspaceId={workspaceId}
-          onNavigateToGraphNode={handleNavigateToGraphNode}
-          onNavigateToTemplateNode={handleNavigateToTemplateNode}
-        />
+        <ErrorBoundary resetKey={workspaceId}>
+          <RunsView
+            workspaceId={workspaceId}
+            onNavigateToGraphNode={handleNavigateToGraphNode}
+            onNavigateToTemplateNode={handleNavigateToTemplateNode}
+          />
+        </ErrorBoundary>
       ) : activeTab === 'templates' ? (
-        <TemplatesView workspaceId={workspaceId} />
+        <ErrorBoundary resetKey={workspaceId}>
+          <TemplatesView workspaceId={workspaceId} />
+        </ErrorBoundary>
       ) : (
       <>
       {/* Header bar: selector + new + delete */}
@@ -808,7 +814,6 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
               onChange={(e) => markDirty(setEditType)(e.target.value as NodeType)}>
               <option value="agent">agent</option>
               <option value="command">command</option>
-              <option value="view">view</option>
               <option value="task_template">task_template</option>
               <option value="subgraph_template">subgraph_template</option>
             </select>
@@ -827,6 +832,9 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
                     setEditModel(DEFAULT_MODEL_BY_AGENT_TYPE[nextType])
                     if (nextType !== 'opencode' && nextType !== 'codex' && nextType !== 'claude_code') {
                       setEditGraphTools(false)
+                    }
+                    if (nextType !== 'codex') {
+                      setEditSandboxMode('read-only')
                     }
                   }}
                 >
@@ -859,6 +867,21 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
                       style={{ marginRight: 6 }} />
                     Graph Editor
                   </label>
+                </div>
+              )}
+              {editAgentType === 'codex' && (
+                <div style={s.inspectorRow}>
+                  <label style={s.inspectorLabel} htmlFor="graph-node-sandbox-mode">Sandbox:</label>
+                  <select
+                    id="graph-node-sandbox-mode"
+                    style={s.inspectorSelect}
+                    value={editSandboxMode}
+                    onChange={(e) => markDirty(setEditSandboxMode)(e.target.value as SandboxMode)}
+                  >
+                    {SANDBOX_MODE_OPTIONS.map((mode) => (
+                      <option key={mode.value} value={mode.value}>{mode.label}</option>
+                    ))}
+                  </select>
                 </div>
               )}
             </>
@@ -923,47 +946,6 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
               )}
             </>
           )}
-          {editType === 'view' && (
-            <>
-              <div style={{ ...s.inspectorTitle, marginTop: 8 }}>IMAGES</div>
-              {editImages.map((img, idx) => (
-                <div key={idx} style={{ ...s.inspectorRow, gap: 4 }}>
-                  <select style={{ ...s.inspectorSelect, flex: 1 }} value={img.type}
-                    onChange={(e) => {
-                      const next = [...editImages]
-                      const newType = e.target.value as 'url' | 'sandbox_path'
-                      next[idx] = newType === 'url' ? { type: 'url', url: '' } : { type: 'sandbox_path', path: '' }
-                      setEditImages(next)
-                      setNodeDirty(true)
-                    }}>
-                    <option value="url">URL</option>
-                    <option value="sandbox_path">Sandbox Path</option>
-                  </select>
-                  <input style={{ ...s.inspectorInput, flex: 3 }}
-                    value={img.type === 'url' ? (img.url ?? '') : (img.path ?? '')}
-                    onChange={(e) => {
-                      const next = [...editImages]
-                      const field = img.type === 'url' ? 'url' : 'path'
-                      next[idx] = { ...next[idx], [field]: e.target.value }
-                      setEditImages(next)
-                      setNodeDirty(true)
-                    }}
-                    placeholder={img.type === 'url' ? 'https://... or {{ slug.field }}' : '/path/in/sandbox or {{ slug.field }}'} />
-                  <button style={s.edgeDeleteBtn} onClick={() => {
-                    setEditImages(prev => prev.filter((_, i) => i !== idx))
-                    setNodeDirty(true)
-                  }}>x</button>
-                </div>
-              ))}
-              <button style={{ ...s.addFirstBtn, fontSize: '11px', marginTop: 2 }}
-                onClick={() => {
-                  setEditImages(prev => [...prev, { type: 'url', url: '' }])
-                  setNodeDirty(true)
-                }}>
-                [ + Add Image ]
-              </button>
-            </>
-          )}
           {/* Output Schema (agent + command) */}
           {(editType === 'agent' || editType === 'command') && (
             <>
@@ -977,7 +959,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
                       setEditOutputSchema(prev => ({ ...prev, [field]: e.target.value }))
                       setNodeDirty(true)
                     }}>
-                    {OUTPUT_FIELD_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                    {outputTypeOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                   </select>
                   <button style={s.edgeDeleteBtn}
                     onClick={() => {
@@ -1002,7 +984,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
             </>
           )}
           {/* Upstream output references */}
-          {(editType === 'agent' || editType === 'command' || editType === 'view') && upstreamRefs.length > 0 && (
+          {(editType === 'agent' || editType === 'command') && upstreamRefs.length > 0 && (
             <div style={{ marginTop: 6, fontSize: '11px', color: 'var(--text-muted)', padding: '0 4px' }}>
               <div style={{ fontWeight: 600, marginBottom: 2 }}>Available refs:</div>
               {upstreamRefs.map(ref => (

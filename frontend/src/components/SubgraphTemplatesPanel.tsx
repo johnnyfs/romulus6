@@ -1,17 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAutoResize } from '../hooks/useAutoResize'
 import { useSearchParams } from 'react-router-dom'
-import { DEFAULT_MODEL_BY_AGENT_TYPE, SUPPORTED_MODELS_BY_AGENT_TYPE, type AgentType } from '../api/models'
-import type { ViewImage } from '../api/graphs'
-import type { TaskTemplate, TaskTemplateArgument, SubgraphTemplate, SubgraphTemplateDetail, SubgraphTemplateNodeType } from '../api/templates'
+import { DEFAULT_MODEL_BY_AGENT_TYPE, SANDBOX_MODE_OPTIONS, SUPPORTED_MODELS_BY_AGENT_TYPE, type AgentType, type SandboxMode } from '../api/models'
+import type { SchemaTemplate, TaskTemplate, TaskTemplateArgument, SubgraphTemplate, SubgraphTemplateDetail, SubgraphTemplateNodeType } from '../api/templates'
 import {
   addSubgraphTemplateEdge,
   addSubgraphTemplateNode,
+  buildTypeOptions,
   createSubgraphTemplate,
   deleteSubgraphTemplate,
   deleteSubgraphTemplateEdge,
   deleteSubgraphTemplateNode,
   getSubgraphTemplate,
+  listSchemaTemplates,
   listSubgraphTemplates,
   listTaskTemplates,
   patchSubgraphTemplateNode,
@@ -22,8 +23,6 @@ import {
   mergeSearchParams,
   readStringParam,
 } from './workspaceDetailSearchParams'
-
-const OUTPUT_FIELD_TYPES = ['string', 'number', 'boolean'] as const
 
 const NODE_W = 130
 const NODE_H = 32
@@ -89,14 +88,16 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
   const [editModel, setEditModel] = useState(DEFAULT_MODEL_BY_AGENT_TYPE.opencode)
   const [editPrompt, setEditPrompt] = useState('')
   const [editCommand, setEditCommand] = useState('')
-  const [editImages, setEditImages] = useState<ViewImage[]>([])
   const promptRef = useAutoResize(editPrompt, 300, 60)
   const commandRef = useAutoResize(editCommand, 300, 80)
   const [editGraphTools, setEditGraphTools] = useState(false)
+  const [editSandboxMode, setEditSandboxMode] = useState<SandboxMode>('read-only')
   const [editTaskTemplateId, setEditTaskTemplateId] = useState('')
   const [editRefSubgraphId, setEditRefSubgraphId] = useState('')
   const [editBindings, setEditBindings] = useState<Record<string, string>>({})
   const [editOutputSchema, setEditOutputSchema] = useState<Record<string, string>>({})
+  const [schemaTemplates, setSchemaTemplates] = useState<SchemaTemplate[]>([])
+  const outputTypeOptions = useMemo(() => buildTypeOptions(schemaTemplates), [schemaTemplates])
   const [nodeDirty, setNodeDirty] = useState(false)
   const modelOptions = useMemo(() => SUPPORTED_MODELS_BY_AGENT_TYPE[editAgentType], [editAgentType])
 
@@ -157,6 +158,7 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
   useEffect(() => {
     loadList()
     listTaskTemplates(workspaceId).then(setTaskTemplates)
+    listSchemaTemplates(workspaceId).then(setSchemaTemplates)
   }, [loadList, workspaceId])
 
   // Auto-select first template if current selection is invalid
@@ -210,9 +212,15 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
       setEditAgentType(agType)
       setEditModel(node.agent_config?.model ?? DEFAULT_MODEL_BY_AGENT_TYPE[agType])
       setEditPrompt(node.agent_config?.prompt ?? '')
-      setEditGraphTools((node.agent_config?.agent_type === 'opencode' || node.agent_config?.agent_type === 'claude_code') ? (node.agent_config.graph_tools ?? false) : false)
+      setEditGraphTools(
+        (
+          node.agent_config?.agent_type === 'opencode'
+          || node.agent_config?.agent_type === 'codex'
+          || node.agent_config?.agent_type === 'claude_code'
+        ) ? (node.agent_config.graph_tools ?? false) : false,
+      )
+      setEditSandboxMode(node.agent_config?.agent_type === 'codex' ? (node.agent_config.sandbox_mode ?? 'read-only') : 'read-only')
       setEditCommand(node.command_config?.command ?? '')
-      setEditImages(node.view_config?.images ?? [])
       setEditTaskTemplateId(node.task_template_id ?? '')
       setEditRefSubgraphId(node.ref_subgraph_template_id ?? '')
       setEditBindings(node.argument_bindings ?? {})
@@ -226,7 +234,7 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
     if (editRefSubgraphId && !sgDetailCacheRef.current[editRefSubgraphId]) {
       getSubgraphTemplate(workspaceId, editRefSubgraphId).then(d => {
         setSgDetailCache(prev => ({ ...prev, [d.id]: d }))
-      }).catch(() => {})
+      }).catch((err) => console.warn('Failed to fetch subgraph template:', err))
     }
   }, [editRefSubgraphId, workspaceId])
 
@@ -307,7 +315,8 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
       const newNode = await addSubgraphTemplateNode(workspaceId, activeId, { node_type: 'agent' })
       try {
         await addSubgraphTemplateEdge(workspaceId, activeId, nodeId, newNode.id)
-      } catch {
+      } catch (err) {
+        console.warn('Edge creation failed, rolling back node:', err)
         await deleteSubgraphTemplateNode(workspaceId, activeId, newNode.id)
       }
       await loadDetail(activeId)
@@ -333,13 +342,17 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
     if (editNodeType === 'agent') {
       patch.agent_config = editAgentType === 'pydantic'
         ? { agent_type: 'pydantic', model: editModel, prompt: editPrompt }
-        : { agent_type: editAgentType, model: editModel, prompt: editPrompt, graph_tools: editGraphTools }
+        : {
+            agent_type: editAgentType,
+            model: editModel,
+            prompt: editPrompt,
+            graph_tools: editGraphTools,
+            ...(editAgentType === 'codex' ? { sandbox_mode: editSandboxMode } : {}),
+          }
       if (Object.keys(editOutputSchema).length > 0) patch.output_schema = editOutputSchema
     } else if (editNodeType === 'command') {
       patch.command_config = { command: editCommand }
       if (Object.keys(editOutputSchema).length > 0) patch.output_schema = editOutputSchema
-    } else if (editNodeType === 'view') {
-      patch.view_config = { images: editImages }
     } else if (editNodeType === 'task_template') {
       patch.task_template_id = editTaskTemplateId || undefined
       if (Object.keys(editBindings).length > 0) patch.argument_bindings = editBindings
@@ -570,7 +583,6 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
               onChange={e => editNode(setEditNodeType)(e.target.value as SubgraphTemplateNodeType)}>
               <option value="agent">agent</option>
               <option value="command">command</option>
-              <option value="view">view</option>
               <option value="task_template">task_template</option>
               <option value="subgraph_template">subgraph_template</option>
             </select>
@@ -586,6 +598,7 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
                     editNode(setEditAgentType)(nextType)
                     setEditModel(DEFAULT_MODEL_BY_AGENT_TYPE[nextType])
                     if (nextType !== 'opencode' && nextType !== 'codex' && nextType !== 'claude_code') setEditGraphTools(false)
+                    if (nextType !== 'codex') setEditSandboxMode('read-only')
                   }}>
                   <option value="opencode">opencode</option>
                   <option value="pydantic">pydantic</option>
@@ -614,6 +627,20 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
                       style={{ marginRight: 4 }} />
                     Graph Editor
                   </label>
+                </div>
+              )}
+              {editAgentType === 'codex' && (
+                <div style={s.row}>
+                  <span style={s.label}>Sandbox</span>
+                  <select
+                    style={s.sel}
+                    value={editSandboxMode}
+                    onChange={e => editNode(setEditSandboxMode)(e.target.value as SandboxMode)}
+                  >
+                    {SANDBOX_MODE_OPTIONS.map((mode) => (
+                      <option key={mode.value} value={mode.value}>{mode.label}</option>
+                    ))}
+                  </select>
                 </div>
               )}
             </>
@@ -682,48 +709,6 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
             </>
           )}
 
-          {editNodeType === 'view' && (
-            <>
-              <div style={{ ...s.inspTitle, marginTop: 6 }}>IMAGES</div>
-              {editImages.map((img, idx) => (
-                <div key={idx} style={{ ...s.row, gap: 4 }}>
-                  <select style={{ ...s.sel, flex: 1 }} value={img.type}
-                    onChange={(e) => {
-                      const next = [...editImages]
-                      const newType = e.target.value as 'url' | 'sandbox_path'
-                      next[idx] = newType === 'url' ? { type: 'url', url: '' } : { type: 'sandbox_path', path: '' }
-                      setEditImages(next)
-                      setNodeDirty(true)
-                    }}>
-                    <option value="url">URL</option>
-                    <option value="sandbox_path">Path</option>
-                  </select>
-                  <input style={{ ...s.input, flex: 3 }}
-                    value={img.type === 'url' ? (img.url ?? '') : (img.path ?? '')}
-                    onChange={(e) => {
-                      const next = [...editImages]
-                      const field = img.type === 'url' ? 'url' : 'path'
-                      next[idx] = { ...next[idx], [field]: e.target.value }
-                      setEditImages(next)
-                      setNodeDirty(true)
-                    }}
-                    placeholder={img.type === 'url' ? 'https://...' : '/path/in/sandbox'} />
-                  <button style={s.deleteBtn} onClick={() => {
-                    setEditImages(prev => prev.filter((_, i) => i !== idx))
-                    setNodeDirty(true)
-                  }}>x</button>
-                </div>
-              ))}
-              <button style={{ ...s.saveBtn, fontSize: '11px', marginTop: 2 }}
-                onClick={() => {
-                  setEditImages(prev => [...prev, { type: 'url', url: '' }])
-                  setNodeDirty(true)
-                }}>
-                [ + Add Image ]
-              </button>
-            </>
-          )}
-
           {/* Output Schema (agent + command) */}
           {(editNodeType === 'agent' || editNodeType === 'command') && (
             <>
@@ -736,7 +721,7 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
                       setEditOutputSchema(prev => ({ ...prev, [field]: e.target.value }))
                       setNodeDirty(true)
                     }}>
-                    {OUTPUT_FIELD_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                    {outputTypeOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                   </select>
                   <button style={s.deleteBtn}
                     onClick={() => {

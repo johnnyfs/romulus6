@@ -1,17 +1,14 @@
 import datetime
 import uuid
-from collections.abc import Iterable
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlmodel import Session, select
+from sqlmodel import Session
 
-from app.models.graph import Graph, GraphEdge, GraphNode, NodeType
+from app.models.graph import Graph, NodeType
 from app.models.template import (
     SubgraphTemplate,
     SubgraphTemplateArgument,
-    SubgraphTemplateEdge,
-    SubgraphTemplateNode,
     SubgraphTemplateNodeType,
     TaskTemplate,
     TaskTemplateArgument,
@@ -20,11 +17,15 @@ from app.models.template import (
 from app.services import graphs as graph_svc
 from app.services import templates as template_svc
 from app.services.graphs import EdgeInput, NodeInput
-from app.services.structured_serialization import decoded_json_string, normalized_json_value
+from app.services.structured_serialization import (
+    decoded_json_string,
+    normalized_json_value,
+)
 from app.services.templates import ArgumentInput, SubgraphEdgeInput, SubgraphNodeInput
+from app.utils.time import utcnow
 
 BUNDLE_FORMAT = "romulus.graph-bundle"
-BUNDLE_VERSION = 2
+BUNDLE_VERSION = 3
 
 
 def _isoformat(value: datetime.datetime | None) -> str | None:
@@ -89,9 +90,10 @@ def _serialize_task_template(template: TaskTemplate) -> dict[str, Any]:
         "prompt": template.prompt,
         "command": template.command,
         "graph_tools": template.graph_tools,
+        "sandbox_mode": template.sandbox_mode,
         "label": template.label,
         "output_schema": normalized_json_value(template.output_schema),
-        "images": normalized_json_value(template.images),
+        "image_attachments": normalized_json_value(template.image_attachments),
         "arguments": [
             _serialize_task_argument(arg)
             for arg in template.arguments
@@ -121,6 +123,7 @@ def _serialize_subgraph_template(template: SubgraphTemplate) -> dict[str, Any]:
                 "prompt": node.prompt,
                 "command": node.command,
                 "graph_tools": node.graph_tools,
+                "sandbox_mode": node.sandbox_mode,
                 "task_template_id": str(node.task_template_id) if node.task_template_id else None,
                 "task_template_name": (
                     node.ref_task_template.name
@@ -137,7 +140,7 @@ def _serialize_subgraph_template(template: SubgraphTemplate) -> dict[str, Any]:
                 ),
                 "argument_bindings": normalized_json_value(node.argument_bindings),
                 "output_schema": normalized_json_value(node.output_schema),
-                "images": normalized_json_value(node.images),
+                "image_attachments": normalized_json_value(node.image_attachments),
             }
             for node in template.nodes
             if not node.deleted
@@ -168,6 +171,7 @@ def _serialize_graph(graph: Graph) -> dict[str, Any]:
                 "prompt": node.prompt,
                 "command": node.command,
                 "graph_tools": node.graph_tools,
+                "sandbox_mode": node.sandbox_mode,
                 "task_template_id": str(node.task_template_id) if node.task_template_id else None,
                 "task_template_name": (
                     node.ref_task_template.name
@@ -182,7 +186,7 @@ def _serialize_graph(graph: Graph) -> dict[str, Any]:
                 ),
                 "argument_bindings": normalized_json_value(node.argument_bindings),
                 "output_schema": normalized_json_value(node.output_schema),
-                "images": normalized_json_value(node.images),
+                "image_attachments": normalized_json_value(node.image_attachments),
             }
             for node in graph.nodes
             if not node.deleted
@@ -260,7 +264,7 @@ def export_graph_bundle(
     return {
         "format": BUNDLE_FORMAT,
         "version": BUNDLE_VERSION,
-        "exported_at": datetime.datetime.utcnow().isoformat(),
+        "exported_at": utcnow().isoformat(),
         "graph": _serialize_graph(graph),
         "task_templates": [
             _serialize_task_template(task_templates[task_id])
@@ -308,9 +312,10 @@ class ImportTaskTemplate(_ImportModel):
     prompt: str | None = None
     command: str | None = None
     graph_tools: bool = False
+    sandbox_mode: str | None = None
     label: str | None = None
     output_schema: dict[str, str] | None = None
-    images: list[dict] | None = None
+    image_attachments: list[dict] | None = None
     arguments: list[ImportArgument] = Field(default_factory=list)
 
 
@@ -323,13 +328,14 @@ class ImportSubgraphNode(_ImportModel):
     prompt: str | None = None
     command: str | None = None
     graph_tools: bool = False
+    sandbox_mode: str | None = None
     task_template_id: str | None = None
     task_template_name: str | None = None
     ref_subgraph_template_id: str | None = None
     ref_subgraph_template_name: str | None = None
     argument_bindings: dict[str, str] | None = None
     output_schema: dict[str, str] | None = None
-    images: list[dict] | None = None
+    image_attachments: list[dict] | None = None
 
 
 class ImportSubgraphEdge(_ImportModel):
@@ -357,13 +363,14 @@ class ImportGraphNode(_ImportModel):
     prompt: str | None = None
     command: str | None = None
     graph_tools: bool = False
+    sandbox_mode: str | None = None
     task_template_id: str | None = None
     task_template_name: str | None = None
     subgraph_template_id: str | None = None
     subgraph_template_name: str | None = None
     argument_bindings: dict[str, str] | None = None
     output_schema: dict[str, str] | None = None
-    images: list[dict] | None = None
+    image_attachments: list[dict] | None = None
 
 
 class ImportGraphEdge(_ImportModel):
@@ -530,10 +537,11 @@ def import_graph_bundle(
                 prompt=task.prompt,
                 command=task.command,
                 graph_tools=task.graph_tools,
+                sandbox_mode=task.sandbox_mode,
                 label=task.label,
                 arguments=arg_inputs,
                 output_schema=task.output_schema,
-                images=task.images,
+                image_attachments=task.image_attachments,
             )
         except ValueError as exc:
             warnings.append(f"task template '{task.name}' skipped: {exc}")
@@ -609,11 +617,12 @@ def import_graph_bundle(
                         prompt=node.prompt,
                         command=node.command,
                         graph_tools=node.graph_tools,
+                        sandbox_mode=node.sandbox_mode,
                         task_template_id=task_template_id,
                         ref_subgraph_template_id=ref_subgraph_template_id,
                         argument_bindings=node.argument_bindings,
                         output_schema=node.output_schema,
-                        images=node.images,
+                        image_attachments=node.image_attachments,
                     )
                 )
 
@@ -735,11 +744,12 @@ def import_graph_bundle(
                 prompt=node.prompt,
                 command=node.command,
                 graph_tools=node.graph_tools,
+                sandbox_mode=node.sandbox_mode,
                 task_template_id=task_template_id,
                 subgraph_template_id=subgraph_template_id,
                 argument_bindings=node.argument_bindings,
                 output_schema=node.output_schema,
-                images=node.images,
+                image_attachments=node.image_attachments,
             )
         )
 

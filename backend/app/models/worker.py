@@ -1,11 +1,13 @@
-import uuid
 import datetime
+import uuid
 from enum import Enum
 from typing import TYPE_CHECKING, List, Optional
 
 from sqlalchemy import Column
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship
+
+from app.utils.time import utcnow
 
 from .base import RomulusBase
 
@@ -29,7 +31,7 @@ class Worker(RomulusBase, table=True):
     registration_key: Optional[str] = Field(default=None, index=True)
     pod_name: Optional[str] = Field(default=None, index=True)
     pod_ip: Optional[str] = Field(default=None)
-    registered_at: datetime.datetime = Field(default_factory=datetime.datetime.utcnow)
+    registered_at: datetime.datetime = Field(default_factory=utcnow)
     last_heartbeat_at: Optional[datetime.datetime] = Field(default=None, index=True)
     worker_metadata: dict = Field(default_factory=dict, sa_column=Column("metadata", JSONB, nullable=False))
     deployment_name: Optional[str] = Field(default=None)

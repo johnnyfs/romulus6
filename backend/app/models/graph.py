@@ -24,7 +24,6 @@ class NodeType(str, Enum):
     command = "command"
     task_template = "task_template"
     subgraph_template = "subgraph_template"
-    view = "view"
 
 
 class Graph(RomulusBase, table=True):
@@ -73,6 +72,7 @@ class GraphNode(RomulusBase, table=True):
     prompt: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     command: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     graph_tools: bool = Field(default=False)
+    sandbox_mode: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     task_template_id: Optional[uuid.UUID] = Field(
         default=None, foreign_key="tasktemplate.id"
     )
@@ -87,7 +87,7 @@ class GraphNode(RomulusBase, table=True):
         default=None,
         sa_column=validated_json_column(OutputSchemaDefinition, nullable=True),
     )
-    images: Optional[ImagePayloadList] = Field(
+    image_attachments: Optional[ImagePayloadList] = Field(
         default=None,
         sa_column=validated_json_column(ImageAttachmentSchema, nullable=True),
     )

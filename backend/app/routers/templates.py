@@ -4,24 +4,28 @@ from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from romulus_common.sandbox_modes import SandboxMode
 from sqlmodel import Session
 
 from app.database import get_session
-from app.models.agent import AgentConfig, CommandConfig, ImageAttachment, PydanticAgentConfig
+from app.models.agent import (
+    AgentConfig,
+    CommandConfig,
+    ImageAttachment,
+    PydanticAgentConfig,
+)
 from app.models.graph import NodeType
-from app.models.structured_fields import ViewConfig
 from app.models.template import (
     SubgraphTemplateNodeType,
     TemplateArgType,
 )
 from app.models.workspace import Workspace
+from app.services import templates as svc
 from app.services.node_configs import (
     agent_config_from_node,
     command_config_from_node,
     image_payloads_from_configs,
-    view_config_from_node,
 )
-from app.services import templates as svc
 from app.services.node_shapes import UNSET
 from app.services.structured_serialization import (
     decoded_json_string,
@@ -44,6 +48,8 @@ class ArgumentSchema(BaseModel):
     min_value: Optional[float] = None
     max_value: Optional[float] = None
     enum_options: Optional[list[str]] = None
+    schema_template_id: Optional[uuid.UUID] = None
+    container: Optional[str] = None  # "list" | "map" | None
 
 
 class ArgumentResponse(BaseModel):
@@ -55,6 +61,8 @@ class ArgumentResponse(BaseModel):
     min_value: Optional[float] = None
     max_value: Optional[float] = None
     enum_options: Optional[list[str]] = None
+    schema_template_id: Optional[uuid.UUID] = None
+    container: Optional[str] = None
     created_at: datetime.datetime
 
     model_config = {"from_attributes": True}
@@ -80,6 +88,8 @@ def _to_arg_inputs(args: list[ArgumentSchema]) -> list[ArgumentInput]:
             min_value=a.min_value,
             max_value=a.max_value,
             enum_options=a.enum_options,
+            schema_template_id=a.schema_template_id,
+            container=a.container,
         )
         for a in args
     ]
@@ -95,6 +105,8 @@ def _arg_response(obj: Any) -> ArgumentResponse:
         min_value=float(obj.min_value) if obj.min_value is not None else None,
         max_value=float(obj.max_value) if obj.max_value is not None else None,
         enum_options=decoded_json_string(obj.enum_options),
+        schema_template_id=getattr(obj, "schema_template_id", None),
+        container=getattr(obj, "container", None),
         created_at=obj.created_at,
     )
 
@@ -120,10 +132,11 @@ class CreateTaskTemplateRequest(BaseModel):
     prompt: Optional[str] = None
     command: Optional[str] = None
     graph_tools: bool = False
+    sandbox_mode: Optional[SandboxMode] = None
     label: Optional[str] = None
     arguments: list[ArgumentSchema] = []
     output_schema: Optional[dict[str, str]] = None
-    images: Optional[list[ImageAttachment]] = None
+    image_attachments: Optional[list[ImageAttachment]] = None
 
 
 class TaskTemplateResponse(BaseModel):
@@ -136,10 +149,11 @@ class TaskTemplateResponse(BaseModel):
     prompt: Optional[str] = None
     command: Optional[str] = None
     graph_tools: bool
+    sandbox_mode: Optional[SandboxMode] = None
     label: Optional[str] = None
     arguments: list[ArgumentResponse]
     output_schema: Optional[dict[str, str]] = None
-    images: Optional[list[ImageAttachment]] = None
+    image_attachments: Optional[list[ImageAttachment]] = None
     created_at: datetime.datetime
     updated_at: datetime.datetime
 
@@ -157,10 +171,11 @@ def _task_tmpl_response(t: Any) -> TaskTemplateResponse:
         prompt=t.prompt,
         command=t.command,
         graph_tools=t.graph_tools,
+        sandbox_mode=getattr(t, "sandbox_mode", None),
         label=t.label,
         arguments=[_arg_response(a) for a in t.arguments if not a.deleted],
         output_schema=normalized_string_map(getattr(t, "output_schema", None)),
-        images=image_attachments(getattr(t, "images", None)),
+        image_attachments=image_attachments(getattr(t, "image_attachments", None)),
         created_at=t.created_at,
         updated_at=t.updated_at,
     )
@@ -173,7 +188,7 @@ def create_task_template(
     workspace_id: uuid.UUID, body: CreateTaskTemplateRequest, session: SessionDep
 ) -> Any:
     _require_workspace(workspace_id, session)
-    images = [img.model_dump(mode="json") for img in body.images] if body.images else None
+    img_attachments = [img.model_dump(mode="json") for img in body.image_attachments] if body.image_attachments else None
     try:
         tmpl = svc.create_task_template(
             session,
@@ -185,10 +200,11 @@ def create_task_template(
             prompt=body.prompt,
             command=body.command,
             graph_tools=body.graph_tools,
+            sandbox_mode=body.sandbox_mode,
             label=body.label,
             arguments=_to_arg_inputs(body.arguments),
             output_schema=body.output_schema,
-            images=images,
+            image_attachments=img_attachments,
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
@@ -221,7 +237,7 @@ def update_task_template(
     tmpl = svc.get_task_template(session, workspace_id, template_id)
     if tmpl is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task template not found")
-    images = [img.model_dump(mode="json") for img in body.images] if body.images else None
+    img_attachments = [img.model_dump(mode="json") for img in body.image_attachments] if body.image_attachments else None
     try:
         tmpl = svc.update_task_template(
             session,
@@ -233,10 +249,11 @@ def update_task_template(
             prompt=body.prompt,
             command=body.command,
             graph_tools=body.graph_tools,
+            sandbox_mode=body.sandbox_mode,
             label=body.label,
             arguments=_to_arg_inputs(body.arguments),
             output_schema=body.output_schema,
-            images=images,
+            image_attachments=img_attachments,
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
@@ -249,6 +266,106 @@ def delete_task_template(workspace_id: uuid.UUID, template_id: uuid.UUID, sessio
     deleted = svc.delete_task_template(session, workspace_id, template_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task template not found")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Schema Templates
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+schema_router = APIRouter(
+    prefix="/workspaces/{workspace_id}/schema-templates",
+    tags=["schema-templates"],
+)
+
+
+# --- Request / Response schemas ---
+
+class CreateSchemaTemplateRequest(BaseModel):
+    name: str
+    fields: dict[str, str]
+
+
+class SchemaTemplateResponse(BaseModel):
+    id: uuid.UUID
+    workspace_id: uuid.UUID
+    name: str
+    fields: Optional[dict[str, str]] = None
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+
+    model_config = {"from_attributes": True}
+
+
+# --- Endpoints ---
+
+@schema_router.post("", response_model=SchemaTemplateResponse, status_code=status.HTTP_201_CREATED)
+def create_schema_template(
+    workspace_id: uuid.UUID, body: CreateSchemaTemplateRequest, session: SessionDep
+) -> Any:
+    _require_workspace(workspace_id, session)
+    try:
+        tmpl = svc.create_schema_template(
+            session,
+            workspace_id=workspace_id,
+            name=body.name,
+            fields=body.fields,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
+    return SchemaTemplateResponse.model_validate(tmpl)
+
+
+@schema_router.get("", response_model=list[SchemaTemplateResponse])
+def list_schema_templates(workspace_id: uuid.UUID, session: SessionDep) -> Any:
+    _require_workspace(workspace_id, session)
+    return [
+        SchemaTemplateResponse.model_validate(t)
+        for t in svc.list_schema_templates(session, workspace_id)
+    ]
+
+
+@schema_router.get("/{template_id}", response_model=SchemaTemplateResponse)
+def get_schema_template(workspace_id: uuid.UUID, template_id: uuid.UUID, session: SessionDep) -> Any:
+    _require_workspace(workspace_id, session)
+    tmpl = svc.get_schema_template(session, workspace_id, template_id)
+    if tmpl is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schema template not found")
+    return SchemaTemplateResponse.model_validate(tmpl)
+
+
+@schema_router.put("/{template_id}", response_model=SchemaTemplateResponse)
+def update_schema_template(
+    workspace_id: uuid.UUID,
+    template_id: uuid.UUID,
+    body: CreateSchemaTemplateRequest,
+    session: SessionDep,
+) -> Any:
+    _require_workspace(workspace_id, session)
+    tmpl = svc.get_schema_template(session, workspace_id, template_id)
+    if tmpl is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schema template not found")
+    try:
+        tmpl = svc.update_schema_template(
+            session,
+            tmpl=tmpl,
+            name=body.name,
+            fields=body.fields,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
+    return SchemaTemplateResponse.model_validate(tmpl)
+
+
+@schema_router.delete("/{template_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_schema_template(workspace_id: uuid.UUID, template_id: uuid.UUID, session: SessionDep) -> None:
+    _require_workspace(workspace_id, session)
+    try:
+        deleted = svc.delete_schema_template(session, workspace_id, template_id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schema template not found")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -270,7 +387,7 @@ class SubgraphNodeInputSchema(BaseModel):
     # For agent/command inline nodes
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
-    view_config: Optional["ViewConfig"] = None
+
     # For task_template/subgraph_template reference nodes
     task_template_id: Optional[uuid.UUID] = None
     ref_subgraph_template_id: Optional[uuid.UUID] = None
@@ -297,7 +414,7 @@ class AddSubgraphNodeRequest(BaseModel):
     name: Optional[str] = None
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
-    view_config: Optional[ViewConfig] = None
+
     task_template_id: Optional[uuid.UUID] = None
     ref_subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
@@ -309,7 +426,7 @@ class PatchSubgraphNodeRequest(BaseModel):
     node_type: Optional[SubgraphTemplateNodeType] = None
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
-    view_config: Optional[ViewConfig] = None
+
     task_template_id: Optional[uuid.UUID] = None
     ref_subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
@@ -328,7 +445,7 @@ class SubgraphNodeResponse(BaseModel):
     name: Optional[str] = None
     agent_config: Optional[AgentConfig] = None
     command_config: Optional[CommandConfig] = None
-    view_config: Optional[ViewConfig] = None
+
     task_template_id: Optional[uuid.UUID] = None
     ref_subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
@@ -384,7 +501,6 @@ def _node_response(n: Any) -> SubgraphNodeResponse:
         name=n.name,
         agent_config=agent_config_from_node(n),
         command_config=command_config_from_node(n),
-        view_config=view_config_from_node(n),
         task_template_id=n.task_template_id,
         ref_subgraph_template_id=n.ref_subgraph_template_id,
         argument_bindings=normalized_string_map(getattr(n, "argument_bindings", None)),
@@ -420,7 +536,6 @@ def _to_node_inputs(nodes: list[SubgraphNodeInputSchema]) -> list[SubgraphNodeIn
     for n in nodes:
         ac = n.agent_config
         cc = n.command_config
-        vc = getattr(n, "view_config", None)
         result.append(SubgraphNodeInput(
             node_type=n.node_type,
             name=n.name,
@@ -429,11 +544,12 @@ def _to_node_inputs(nodes: list[SubgraphNodeInputSchema]) -> list[SubgraphNodeIn
             prompt=ac.prompt if ac else None,
             command=cc.command if cc else None,
             graph_tools=getattr(ac, "graph_tools", False) if ac else False,
+            sandbox_mode=getattr(ac, "sandbox_mode", None) if ac else None,
             task_template_id=n.task_template_id,
             ref_subgraph_template_id=n.ref_subgraph_template_id,
             argument_bindings=n.argument_bindings,
             output_schema=n.output_schema,
-            images=image_payloads_from_configs(ac, vc),
+            image_attachments=image_payloads_from_configs(ac),
         ))
     return result
 
@@ -523,7 +639,6 @@ def add_subgraph_node(
     tmpl = _require_subgraph_template(workspace_id, template_id, session)
     ac = body.agent_config
     cc = body.command_config
-    vc = body.view_config
     try:
         node = svc.add_subgraph_template_node(
             session,
@@ -535,11 +650,12 @@ def add_subgraph_node(
             prompt=ac.prompt if ac else None,
             command=cc.command if cc else None,
             graph_tools=getattr(ac, "graph_tools", False) if ac else False,
+            sandbox_mode=getattr(ac, "sandbox_mode", None) if ac else None,
             task_template_id=body.task_template_id,
             ref_subgraph_template_id=body.ref_subgraph_template_id,
             argument_bindings=body.argument_bindings,
             output_schema=body.output_schema,
-            images=image_payloads_from_configs(ac, vc),
+            image_attachments=image_payloads_from_configs(ac),
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
@@ -558,7 +674,6 @@ def patch_subgraph_node(
     tmpl = _require_subgraph_template(workspace_id, template_id, session)
     ac = body.agent_config
     cc = body.command_config
-    vc = body.view_config
     try:
         node = svc.patch_subgraph_template_node(
             session,
@@ -571,13 +686,14 @@ def patch_subgraph_node(
             prompt=ac.prompt if ac else UNSET,
             command=cc.command if cc else UNSET,
             graph_tools=getattr(ac, "graph_tools", None) if ac else UNSET,
+            sandbox_mode=getattr(ac, "sandbox_mode", None) if ac else UNSET,
             task_template_id=body.task_template_id if body.task_template_id is not None else UNSET,
             ref_subgraph_template_id=body.ref_subgraph_template_id if body.ref_subgraph_template_id is not None else UNSET,
             argument_bindings=body.argument_bindings,
             output_schema=body.output_schema,
-            images=(
-                image_payloads_from_configs(ac, vc)
-                if vc is not None or isinstance(ac, PydanticAgentConfig)
+            image_attachments=(
+                image_payloads_from_configs(ac)
+                if isinstance(ac, PydanticAgentConfig)
                 else UNSET
             ),
         )

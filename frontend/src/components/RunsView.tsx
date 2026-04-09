@@ -139,26 +139,39 @@ export default function RunsView({ workspaceId, onNavigateToGraphNode, onNavigat
   }, [activeRun, selectedRunNodeId, setSelectedRunNodeId])
 
   // Poll active run if non-terminal
+  const activeRunRef = useRef(activeRun)
+  useEffect(() => { activeRunRef.current = activeRun }, [activeRun])
+
+  const pollInFlight = useRef(false)
+
   useEffect(() => {
     if (!activeRun) return
     if (activeRun.state === 'completed' || activeRun.state === 'error') return
 
     const interval = setInterval(async () => {
+      if (pollInFlight.current) return
+      const run = activeRunRef.current
+      if (!run) return
+      pollInFlight.current = true
       try {
         const updated =
-          activeRun.graph_id && selectedGraphId && activeRun.graph_id === selectedGraphId
-            ? await getRun(workspaceId, selectedGraphId, activeRun.id)
-            : await getRunById(workspaceId, activeRun.id)
+          run.graph_id && selectedGraphId && run.graph_id === selectedGraphId
+            ? await getRun(workspaceId, selectedGraphId, run.id)
+            : await getRunById(workspaceId, run.id)
         setRunPath(prev => {
           if (prev.length === 0) return [updated]
-          return prev.map((run, index) => (index === prev.length - 1 ? updated : run))
+          return prev.map((r, index) => (index === prev.length - 1 ? updated : r))
         })
         setRuns(prev => prev.map(r => r.id === updated.id ? updated : r))
-      } catch { /* ignore poll errors */ }
+      } catch (err) {
+        console.warn('Run poll error:', err)
+      } finally {
+        pollInFlight.current = false
+      }
     }, 2000)
 
     return () => clearInterval(interval)
-  }, [activeRun?.id, activeRun?.state, activeRun?.graph_id, workspaceId, selectedGraphId])
+  }, [activeRun, workspaceId, selectedGraphId])
 
   // Layout for active run
   const positions = useMemo(() => {
@@ -192,7 +205,7 @@ export default function RunsView({ workspaceId, onNavigateToGraphNode, onNavigat
     } finally {
       setCreating(false)
     }
-  }, [workspaceId, selectedGraphId, loadRuns])
+  }, [workspaceId, selectedGraphId, loadRuns, setSelectedRunId])
 
   const handleOpenChildRun = useCallback(async (childRunId: string) => {
     const childRun = await getRunById(workspaceId, childRunId)
@@ -481,7 +494,11 @@ export default function RunsView({ workspaceId, onNavigateToGraphNode, onNavigat
                   </span>
                 </div>
               )}
-              {(selectedRunNode.agent_config.agent_type === 'opencode' || selectedRunNode.agent_config.agent_type === 'claude_code') && selectedRunNode.agent_config.graph_tools && (
+              {(
+                selectedRunNode.agent_config.agent_type === 'opencode'
+                || selectedRunNode.agent_config.agent_type === 'codex'
+                || selectedRunNode.agent_config.agent_type === 'claude_code'
+              ) && selectedRunNode.agent_config.graph_tools && (
                 <div style={rs.inspectorRow}>
                   <span style={rs.inspectorLabel} />
                   <span style={{ ...rs.inspectorValue, color: 'var(--text-dim)' }}>graph tools enabled</span>
@@ -515,11 +532,25 @@ export default function RunsView({ workspaceId, onNavigateToGraphNode, onNavigat
           {selectedRunNode.output && (
             <>
               <div style={{ ...rs.inspectorTitle, marginTop: 6 }}>OUTPUT</div>
-              <div style={{ ...rs.inspectorRow, alignItems: 'flex-start' }}>
-                <span style={{ ...rs.inspectorValue, fontFamily: 'monospace', whiteSpace: 'pre-wrap', maxHeight: 120, overflowY: 'auto' }}>
-                  {JSON.stringify(selectedRunNode.output, null, 2)}
-                </span>
-              </div>
+              {Object.entries(selectedRunNode.output).map(([key, value]) => {
+                const isImage = selectedRunNode.output_schema?.[key] === 'image' && typeof value === 'string'
+                return (
+                  <div key={key} style={{ ...rs.inspectorRow, alignItems: 'flex-start', marginBottom: 4 }}>
+                    <span style={{ ...rs.inspectorLabel, marginTop: 2 }}>{key}:</span>
+                    {isImage ? (
+                      <img
+                        src={value as string}
+                        alt={key}
+                        style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 4, objectFit: 'contain' }}
+                      />
+                    ) : (
+                      <span style={{ ...rs.inspectorValue, fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}>
+                        {JSON.stringify(value)}
+                      </span>
+                    )}
+                  </div>
+                )
+              })}
             </>
           )}
 

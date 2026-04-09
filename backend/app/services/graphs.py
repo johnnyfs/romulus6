@@ -1,4 +1,3 @@
-import datetime
 import json
 import uuid
 from dataclasses import dataclass
@@ -18,11 +17,9 @@ from app.models.run import (
 )
 from app.models.template import (
     SubgraphTemplate,
-    SubgraphTemplateEdge,
     SubgraphTemplateNode,
     SubgraphTemplateNodeType,
     TaskTemplate,
-    TaskTemplateArgument,
     TemplateArgType,
 )
 from app.services.node_references import (
@@ -32,6 +29,7 @@ from app.services.node_references import (
 )
 from app.services.node_shapes import UNSET, normalized_node_field_values
 from app.utils.output_schema import validate_output_schema_definition
+from app.utils.time import utcnow
 
 
 @dataclass
@@ -43,11 +41,12 @@ class NodeInput:
     prompt: Optional[str] = None
     command: Optional[str] = None
     graph_tools: bool = False
+    sandbox_mode: Optional[str] = None
     task_template_id: Optional[uuid.UUID] = None
     subgraph_template_id: Optional[uuid.UUID] = None
     argument_bindings: Optional[dict[str, str]] = None
     output_schema: Optional[dict[str, str]] = None
-    images: Optional[list[dict]] = None
+    image_attachments: Optional[list[dict]] = None
 
 
 @dataclass
@@ -239,20 +238,35 @@ def _validate_no_cycle_by_index(
 def _build_graph_node(graph_id: uuid.UUID, node_input: NodeInput) -> GraphNode:
     """Build a GraphNode from a NodeInput, including template fields."""
     validate_output_schema_definition(node_input.output_schema)
-    return GraphNode(
-        graph_id=graph_id,
-        node_type=node_input.node_type,
-        name=node_input.name,
+    normalized = normalized_node_field_values(
+        node_input.node_type,
+        subgraph_ref_field="subgraph_template_id",
         agent_type=node_input.agent_type,
         model=node_input.model,
         prompt=node_input.prompt,
         command=node_input.command,
         graph_tools=node_input.graph_tools,
+        sandbox_mode=node_input.sandbox_mode,
         task_template_id=node_input.task_template_id,
         subgraph_template_id=node_input.subgraph_template_id,
         argument_bindings=node_input.argument_bindings,
+        image_attachments=node_input.image_attachments,
+    )
+    return GraphNode(
+        graph_id=graph_id,
+        node_type=node_input.node_type,
+        name=node_input.name,
+        agent_type=normalized["agent_type"],
+        model=normalized["model"],
+        prompt=normalized["prompt"],
+        command=normalized["command"],
+        graph_tools=normalized["graph_tools"],
+        sandbox_mode=normalized["sandbox_mode"],
+        task_template_id=normalized["task_template_id"],
+        subgraph_template_id=normalized["subgraph_template_id"],
+        argument_bindings=normalized["argument_bindings"],
         output_schema=node_input.output_schema,
-        images=node_input.images,
+        image_attachments=normalized["image_attachments"],
     )
 
 
@@ -346,7 +360,7 @@ def update_graph(
         session.add(edge)
 
     graph.name = name
-    graph.updated_at = datetime.datetime.utcnow()
+    graph.updated_at = utcnow()
     session.add(graph)
     session.commit()
     session.refresh(graph)
@@ -359,7 +373,7 @@ def delete_graph(
     graph = get_graph(session, workspace_id, graph_id)
     if graph is None:
         return False
-    now = datetime.datetime.utcnow()
+    now = utcnow()
     for edge in session.exec(select(GraphEdge).where(GraphEdge.graph_id == graph.id)).all():
         edge.deleted = True
         edge.updated_at = now
@@ -385,11 +399,12 @@ def add_node(
     prompt: Optional[str] = None,
     command: Optional[str] = None,
     graph_tools: bool = False,
+    sandbox_mode: Optional[str] = None,
     task_template_id: Optional[uuid.UUID] = None,
     subgraph_template_id: Optional[uuid.UUID] = None,
     argument_bindings: Optional[dict[str, str]] = None,
     output_schema: Optional[dict[str, str]] = None,
-    images: Optional[list[dict]] = None,
+    image_attachments: Optional[list[dict]] = None,
 ) -> GraphNode:
     if node_type == NodeType.subgraph_template and subgraph_template_id is not None:
         template = require_workspace_subgraph_template(
@@ -415,10 +430,11 @@ def add_node(
         prompt=prompt,
         command=command,
         graph_tools=graph_tools,
+        sandbox_mode=sandbox_mode,
         task_template_id=task_template_id,
         subgraph_template_id=subgraph_template_id,
         argument_bindings=argument_bindings,
-        images=images,
+        image_attachments=image_attachments,
     )
     node = GraphNode(
         graph_id=graph.id,
@@ -429,11 +445,12 @@ def add_node(
         prompt=normalized["prompt"],
         command=normalized["command"],
         graph_tools=normalized["graph_tools"],
+        sandbox_mode=normalized["sandbox_mode"],
         task_template_id=normalized["task_template_id"],
         subgraph_template_id=normalized["subgraph_template_id"],
         argument_bindings=normalized["argument_bindings"],
         output_schema=output_schema,
-        images=normalized["images"],
+        image_attachments=normalized["image_attachments"],
     )
     session.add(node)
     session.commit()
@@ -452,11 +469,12 @@ def patch_node(
     prompt: Optional[str] = None,
     command: Optional[str] = None,
     graph_tools: Optional[bool] = None,
+    sandbox_mode: Optional[str] = None,
     task_template_id: Optional[uuid.UUID] = None,
     subgraph_template_id: Optional[uuid.UUID] = None,
     argument_bindings: Optional[dict[str, str]] = None,
     output_schema: Optional[dict[str, str]] = None,
-    images: Optional[list[dict]] = None,
+    image_attachments: Optional[list[dict]] = None,
 ) -> Optional[GraphNode]:
     node = session.get(GraphNode, node_id)
     if node is None or node.graph_id != graph.id:
@@ -509,22 +527,24 @@ def patch_node(
         prompt=prompt,
         command=command,
         graph_tools=graph_tools,
+        sandbox_mode=sandbox_mode,
         task_template_id=task_template_id,
         subgraph_template_id=subgraph_template_id,
         argument_bindings=argument_bindings,
-        images=images,
+        image_attachments=image_attachments,
     )
     node.agent_type = normalized["agent_type"]
     node.model = normalized["model"]
     node.prompt = normalized["prompt"]
     node.command = normalized["command"]
     node.graph_tools = normalized["graph_tools"]
+    node.sandbox_mode = normalized["sandbox_mode"]
     node.task_template_id = normalized["task_template_id"]
     node.subgraph_template_id = normalized["subgraph_template_id"]
     node.argument_bindings = normalized["argument_bindings"]
     if output_schema is not None:
         node.output_schema = output_schema
-    node.images = normalized["images"]
+    node.image_attachments = normalized["image_attachments"]
     session.add(node)
     session.commit()
     session.refresh(node)
@@ -631,8 +651,9 @@ def _materialize_task_template(
         prompt=_substitute_args(task_template.prompt, bindings),
         command=_substitute_args(task_template.command, bindings),
         graph_tools=task_template.graph_tools,
+        sandbox_mode=task_template.sandbox_mode,
         output_schema=task_template.output_schema,
-        images=task_template.images,
+        image_attachments=task_template.image_attachments,
     )
     session.add(rn)
     return rn
@@ -686,9 +707,8 @@ def _materialize_subgraph(
         if tmpl_node.node_type in (
             SubgraphTemplateNodeType.agent,
             SubgraphTemplateNodeType.command,
-            SubgraphTemplateNodeType.view,
         ):
-            # Inline agent/command/view node — snapshot directly with arg substitution
+            # Inline agent/command node — snapshot directly with arg substitution
             rn = GraphRunNode(
                 run_id=child_run.id,
                 source_node_id=tmpl_node.id,
@@ -701,8 +721,9 @@ def _materialize_subgraph(
                 prompt=_substitute_args(tmpl_node.prompt, bindings),
                 command=_substitute_args(tmpl_node.command, bindings),
                 graph_tools=tmpl_node.graph_tools,
+                sandbox_mode=tmpl_node.sandbox_mode,
                 output_schema=tmpl_node.output_schema,
-                images=tmpl_node.images,
+                image_attachments=tmpl_node.image_attachments,
             )
             session.add(rn)
             template_node_to_run_node[tmpl_node.id] = rn
@@ -856,8 +877,9 @@ def create_run(session: Session, graph: Graph) -> GraphRun:
                 prompt=node.prompt,
                 command=node.command,
                 graph_tools=node.graph_tools,
+                sandbox_mode=node.sandbox_mode,
                 output_schema=node.output_schema,
-                images=node.images,
+                image_attachments=node.image_attachments,
             )
             session.add(rn)
             run_nodes.append((node.id, rn))

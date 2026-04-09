@@ -329,17 +329,21 @@ test.describe('Task template materialization in runs', () => {
     }
   });
 
-  test('POST /runs materializes view task_template with images into a view run node', async ({ request }) => {
+  test('POST /runs materializes pydantic agent task_template with image_attachments', async ({ request }) => {
     const wid = await createWorkspace(request);
     try {
       const tmpl = await createTaskTemplate(request, wid, {
-        name: 'view-run-tmpl',
-        task_type: 'view',
-        images: [{ type: 'url', url: 'https://example.com/a.png' }],
+        name: 'pydantic-img-tmpl',
+        task_type: 'agent',
+        agent_type: 'pydantic',
+        model: 'openai/gpt-4o',
+        prompt: 'Describe the image',
+        output_schema: { description: 'string' },
+        image_attachments: [{ type: 'url', url: 'https://example.com/a.png' }],
       });
 
       const graph = await createGraph(request, wid, {
-        name: 'mat-view-graph',
+        name: 'mat-pydantic-graph',
         nodes: [
           {
             node_type: 'task_template',
@@ -351,12 +355,9 @@ test.describe('Task template materialization in runs', () => {
 
       const run = await createRun(request, wid, graph.id);
       const rn = run.run_nodes[0];
-      expect(rn.node_type).toBe('view');
-      expect(rn.agent_config).toBeNull();
-      expect(rn.command_config).toBeNull();
-      expect(rn.view_config).toEqual({
-        images: [{ type: 'url', url: 'https://example.com/a.png', path: null }],
-      });
+      expect(rn.node_type).toBe('agent');
+      expect(rn.agent_config).toBeTruthy();
+      expect(rn.agent_config.agent_type).toBe('pydantic');
     } finally {
       await deleteWorkspace(request, wid);
     }
@@ -834,28 +835,24 @@ test.describe('Subgraph templates with inline agent/command nodes', () => {
     }
   });
 
-  test('POST /subgraph-templates creates with inline view node', async ({ request }) => {
+  test('POST /subgraph-templates creates with inline command node', async ({ request }) => {
     const wid = await createWorkspace(request);
     try {
       const sg = await createSubgraphTemplate(request, wid, {
-        name: 'inline-view-subgraph',
+        name: 'inline-cmd-subgraph',
         nodes: [
           {
-            node_type: 'view',
+            node_type: 'command',
             name: 'preview',
-            view_config: {
-              images: [{ type: 'url', url: 'https://example.com/preview.png' }],
-            },
+            command_config: { command: 'echo preview' },
           },
         ],
         edges: [],
       });
 
       expect(sg.nodes).toHaveLength(1);
-      expect(sg.nodes[0].node_type).toBe('view');
-      expect(sg.nodes[0].view_config).toEqual({
-        images: [{ type: 'url', url: 'https://example.com/preview.png', path: null }],
-      });
+      expect(sg.nodes[0].node_type).toBe('command');
+      expect(sg.nodes[0].command_config).toEqual({ command: 'echo preview' });
     } finally {
       await deleteWorkspace(request, wid);
     }

@@ -1,5 +1,4 @@
 import asyncio
-import datetime
 import json
 from contextlib import contextmanager
 
@@ -9,12 +8,14 @@ from sqlmodel import select
 
 from app.models.agent import Agent, AgentStatus, AgentType
 from app.models.event import Event
+from app.models.run import GraphRun, GraphRunNode, RunNodeState, RunNodeType, RunState
 from app.models.sandbox import Sandbox
 from app.models.worker import Worker, WorkerStatus
 from app.services import agents as agent_svc
 from app.services import events as event_svc
 from app.services import workers as worker_svc
 from app.services import workspaces as workspace_svc
+from app.utils.time import utcnow
 
 pytestmark = pytest.mark.fast
 
@@ -36,7 +37,7 @@ def test_workspace_stream_replays_backlog_and_publishes_live_events(session):
         payload={
             "id": "event-1",
             "type": "session.busy",
-            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "timestamp": utcnow().isoformat(),
             "data": {"message": "backlog"},
         },
     )
@@ -63,7 +64,7 @@ def test_workspace_stream_replays_backlog_and_publishes_live_events(session):
                 payload={
                     "id": "event-2",
                     "type": "text.delta",
-                    "timestamp": datetime.datetime.utcnow().isoformat(),
+                    "timestamp": utcnow().isoformat(),
                     "data": {"message": "live"},
                 },
             )
@@ -104,7 +105,7 @@ def test_list_agent_events_after_cursor_filters_to_newer_events(session):
         payload={
             "id": "agent-event-1",
             "type": "session.create.requested",
-            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "timestamp": utcnow().isoformat(),
             "data": {"step": 1},
         },
         agent_id=agent.id,
@@ -117,7 +118,7 @@ def test_list_agent_events_after_cursor_filters_to_newer_events(session):
         payload={
             "id": "agent-event-2",
             "type": "feedback.response",
-            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "timestamp": utcnow().isoformat(),
             "data": {"step": 2},
         },
         agent_id=agent.id,
@@ -142,7 +143,7 @@ def test_create_agent_failure_persists_lifecycle_events(session, monkeypatch):
             status=WorkerStatus.running,
             worker_url="http://worker.test",
             worker_metadata={},
-            last_heartbeat_at=datetime.datetime.utcnow(),
+            last_heartbeat_at=utcnow(),
         )
     )
     session.commit()
@@ -181,13 +182,49 @@ def test_create_agent_failure_persists_lifecycle_events(session, monkeypatch):
     assert events[-1].data["data"]["error"] == "session boot failed"
 
 
+def test_create_codex_agent_forwards_sandbox_mode(session, monkeypatch):
+    workspace = workspace_svc.create_workspace(session, "codex-launch")
+    worker = Worker(
+        status=WorkerStatus.running,
+        worker_url="http://worker.test",
+        worker_metadata={},
+        last_heartbeat_at=utcnow(),
+    )
+    session.add(worker)
+    session.commit()
+
+    captured: dict[str, object] = {}
+
+    async def fake_post_session(worker_url: str, *, payload, **kwargs):
+        assert worker_url == worker.worker_url
+        captured["sandbox_mode"] = payload.sandbox_mode
+        return {"session": {"id": "codex-session"}}
+
+    monkeypatch.setattr(agent_svc, "_post_session_with_retry", fake_post_session)
+
+    agent = asyncio.run(
+        agent_svc.create_agent(
+            session,
+            workspace_id=workspace.id,
+            agent_type=AgentType.codex,
+            model="openai/gpt-5.3-codex",
+            prompt="launch codex",
+            name="codex-agent",
+            sandbox_mode="workspace-write",
+        )
+    )
+
+    assert agent.sandbox_mode == "workspace-write"
+    assert captured["sandbox_mode"] == "workspace-write"
+
+
 def test_send_message_recovers_on_missing_worker_session(session, monkeypatch):
     workspace = workspace_svc.create_workspace(session, "stale-session")
     worker = Worker(
         status=WorkerStatus.running,
         worker_url="http://worker.test",
         worker_metadata={},
-        last_heartbeat_at=datetime.datetime.utcnow(),
+        last_heartbeat_at=utcnow(),
     )
     session.add(worker)
     session.commit()
@@ -225,7 +262,7 @@ def test_send_message_recovers_on_missing_worker_session(session, monkeypatch):
             "id": "agent-bootstrap",
             "type": "session.create.requested",
             "session_id": "missing-session",
-            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "timestamp": utcnow().isoformat(),
             "data": {
                 "prompt": "recover me",
                 "agent_type": "opencode",
@@ -312,7 +349,7 @@ def test_send_message_marks_agent_error_when_recovery_launch_fails(
         status=WorkerStatus.running,
         worker_url="http://worker.test",
         worker_metadata={},
-        last_heartbeat_at=datetime.datetime.utcnow(),
+        last_heartbeat_at=utcnow(),
     )
     session.add(worker)
     session.commit()
@@ -350,7 +387,7 @@ def test_send_message_marks_agent_error_when_recovery_launch_fails(
             "id": "agent-bootstrap-fail",
             "type": "session.create.requested",
             "session_id": "missing-session",
-            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "timestamp": utcnow().isoformat(),
             "data": {
                 "prompt": "recover me",
                 "agent_type": "opencode",
@@ -415,7 +452,7 @@ def test_register_worker_restart_invalidates_attached_agent_sessions(session):
         worker_url="http://worker.test",
         pod_name="worker-a",
         worker_metadata={"pid": 1001},
-        last_heartbeat_at=datetime.datetime.utcnow(),
+        last_heartbeat_at=utcnow(),
     )
     session.add(worker)
     session.commit()
@@ -469,3 +506,169 @@ def test_register_worker_restart_invalidates_attached_agent_sessions(session):
             "sandbox when resumed"
         )
     )
+
+
+def test_ingest_worker_event_completes_opencode_graph_node_from_mark_complete_args(session):
+    workspace = workspace_svc.create_workspace(session, "graph-node-complete")
+    worker = Worker(
+        status=WorkerStatus.running,
+        worker_url="http://worker.test",
+        worker_metadata={},
+        last_heartbeat_at=utcnow(),
+    )
+    session.add(worker)
+    session.flush()
+
+    sandbox = Sandbox(
+        workspace_id=workspace.id,
+        name="graph-node-sandbox",
+        worker_id=worker.id,
+    )
+    session.add(sandbox)
+    session.flush()
+
+    run = GraphRun(
+        workspace_id=workspace.id,
+        state=RunState.running,
+        sandbox_id=sandbox.id,
+    )
+    session.add(run)
+    session.flush()
+
+    node = GraphRunNode(
+        run_id=run.id,
+        node_type=RunNodeType.agent,
+        state=RunNodeState.running,
+        agent_type="opencode",
+        graph_tools=True,
+        output_schema={"answer": "string"},
+        session_id="graph-session",
+    )
+    session.add(node)
+    session.flush()
+
+    agent = Agent(
+        workspace_id=workspace.id,
+        sandbox_id=sandbox.id,
+        agent_type=AgentType.opencode,
+        model="openai/gpt-4o",
+        status=AgentStatus.busy,
+        name="graph-agent",
+        prompt="complete the node",
+        graph_run_id=run.id,
+        session_id="graph-session",
+    )
+    session.add(agent)
+    session.commit()
+    session.refresh(node)
+    session.refresh(agent)
+
+    event_svc.ingest_worker_event(
+        session,
+        worker_id=worker.id,
+        payload={
+            "id": "mark-complete-event",
+            "session_id": "graph-session",
+            "type": "tool.use",
+            "timestamp": utcnow().isoformat(),
+            "data": {
+                "tool_name": "mark_node_complete",
+                "args": {"output": {"answer": "done"}},
+            },
+        },
+    )
+
+    session.refresh(node)
+    session.refresh(agent)
+    events = session.exec(
+        select(Event)
+        .where(Event.run_id == run.id)
+        .order_by(Event.received_at.asc(), Event.id.asc())
+    ).all()
+
+    assert agent.status == AgentStatus.busy
+    assert node.state == RunNodeState.completed
+    assert node.output == {"answer": "done"}
+    assert [event.event_type for event in events][-2:] == [
+        "tool.use",
+        "run.node.completed",
+    ]
+
+
+@pytest.mark.parametrize("agent_type", ["codex", "claude_code"])
+def test_ingest_worker_event_completes_non_opencode_graph_tools_node_on_idle(
+    session,
+    agent_type,
+):
+    workspace = workspace_svc.create_workspace(session, f"idle-complete-{agent_type}")
+    worker = Worker(
+        status=WorkerStatus.running,
+        worker_url="http://worker.test",
+        worker_metadata={},
+        last_heartbeat_at=utcnow(),
+    )
+    session.add(worker)
+    session.flush()
+
+    sandbox = Sandbox(
+        workspace_id=workspace.id,
+        name=f"{agent_type}-sandbox",
+        worker_id=worker.id,
+    )
+    session.add(sandbox)
+    session.flush()
+
+    run = GraphRun(
+        workspace_id=workspace.id,
+        state=RunState.running,
+        sandbox_id=sandbox.id,
+    )
+    session.add(run)
+    session.flush()
+
+    node = GraphRunNode(
+        run_id=run.id,
+        node_type=RunNodeType.agent,
+        state=RunNodeState.running,
+        agent_type=agent_type,
+        graph_tools=True,
+        session_id=f"{agent_type}-session",
+    )
+    session.add(node)
+    session.flush()
+
+    agent = Agent(
+        workspace_id=workspace.id,
+        sandbox_id=sandbox.id,
+        agent_type=AgentType(agent_type),
+        model="anthropic/claude-sonnet-4-6"
+        if agent_type == "claude_code"
+        else "openai/gpt-5.3-codex",
+        status=AgentStatus.busy,
+        name=f"{agent_type}-agent",
+        prompt="finish when idle",
+        graph_run_id=run.id,
+        session_id=f"{agent_type}-session",
+    )
+    session.add(agent)
+    session.commit()
+    session.refresh(node)
+    session.refresh(agent)
+
+    event_svc.ingest_worker_event(
+        session,
+        worker_id=worker.id,
+        payload={
+            "id": f"{agent_type}-idle-event",
+            "session_id": f"{agent_type}-session",
+            "type": "session.idle",
+            "timestamp": utcnow().isoformat(),
+            "data": {},
+        },
+    )
+
+    session.refresh(node)
+    session.refresh(agent)
+
+    assert agent.status == AgentStatus.idle
+    assert node.state == RunNodeState.completed

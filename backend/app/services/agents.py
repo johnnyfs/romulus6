@@ -1,9 +1,9 @@
-import datetime
 import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
 import httpx
+from romulus_common.sandbox_modes import normalize_codex_sandbox_mode
 from romulus_common.worker_api import CreateSessionRequest
 from sqlmodel import Session, select
 
@@ -15,6 +15,7 @@ from app.services import events as event_svc
 from app.services import sandboxes as sandbox_svc
 from app.services import workers as worker_svc
 from app.services.worker_client import post_session_message, post_session_with_retry
+from app.utils.time import utcnow
 
 _post_session_with_retry = post_session_with_retry
 _UNSET = object()
@@ -37,7 +38,7 @@ def _mark_agent_session_unavailable(
     )
     agent.status = AgentStatus.error
     agent.session_id = None
-    agent.updated_at = datetime.datetime.utcnow()
+    agent.updated_at = utcnow()
     session.add(agent)
     session.commit()
 
@@ -71,7 +72,7 @@ def _persist_agent_event(
             "id": str(uuid.uuid4()),
             "type": event_type,
             "session_id": event_session_id,
-            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "timestamp": utcnow().isoformat(),
             "data": data or {},
         },
         source_name=agent.name,
@@ -91,7 +92,7 @@ def _mark_agent_launch_failed(
 ) -> None:
     agent.status = AgentStatus.error
     agent.session_id = None
-    agent.updated_at = datetime.datetime.utcnow()
+    agent.updated_at = utcnow()
     session.add(agent)
     session.commit()
 
@@ -107,7 +108,7 @@ def _mark_agent_launch_failed(
         sandbox_id = agent.sandbox_id
         sandbox_svc.delete_sandbox(session, agent.workspace_id, sandbox_id)
         agent.sandbox_id = None
-        agent.updated_at = datetime.datetime.utcnow()
+        agent.updated_at = utcnow()
         session.add(agent)
         session.commit()
 
@@ -121,6 +122,7 @@ async def _create_worker_session(
     agent_type: AgentType,
     model: str,
     graph_tools: bool,
+    sandbox_mode: str | None,
     schema_id: str | None,
     recovery: Any | None = None,
 ) -> dict[str, Any]:
@@ -130,6 +132,7 @@ async def _create_worker_session(
         model=model,
         workspace_name=str(sandbox_id),
         graph_tools=graph_tools,
+        sandbox_mode=sandbox_mode,
         workspace_id=str(workspace_id),
         sandbox_id=str(sandbox_id),
         schema_id=schema_id,
@@ -152,7 +155,7 @@ def _set_agent_runtime_state(
         agent.session_id = session_id
     if status is not None:
         agent.status = status
-    agent.updated_at = datetime.datetime.utcnow()
+    agent.updated_at = utcnow()
     session.add(agent)
     session.commit()
     session.refresh(agent)
@@ -261,6 +264,7 @@ async def _recover_agent_for_prompt(
                 "agent_type": agent.agent_type.value,
                 "model": agent.model,
                 "graph_tools": agent.graph_tools,
+                "sandbox_mode": agent.sandbox_mode,
                 "schema_id": schema_id,
                 "recovery": {
                     "reason": reason,
@@ -288,6 +292,7 @@ async def _recover_agent_for_prompt(
             agent_type=agent.agent_type,
             model=agent.model,
             graph_tools=agent.graph_tools,
+            sandbox_mode=agent.sandbox_mode,
             schema_id=schema_id,
             recovery=history,
         )
@@ -357,9 +362,14 @@ async def create_agent(
     prompt: str,
     name: str | None,
     graph_tools: bool = False,
+    sandbox_mode: str | None = None,
     schema_id: str | None = None,
 ) -> Agent:
     resolved_name = name or f"{agent_type.value}-{uuid.uuid4().hex[:8]}"
+    normalized_sandbox_mode = normalize_codex_sandbox_mode(
+        agent_type=agent_type.value,
+        sandbox_mode=sandbox_mode,
+    )
     sandbox, worker = sandbox_svc.create_sandbox(session, workspace_id, resolved_name)
 
     agent = Agent(
@@ -372,6 +382,7 @@ async def create_agent(
         status=AgentStatus.starting,
         dismissed=False,
         graph_tools=graph_tools,
+        sandbox_mode=normalized_sandbox_mode,
     )
     session.add(agent)
     session.commit()
@@ -386,6 +397,7 @@ async def create_agent(
             "agent_type": agent_type.value,
             "model": model,
             "graph_tools": graph_tools,
+            "sandbox_mode": normalized_sandbox_mode,
             "schema_id": schema_id,
         },
         worker_id=worker.id,
@@ -409,6 +421,7 @@ async def create_agent(
             agent_type=agent_type,
             model=model,
             graph_tools=graph_tools,
+            sandbox_mode=normalized_sandbox_mode,
             schema_id=schema_id,
         )
     except Exception as exc:
@@ -467,7 +480,7 @@ async def send_message(session: Session, agent: Agent, prompt: str) -> None:
     worker_id = worker.id if worker is not None else None
 
     agent.status = AgentStatus.busy
-    agent.updated_at = datetime.datetime.utcnow()
+    agent.updated_at = utcnow()
     session.add(agent)
     session.commit()
 
@@ -573,7 +586,7 @@ def set_agent_dismissed(
         agent.session_id = None
         agent.status = AgentStatus.interrupted
     agent.dismissed = dismissed
-    agent.updated_at = datetime.datetime.utcnow()
+    agent.updated_at = utcnow()
     session.add(agent)
     session.commit()
     session.refresh(agent)
@@ -588,7 +601,7 @@ async def send_feedback(
     response: str,
 ) -> None:
     agent.status = AgentStatus.busy
-    agent.updated_at = datetime.datetime.utcnow()
+    agent.updated_at = utcnow()
     session.add(agent)
     session.commit()
 
@@ -601,7 +614,7 @@ async def send_feedback(
             "id": str(uuid.uuid4()),
             "type": "feedback.response",
             "session_id": agent.session_id,
-            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "timestamp": utcnow().isoformat(),
             "data": {
                 "feedback_id": feedback_id,
                 "feedback_type": feedback_type,
@@ -637,7 +650,7 @@ def delete_agent(
     agent.deleted = True
     agent.sandbox_id = None
     agent.session_id = None
-    agent.updated_at = datetime.datetime.utcnow()
+    agent.updated_at = utcnow()
     session.add(agent)
     session.commit()
     return True

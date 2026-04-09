@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import TaskTemplatesPanel from './TaskTemplatesPanel'
 import SubgraphTemplatesPanel from './SubgraphTemplatesPanel'
+import SchemaTemplatesPanel from './SchemaTemplatesPanel'
 import {
   WORKSPACE_DETAIL_PARAM_KEYS,
   mergeSearchParams,
@@ -13,11 +14,11 @@ export default function TemplatesView({ workspaceId }: { workspaceId: string }) 
   const subTab = readEnumParam(
     searchParams,
     WORKSPACE_DETAIL_PARAM_KEYS.templatesSubTab,
-    ['tasks', 'subgraphs'] as const,
+    ['tasks', 'subgraphs', 'schemas'] as const,
     'tasks',
   )
   const setSubTab = useCallback(
-    (nextTab: 'tasks' | 'subgraphs') => {
+    (nextTab: 'tasks' | 'subgraphs' | 'schemas') => {
       setSearchParams(
         (prev) =>
           mergeSearchParams(prev, {
@@ -40,11 +41,17 @@ export default function TemplatesView({ workspaceId }: { workspaceId: string }) 
           style={subTab === 'subgraphs' ? { ...s.subTab, ...s.subTabActive } : s.subTab}
           onClick={() => setSubTab('subgraphs')}
         >Subgraphs</button>
+        <button
+          style={subTab === 'schemas' ? { ...s.subTab, ...s.subTabActive } : s.subTab}
+          onClick={() => setSubTab('schemas')}
+        >Schemas</button>
       </div>
       {subTab === 'tasks' ? (
         <TaskTemplatesPanel workspaceId={workspaceId} />
-      ) : (
+      ) : subTab === 'subgraphs' ? (
         <SubgraphTemplatesPanel workspaceId={workspaceId} />
+      ) : (
+        <SchemaTemplatesPanel workspaceId={workspaceId} />
       )}
     </div>
   )

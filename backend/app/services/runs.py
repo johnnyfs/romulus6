@@ -1,5 +1,4 @@
 import asyncio
-import datetime
 import json
 import logging
 import uuid
@@ -19,6 +18,7 @@ from app.models.run import (
     RunState,
 )
 from app.models.sandbox import Sandbox
+from app.models.template import SchemaTemplate
 from app.models.worker import Worker
 from app.services import controller as controller_svc
 from app.services import events as event_svc
@@ -27,6 +27,7 @@ from app.services import workers as worker_svc
 from app.services.worker_client import execute_command, post_session_with_retry
 from app.utils.output_schema import validate_output_against_schema
 from app.utils.slugify import slugify
+from app.utils.time import utcnow
 
 logger = logging.getLogger(__name__)
 MAX_RUN_NODE_ATTEMPTS = 3
@@ -71,7 +72,7 @@ def _persist_run_node_event(
         payload={
             "id": str(uuid.uuid4()),
             "type": event_type,
-            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "timestamp": utcnow().isoformat(),
             "data": {
                 "node_type": node.node_type,
                 "node_state": node.state,
@@ -122,16 +123,16 @@ def _resolve_image_references(
     node: GraphRunNode,
 ) -> list[dict[str, Any]] | None:
     """Resolve {{ slug.field }} references in image URLs/paths using completed predecessors."""
-    if not node.images:
-        return node.images
+    if not node.image_attachments:
+        return node.image_attachments
 
-    images = node.images
+    images = node.image_attachments
     has_templates = any(
         "{{" in (img.get("url", "") or img.get("path", "") or "")
         for img in images
     )
     if not has_templates:
-        return node.images
+        return node.image_attachments
 
     context = _build_predecessor_context(session, run, node)
     from app.services.graphs import _jinja_env
@@ -245,8 +246,9 @@ def _create_retry_attempt(
         prompt=node.prompt,
         command=node.command,
         graph_tools=node.graph_tools,
+        sandbox_mode=node.sandbox_mode,
         output_schema=node.output_schema,
-        images=node.images,
+        image_attachments=node.image_attachments,
     )
     session.add(retry)
     session.flush()
@@ -275,7 +277,7 @@ def _create_retry_attempt(
             )
 
     node.next_attempt_run_node_id = retry.id
-    node.updated_at = datetime.datetime.utcnow()
+    node.updated_at = utcnow()
     session.add(node)
     session.flush()
     return retry
@@ -341,25 +343,196 @@ async def _resolve_images(
     return resolved or None
 
 
+# TODO: renderable type registry — when adding new renderable types, add
+# their JSON Schema mapping here.
 _SCHEMA_TYPE_MAP = {
     "string": "string",
     "number": "number",
     "boolean": "boolean",
+    "image": "string",
 }
 
 
-def _generate_tool_content(output_schema: dict[str, str] | None) -> str:
+def _make_schema_resolver(session: Session):
+    """Create a schema_resolver callback for validate_output_against_schema."""
+    cache: dict[str, dict[str, str] | None] = {}
+
+    def resolve(schema_id: str) -> dict[str, str] | None:
+        if schema_id in cache:
+            return cache[schema_id]
+        try:
+            tmpl = session.get(SchemaTemplate, uuid.UUID(schema_id))
+        except ValueError:
+            cache[schema_id] = None
+            return None
+        if tmpl is None or tmpl.deleted:
+            cache[schema_id] = None
+            return None
+        cache[schema_id] = tmpl.fields
+        return tmpl.fields
+
+    return resolve
+
+
+def _expand_type_to_json_schema(
+    field_type: str,
+    session: Session,
+    visited: set[uuid.UUID] | None = None,
+) -> dict[str, Any]:
+    """Expand an output schema field type string to a JSON Schema fragment.
+
+    Handles primitives, schema references (recursively), list, and map containers.
+    """
+    # Container: list
+    if field_type.startswith("list:"):
+        inner = field_type[len("list:"):]
+        return {
+            "type": "array",
+            "items": _expand_type_to_json_schema(inner, session, visited),
+        }
+
+    # Container: map (string-keyed object)
+    if field_type.startswith("map:"):
+        inner = field_type[len("map:"):]
+        return {
+            "type": "object",
+            "additionalProperties": _expand_type_to_json_schema(inner, session, visited),
+        }
+
+    # Schema reference
+    if field_type.startswith("schema:"):
+        schema_uuid_str = field_type[len("schema:"):]
+        try:
+            schema_id = uuid.UUID(schema_uuid_str)
+        except ValueError:
+            return {"type": "object"}
+        visited = (visited or set()) | {schema_id}
+        tmpl = session.get(SchemaTemplate, schema_id)
+        if not tmpl or not tmpl.fields:
+            return {"type": "object"}
+        props: dict[str, Any] = {}
+        for name, ftype in tmpl.fields.items():
+            # Prevent infinite recursion (should not happen if cycles are blocked)
+            if ftype.startswith("schema:"):
+                try:
+                    ref_id = uuid.UUID(ftype[len("schema:"):])
+                except ValueError:
+                    props[name] = {"type": "object"}
+                    continue
+                if ref_id in visited:
+                    props[name] = {"type": "object"}
+                    continue
+            props[name] = _expand_type_to_json_schema(ftype, session, visited)
+        return {
+            "type": "object",
+            "properties": props,
+            "required": list(tmpl.fields.keys()),
+        }
+
+    # Primitive / renderable type
+    json_type = _SCHEMA_TYPE_MAP.get(field_type, "string")
+    return {"type": json_type}
+
+
+def _expand_output_schema_for_worker(
+    output_schema: dict[str, str] | None,
+    session: Session,
+) -> dict[str, Any] | None:
+    """Expand schema references in an output_schema for the worker.
+
+    Replaces "schema:<uuid>" (and list/map wrappers) with inline expanded
+    dicts so the worker can build Pydantic models without DB access.
+
+    Primitive types pass through unchanged as strings.
+    Complex types become dicts: {"_type": "object", "fields": {...}} etc.
+    """
+    if not output_schema:
+        return output_schema
+    expanded: dict[str, Any] = {}
+    for field_name, field_type in output_schema.items():
+        if _is_complex_type(field_type):
+            expanded[field_name] = _expand_type_for_worker(field_type, session, set())
+        else:
+            expanded[field_name] = field_type
+    return expanded
+
+
+def _is_complex_type(field_type: str) -> bool:
+    """Check if a field type requires expansion (is not a bare primitive)."""
+    return (
+        field_type.startswith("schema:")
+        or field_type.startswith("list:")
+        or field_type.startswith("map:")
+    )
+
+
+def _expand_type_for_worker(
+    field_type: str,
+    session: Session,
+    visited: set[uuid.UUID],
+) -> dict[str, Any] | str:
+    """Expand a single type string for the worker payload."""
+    if field_type.startswith("list:"):
+        inner = field_type[len("list:"):]
+        if _is_complex_type(inner):
+            return {"_type": "list", "items": _expand_type_for_worker(inner, session, visited)}
+        return {"_type": "list", "items": inner}
+
+    if field_type.startswith("map:"):
+        inner = field_type[len("map:"):]
+        if _is_complex_type(inner):
+            return {"_type": "map", "values": _expand_type_for_worker(inner, session, visited)}
+        return {"_type": "map", "values": inner}
+
+    if field_type.startswith("schema:"):
+        try:
+            schema_id = uuid.UUID(field_type[len("schema:"):])
+        except ValueError:
+            return {"_type": "object", "fields": {}}
+        if schema_id in visited:
+            return {"_type": "object", "fields": {}}
+        visited = visited | {schema_id}
+        tmpl = session.get(SchemaTemplate, schema_id)
+        if not tmpl or not tmpl.fields:
+            return {"_type": "object", "fields": {}}
+        expanded_fields: dict[str, Any] = {}
+        for name, ftype in tmpl.fields.items():
+            if _is_complex_type(ftype):
+                expanded_fields[name] = _expand_type_for_worker(ftype, session, visited)
+            else:
+                expanded_fields[name] = ftype
+        return {"_type": "object", "fields": expanded_fields}
+
+    return field_type
+
+
+def _generate_tool_content(
+    output_schema: dict[str, str] | None,
+    session: Session | None = None,
+) -> str:
     """Generate mark_node_complete tool content with typed parameters when schema is provided."""
     if not output_schema:
         return TOOL_FILE_CONTENT
 
     properties: dict[str, dict] = {}
     for field_name, field_type in output_schema.items():
-        json_type = _SCHEMA_TYPE_MAP.get(field_type, "string")
-        properties[field_name] = {
-            "type": json_type,
-            "description": f"The {field_name} output field ({field_type})",
-        }
+        if session and _is_complex_type(field_type):
+            # Expand complex types to full JSON Schema
+            properties[field_name] = _expand_type_to_json_schema(
+                field_type, session
+            )
+            properties[field_name]["description"] = (
+                f"The {field_name} output field ({field_type})"
+            )
+        else:
+            json_type = _SCHEMA_TYPE_MAP.get(field_type, "string")
+            desc = f"The {field_name} output field ({field_type})"
+            if field_type == "image":
+                desc += ". Provide a URL or data URI (data:image/...;base64,...)"
+            properties[field_name] = {
+                "type": json_type,
+                "description": desc,
+            }
 
     required = list(output_schema.keys())
 
@@ -392,9 +565,12 @@ def _generate_tool_content(output_schema: dict[str, str] | None) -> str:
 
 
 async def _place_tool_file(
-    worker_url: str, workspace_dir: str, output_schema: dict[str, str] | None = None
+    worker_url: str,
+    workspace_dir: str,
+    output_schema: dict[str, str] | None = None,
+    db_session: Session | None = None,
 ) -> None:
-    tool_content = _generate_tool_content(output_schema)
+    tool_content = _generate_tool_content(output_schema, session=db_session)
     script = (
         f"mkdir -p '{workspace_dir}/.opencode/tools' && "
         f"cat > '{workspace_dir}/.opencode/tools/mark_node_complete.ts' << 'TOOLEOF'\n"
@@ -427,7 +603,7 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
 
         if active_nodes and all(node.state == RunNodeState.completed for node in active_nodes):
             run.state = RunState.completed
-            run.updated_at = datetime.datetime.utcnow()
+            run.updated_at = utcnow()
             session.add(run)
             session.commit()
             if run.parent_run_node_id is not None:
@@ -440,7 +616,7 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
 
         if any(node.state == RunNodeState.error for node in active_nodes):
             run.state = RunState.error
-            run.updated_at = datetime.datetime.utcnow()
+            run.updated_at = utcnow()
             session.add(run)
             session.commit()
             if run.parent_run_node_id is not None:
@@ -470,7 +646,7 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
 
         if run.state == RunState.pending:
             run.state = RunState.running
-            run.updated_at = datetime.datetime.utcnow()
+            run.updated_at = utcnow()
             session.add(run)
             session.commit()
 
@@ -482,7 +658,7 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
             if node.node_type == RunNodeType.subgraph:
                 # Start the child run by enqueueing it
                 node.state = RunNodeState.running
-                node.updated_at = datetime.datetime.utcnow()
+                node.updated_at = utcnow()
                 session.add(node)
                 session.commit()
                 _persist_run_node_event(session, run, node, "run.node.running")
@@ -490,30 +666,8 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
                     enqueue_run(session, node.child_run_id, reason="parent node unblocked")
                 continue
 
-            if node.node_type == RunNodeType.view:
-                node.state = RunNodeState.dispatching
-                node.updated_at = datetime.datetime.utcnow()
-                session.add(node)
-                session.commit()
-                _persist_run_node_event(session, run, node, "run.node.dispatching")
-                # Only need a worker if images reference sandbox paths
-                needs_worker = False
-                if node.images:
-                    for img in node.images:
-                        if img.get("type") == "sandbox_path":
-                            needs_worker = True
-                            break
-                view_worker_id = None
-                if needs_worker:
-                    if worker is None:
-                        worker = _ensure_run_sandbox_worker(session, run)
-                    if worker is not None:
-                        view_worker_id = worker.id
-                asyncio.create_task(_dispatch_view_node(run.id, node.id, view_worker_id))
-                continue
-
             node.state = RunNodeState.dispatching
-            node.updated_at = datetime.datetime.utcnow()
+            node.updated_at = utcnow()
             session.add(node)
             session.commit()
             _persist_run_node_event(session, run, node, "run.node.dispatching")
@@ -533,7 +687,7 @@ def _ensure_run_sandbox_worker(session: Session, run: GraphRun) -> Worker | None
         parent_run = _parent_run(session, run)
         if parent_run is not None and parent_run.sandbox_id is not None:
             run.sandbox_id = parent_run.sandbox_id
-            run.updated_at = datetime.datetime.utcnow()
+            run.updated_at = utcnow()
             session.add(run)
             session.commit()
 
@@ -544,7 +698,7 @@ def _ensure_run_sandbox_worker(session: Session, run: GraphRun) -> Worker | None
             logger.info("run %s is waiting for worker capacity", run.id)
             return None
         run.sandbox_id = sandbox.id
-        run.updated_at = datetime.datetime.utcnow()
+        run.updated_at = utcnow()
         session.add(run)
         session.commit()
         return worker
@@ -552,7 +706,7 @@ def _ensure_run_sandbox_worker(session: Session, run: GraphRun) -> Worker | None
     sandbox = session.get(Sandbox, run.sandbox_id)
     if sandbox is None:
         run.state = RunState.error
-        run.updated_at = datetime.datetime.utcnow()
+        run.updated_at = utcnow()
         session.add(run)
         session.commit()
         return None
@@ -570,7 +724,7 @@ def _ensure_run_sandbox_worker(session: Session, run: GraphRun) -> Worker | None
             return None
     if worker is None or worker.worker_url is None:
         run.state = RunState.error
-        run.updated_at = datetime.datetime.utcnow()
+        run.updated_at = utcnow()
         session.add(run)
         session.commit()
         return None
@@ -585,7 +739,6 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
         if run is None or node is None or worker is None or worker.worker_url is None:
             return
 
-        sandbox = session.get(Sandbox, run.sandbox_id) if run.sandbox_id else None
         workspace_dir = f"/workspaces/{run.sandbox_id}"
 
         try:
@@ -595,6 +748,7 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
                     worker.worker_url,
                     workspace_dir,
                     output_schema=node.output_schema,
+                    db_session=session,
                 )
 
             agent = Agent(
@@ -605,6 +759,7 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
                 prompt=node.prompt,
                 name=f"run-{run.id}-{node.name or node.id}",
                 status=AgentStatus.starting,
+                sandbox_mode=node.sandbox_mode,
                 graph_run_id=run.id,
             )
             session.add(agent)
@@ -621,7 +776,9 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
                 )
                 if node.output_schema:
                     fields_desc = ", ".join(
-                        f'"{k}" ({v})' for k, v in node.output_schema.items()
+                        f'"{k}" ({v})'
+                        + (" - provide a URL or data URI" if v == "image" else "")
+                        for k, v in node.output_schema.items()
                     )
                     dispatch_prompt += (
                         f"\n\nWhen calling mark_node_complete, you MUST pass an 'output' "
@@ -631,7 +788,12 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
             if node.agent_type == "pydantic" and not node.output_schema:
                 raise ValueError("pydantic agent requires output_schema")
 
-            resolved_images = await _resolve_images(worker.worker_url, node.images)
+            resolved_images = await _resolve_images(worker.worker_url, node.image_attachments)
+
+            # Expand schema references so the worker can build models without DB
+            expanded_schema = _expand_output_schema_for_worker(
+                node.output_schema, session
+            )
 
             data = await post_session_with_retry(
                 worker.worker_url,
@@ -639,9 +801,10 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
                     "prompt": dispatch_prompt,
                     "agent_type": node.agent_type,
                     "model": node.model,
-                    "output_schema": node.output_schema,
+                    "output_schema": expanded_schema,
                     "workspace_name": str(run.sandbox_id),
                     "graph_tools": node.graph_tools,
+                    "sandbox_mode": node.sandbox_mode,
                     "workspace_id": str(run.workspace_id),
                     "sandbox_id": str(run.sandbox_id) if run.sandbox_id else None,
                     "images": resolved_images,
@@ -650,11 +813,11 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
 
             agent.session_id = data["session"]["id"]
             agent.status = AgentStatus.busy
-            agent.updated_at = datetime.datetime.utcnow()
+            agent.updated_at = utcnow()
             node.agent_id = agent.id
             node.session_id = agent.session_id
             node.state = RunNodeState.running
-            node.updated_at = datetime.datetime.utcnow()
+            node.updated_at = utcnow()
             session.add(agent)
             session.add(node)
             session.commit()
@@ -686,7 +849,7 @@ async def _dispatch_command_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_i
             return
 
         node.state = RunNodeState.running
-        node.updated_at = datetime.datetime.utcnow()
+        node.updated_at = utcnow()
         session.add(node)
         session.commit()
         _persist_run_node_event(
@@ -716,7 +879,7 @@ async def _dispatch_command_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_i
                 payload={
                     "id": str(uuid.uuid4()),
                     "type": "command.output",
-                    "timestamp": datetime.datetime.utcnow().isoformat(),
+                    "timestamp": utcnow().isoformat(),
                     "data": {
                         "stdout": resp_data["stdout"],
                         "stderr": resp_data["stderr"],
@@ -739,71 +902,6 @@ async def _dispatch_command_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_i
             fail_node_and_run(session, run_id, node_id, "command dispatch failed")
 
 
-async def _dispatch_view_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id: uuid.UUID | None) -> None:
-    with Session(engine) as session:
-        run = session.get(GraphRun, run_id)
-        node = session.get(GraphRunNode, node_id)
-        if run is None or node is None:
-            return
-
-        node.state = RunNodeState.running
-        node.updated_at = datetime.datetime.utcnow()
-        session.add(node)
-        session.commit()
-        _persist_run_node_event(
-            session,
-            run,
-            node,
-            "run.node.running",
-            worker_id=worker_id,
-        )
-
-        try:
-            resolved_images_json = _resolve_image_references(session, run, node)
-
-            worker_url = None
-            if worker_id:
-                worker = session.get(Worker, worker_id)
-                if worker:
-                    worker_url = worker.worker_url
-
-            resolved_images: list[dict] = []
-            if resolved_images_json:
-                if worker_url:
-                    resolved_images = await _resolve_images(worker_url, resolved_images_json) or []
-                else:
-                    # Without a worker, keep URL images as-is, skip sandbox_path
-                    resolved_images = [
-                        img for img in resolved_images_json if img.get("type") == "url"
-                    ]
-
-            event_svc.persist_event(
-                session,
-                workspace_id=run.workspace_id,
-                source_type="run",
-                source_id=str(node.id),
-                payload={
-                    "id": str(uuid.uuid4()),
-                    "type": "view.images",
-                    "timestamp": datetime.datetime.utcnow().isoformat(),
-                    "data": {
-                        "images": resolved_images,
-                        "node_name": node.name or "view",
-                    },
-                },
-                source_name=node.name,
-                run_id=run.id,
-                node_id=node.id,
-                sandbox_id=run.sandbox_id,
-                worker_id=worker_id,
-            )
-
-            complete_node(session, run_id, node_id, output={"images_count": len(resolved_images)})
-        except Exception:
-            logger.exception("view dispatch failed for node %s", node_id)
-            fail_node_and_run(session, run_id, node_id, "view dispatch failed")
-
-
 def complete_node(
     session: Session,
     run_id: uuid.UUID,
@@ -820,11 +918,13 @@ def complete_node(
     schema = node.output_schema
     if output is None and node.output is not None:
         output = node.output
-    validate_output_against_schema(output, schema)
+    validate_output_against_schema(
+        output, schema, schema_resolver=_make_schema_resolver(session)
+    )
     if output is not None:
         node.output = output
     node.state = RunNodeState.completed
-    node.updated_at = datetime.datetime.utcnow()
+    node.updated_at = utcnow()
     session.add(node)
     session.commit()
     run = session.get(GraphRun, run_id)
@@ -834,7 +934,11 @@ def complete_node(
             run,
             node,
             "run.node.completed",
-            data={"output": output},
+            data={
+                "output": output,
+                "output_schema": node.output_schema,
+                "node_name": node.name,
+            },
         )
     enqueue_run(session, run_id, reason="node completed")
 
@@ -858,7 +962,7 @@ def fail_node_and_run(
         and node.attempt < MAX_RUN_NODE_ATTEMPTS
     ):
         node.state = RunNodeState.error
-        node.updated_at = datetime.datetime.utcnow()
+        node.updated_at = utcnow()
         session.add(node)
         _create_retry_attempt(session, run, node)
         _resume_run_if_terminal(session, run)
@@ -882,11 +986,11 @@ def fail_node_and_run(
         return
     if node is not None and node.state != RunNodeState.error:
         node.state = RunNodeState.error
-        node.updated_at = datetime.datetime.utcnow()
+        node.updated_at = utcnow()
         session.add(node)
     if run is not None and run.state != RunState.error:
         run.state = RunState.error
-        run.updated_at = datetime.datetime.utcnow()
+        run.updated_at = utcnow()
         session.add(run)
     session.commit()
     if node is not None and run is not None:
@@ -922,7 +1026,7 @@ def _resume_run_if_terminal(session: Session, run: GraphRun) -> None:
     """Set run back to 'running' if it was in a terminal state."""
     if run.state in (RunState.error, RunState.completed):
         run.state = RunState.running
-        run.updated_at = datetime.datetime.utcnow()
+        run.updated_at = utcnow()
         session.add(run)
 
 
@@ -957,13 +1061,14 @@ def sync_run_node(session: Session, run_id: uuid.UUID, node_id: uuid.UUID) -> Gr
     node.prompt = source.prompt
     node.command = source.command
     node.graph_tools = source.graph_tools
+    node.sandbox_mode = source.sandbox_mode
     node.output_schema = source.output_schema
-    node.images = source.images
+    node.image_attachments = source.image_attachments
     node.output = None
     node.state = RunNodeState.pending
     node.agent_id = None
     node.session_id = None
-    node.updated_at = datetime.datetime.utcnow()
+    node.updated_at = utcnow()
     session.add(node)
 
     run = session.get(GraphRun, run_id)
@@ -995,7 +1100,7 @@ def patch_run_node_state(
         raise ValueError("cannot change state of subgraph nodes")
 
     node.state = new_state
-    node.updated_at = datetime.datetime.utcnow()
+    node.updated_at = utcnow()
     if new_state == RunNodeState.pending:
         node.agent_id = None
         node.session_id = None
