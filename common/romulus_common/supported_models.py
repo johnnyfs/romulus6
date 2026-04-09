@@ -24,6 +24,12 @@ SUPPORTED_MODELS_BY_AGENT_TYPE: dict[str, tuple[SupportedModel, ...]] = {
         SupportedModel.o3_mini,
     ),
     "pydantic": (
+        SupportedModel.claude_sonnet_46,
+        SupportedModel.claude_opus_46,
+        SupportedModel.claude_haiku_45,
+        SupportedModel.gpt_4o,
+        SupportedModel.gpt_4o_mini,
+        SupportedModel.o3_mini,
         SupportedModel.gemini_25_pro,
         SupportedModel.gemini_25_flash,
     ),

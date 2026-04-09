@@ -3,7 +3,6 @@ import { useSearchParams } from 'react-router-dom'
 import {
   type SchemaTemplate,
   buildTypeOptions,
-  typeDisplayLabel,
   createSchemaTemplate,
   deleteSchemaTemplate,
   listSchemaTemplates,

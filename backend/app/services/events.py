@@ -12,8 +12,7 @@ from typing import Any
 
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
-from sqlalchemy import and_, or_
-from sqlalchemy import text
+from sqlalchemy import and_, or_, text
 from sqlmodel import Session, asc, select
 
 from app.database import DATABASE_URL
@@ -72,6 +71,30 @@ def _decode_notification_payload(payload: str) -> tuple[str, str | None]:
     except json.JSONDecodeError:
         return payload, None
     return str(decoded.get("event_id", "")), decoded.get("origin")
+
+
+def _extract_mark_complete_output(payload: dict[str, Any]) -> Any:
+    data = payload.get("data", {})
+    if not isinstance(data, dict):
+        return None
+
+    for key in ("tool_input", "args", "input"):
+        candidate = data.get(key)
+        if isinstance(candidate, dict) and "output" in candidate:
+            return candidate.get("output")
+
+    state = data.get("state")
+    if isinstance(state, dict):
+        for key in ("tool_input", "args", "input"):
+            candidate = state.get(key)
+            if isinstance(candidate, dict) and "output" in candidate:
+                return candidate.get("output")
+
+    return None
+
+
+def _requires_explicit_graph_completion(node: GraphRunNode) -> bool:
+    return bool(node.graph_tools and node.agent_type == "opencode")
 
 
 class _DatabaseEventListener:
@@ -610,6 +633,7 @@ def ingest_worker_event(
     if node_id is not None and run_id is not None:
         node = session.get(GraphRunNode, node_id)
         if node is not None:
+            explicit_completion = _requires_explicit_graph_completion(node)
             # Capture structured output from pydantic agents as it arrives
             if event_type == "text.delta":
                 structured = payload.get("data", {}).get("structured_output")
@@ -619,17 +643,16 @@ def ingest_worker_event(
                     session.commit()
 
             if (
-                node.graph_tools
+                explicit_completion
                 and event_type == "tool.use"
                 and payload.get("data", {}).get("tool_name") == MARK_COMPLETE_TOOL
             ):
-                tool_input = payload.get("data", {}).get("tool_input", {})
-                output = tool_input.get("output")
+                output = _extract_mark_complete_output(payload)
                 try:
                     run_svc.complete_node(session, run_id, node_id, output=output)
                 except ValueError as exc:
                     run_svc.fail_node_and_run(session, run_id, node_id, str(exc))
-            elif not node.graph_tools and event_type == "session.idle":
+            elif not explicit_completion and event_type == "session.idle":
                 try:
                     run_svc.complete_node(session, run_id, node_id)
                 except ValueError as exc:

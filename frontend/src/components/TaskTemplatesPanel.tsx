@@ -254,10 +254,13 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
                     const nextType = e.target.value as AgentType
                     markDirty(setEditAgentType)(nextType)
                     setEditModel(DEFAULT_MODEL_BY_AGENT_TYPE[nextType])
-                    if (nextType !== 'opencode' && nextType !== 'claude_code') setEditGraphTools(false)
+                    if (nextType !== 'opencode' && nextType !== 'codex' && nextType !== 'claude_code') {
+                      setEditGraphTools(false)
+                    }
                   }}>
                   <option value="opencode">opencode</option>
                   <option value="pydantic">pydantic</option>
+                  <option value="codex">codex</option>
                   <option value="claude_code">claude_code</option>
                 </select>
               </div>
@@ -278,7 +281,7 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
                   onChange={(e) => markDirty(setEditPrompt)(e.target.value)}
                 />
               </div>
-              {(editAgentType === 'opencode' || editAgentType === 'claude_code') && (
+              {(editAgentType === 'opencode' || editAgentType === 'codex' || editAgentType === 'claude_code') && (
                 <div style={s.row}>
                   <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}>
                     <input type="checkbox" checked={editGraphTools} onChange={(e) => markDirty(setEditGraphTools)(e.target.checked)} />

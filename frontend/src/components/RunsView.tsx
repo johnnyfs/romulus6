@@ -481,7 +481,11 @@ export default function RunsView({ workspaceId, onNavigateToGraphNode, onNavigat
                   </span>
                 </div>
               )}
-              {(selectedRunNode.agent_config.agent_type === 'opencode' || selectedRunNode.agent_config.agent_type === 'claude_code') && selectedRunNode.agent_config.graph_tools && (
+              {(
+                selectedRunNode.agent_config.agent_type === 'opencode'
+                || selectedRunNode.agent_config.agent_type === 'codex'
+                || selectedRunNode.agent_config.agent_type === 'claude_code'
+              ) && selectedRunNode.agent_config.graph_tools && (
                 <div style={rs.inspectorRow}>
                   <span style={rs.inspectorLabel} />
                   <span style={{ ...rs.inspectorValue, color: 'var(--text-dim)' }}>graph tools enabled</span>

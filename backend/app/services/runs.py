@@ -738,7 +738,6 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
         if run is None or node is None or worker is None or worker.worker_url is None:
             return
 
-        sandbox = session.get(Sandbox, run.sandbox_id) if run.sandbox_id else None
         workspace_dir = f"/workspaces/{run.sandbox_id}"
 
         try:

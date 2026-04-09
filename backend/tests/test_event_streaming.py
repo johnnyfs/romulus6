@@ -9,6 +9,7 @@ from sqlmodel import select
 
 from app.models.agent import Agent, AgentStatus, AgentType
 from app.models.event import Event
+from app.models.run import GraphRun, GraphRunNode, RunNodeState, RunNodeType, RunState
 from app.models.sandbox import Sandbox
 from app.models.worker import Worker, WorkerStatus
 from app.services import agents as agent_svc
@@ -469,3 +470,169 @@ def test_register_worker_restart_invalidates_attached_agent_sessions(session):
             "sandbox when resumed"
         )
     )
+
+
+def test_ingest_worker_event_completes_opencode_graph_node_from_mark_complete_args(session):
+    workspace = workspace_svc.create_workspace(session, "graph-node-complete")
+    worker = Worker(
+        status=WorkerStatus.running,
+        worker_url="http://worker.test",
+        worker_metadata={},
+        last_heartbeat_at=datetime.datetime.utcnow(),
+    )
+    session.add(worker)
+    session.flush()
+
+    sandbox = Sandbox(
+        workspace_id=workspace.id,
+        name="graph-node-sandbox",
+        worker_id=worker.id,
+    )
+    session.add(sandbox)
+    session.flush()
+
+    run = GraphRun(
+        workspace_id=workspace.id,
+        state=RunState.running,
+        sandbox_id=sandbox.id,
+    )
+    session.add(run)
+    session.flush()
+
+    node = GraphRunNode(
+        run_id=run.id,
+        node_type=RunNodeType.agent,
+        state=RunNodeState.running,
+        agent_type="opencode",
+        graph_tools=True,
+        output_schema={"answer": "string"},
+        session_id="graph-session",
+    )
+    session.add(node)
+    session.flush()
+
+    agent = Agent(
+        workspace_id=workspace.id,
+        sandbox_id=sandbox.id,
+        agent_type=AgentType.opencode,
+        model="openai/gpt-4o",
+        status=AgentStatus.busy,
+        name="graph-agent",
+        prompt="complete the node",
+        graph_run_id=run.id,
+        session_id="graph-session",
+    )
+    session.add(agent)
+    session.commit()
+    session.refresh(node)
+    session.refresh(agent)
+
+    event_svc.ingest_worker_event(
+        session,
+        worker_id=worker.id,
+        payload={
+            "id": "mark-complete-event",
+            "session_id": "graph-session",
+            "type": "tool.use",
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "data": {
+                "tool_name": "mark_node_complete",
+                "args": {"output": {"answer": "done"}},
+            },
+        },
+    )
+
+    session.refresh(node)
+    session.refresh(agent)
+    events = session.exec(
+        select(Event)
+        .where(Event.run_id == run.id)
+        .order_by(Event.received_at.asc(), Event.id.asc())
+    ).all()
+
+    assert agent.status == AgentStatus.busy
+    assert node.state == RunNodeState.completed
+    assert node.output == {"answer": "done"}
+    assert [event.event_type for event in events][-2:] == [
+        "tool.use",
+        "run.node.completed",
+    ]
+
+
+@pytest.mark.parametrize("agent_type", ["codex", "claude_code"])
+def test_ingest_worker_event_completes_non_opencode_graph_tools_node_on_idle(
+    session,
+    agent_type,
+):
+    workspace = workspace_svc.create_workspace(session, f"idle-complete-{agent_type}")
+    worker = Worker(
+        status=WorkerStatus.running,
+        worker_url="http://worker.test",
+        worker_metadata={},
+        last_heartbeat_at=datetime.datetime.utcnow(),
+    )
+    session.add(worker)
+    session.flush()
+
+    sandbox = Sandbox(
+        workspace_id=workspace.id,
+        name=f"{agent_type}-sandbox",
+        worker_id=worker.id,
+    )
+    session.add(sandbox)
+    session.flush()
+
+    run = GraphRun(
+        workspace_id=workspace.id,
+        state=RunState.running,
+        sandbox_id=sandbox.id,
+    )
+    session.add(run)
+    session.flush()
+
+    node = GraphRunNode(
+        run_id=run.id,
+        node_type=RunNodeType.agent,
+        state=RunNodeState.running,
+        agent_type=agent_type,
+        graph_tools=True,
+        session_id=f"{agent_type}-session",
+    )
+    session.add(node)
+    session.flush()
+
+    agent = Agent(
+        workspace_id=workspace.id,
+        sandbox_id=sandbox.id,
+        agent_type=AgentType(agent_type),
+        model="anthropic/claude-sonnet-4-6"
+        if agent_type == "claude_code"
+        else "openai/gpt-5.3-codex",
+        status=AgentStatus.busy,
+        name=f"{agent_type}-agent",
+        prompt="finish when idle",
+        graph_run_id=run.id,
+        session_id=f"{agent_type}-session",
+    )
+    session.add(agent)
+    session.commit()
+    session.refresh(node)
+    session.refresh(agent)
+
+    event_svc.ingest_worker_event(
+        session,
+        worker_id=worker.id,
+        payload={
+            "id": f"{agent_type}-idle-event",
+            "session_id": f"{agent_type}-session",
+            "type": "session.idle",
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "data": {},
+        },
+    )
+
+    session.refresh(node)
+    session.refresh(agent)
+
+    assert agent.status == AgentStatus.idle
+    assert node.state == RunNodeState.completed

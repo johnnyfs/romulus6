@@ -42,6 +42,12 @@ export const SUPPORTED_MODELS_BY_AGENT_TYPE: Record<AgentType, SupportedModelOpt
     MODEL_OPTIONS.o3Mini,
   ],
   pydantic: [
+    MODEL_OPTIONS.claudeSonnet46,
+    MODEL_OPTIONS.claudeOpus46,
+    MODEL_OPTIONS.claudeHaiku45,
+    MODEL_OPTIONS.gpt4o,
+    MODEL_OPTIONS.gpt4oMini,
+    MODEL_OPTIONS.o3Mini,
     MODEL_OPTIONS.gemini25Pro,
     MODEL_OPTIONS.gemini25Flash,
   ],

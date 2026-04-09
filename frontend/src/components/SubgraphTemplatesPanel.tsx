@@ -211,7 +211,13 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
       setEditAgentType(agType)
       setEditModel(node.agent_config?.model ?? DEFAULT_MODEL_BY_AGENT_TYPE[agType])
       setEditPrompt(node.agent_config?.prompt ?? '')
-      setEditGraphTools((node.agent_config?.agent_type === 'opencode' || node.agent_config?.agent_type === 'claude_code') ? (node.agent_config.graph_tools ?? false) : false)
+      setEditGraphTools(
+        (
+          node.agent_config?.agent_type === 'opencode'
+          || node.agent_config?.agent_type === 'codex'
+          || node.agent_config?.agent_type === 'claude_code'
+        ) ? (node.agent_config.graph_tools ?? false) : false,
+      )
       setEditCommand(node.command_config?.command ?? '')
       setEditTaskTemplateId(node.task_template_id ?? '')
       setEditRefSubgraphId(node.ref_subgraph_template_id ?? '')

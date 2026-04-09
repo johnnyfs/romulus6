@@ -22,7 +22,18 @@ export interface CodexAgentConfig {
   graph_tools?: boolean
 }
 
-export type AgentConfig = OpenCodeAgentConfig | PydanticAgentConfig | CodexAgentConfig
+export interface ClaudeCodeAgentConfig {
+  agent_type: 'claude_code'
+  model: string
+  prompt: string
+  graph_tools?: boolean
+}
+
+export type AgentConfig =
+  | OpenCodeAgentConfig
+  | PydanticAgentConfig
+  | CodexAgentConfig
+  | ClaudeCodeAgentConfig
 
 export interface CommandConfig {
   command: string
