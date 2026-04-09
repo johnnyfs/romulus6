@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from app.agents.base import AgentRunner
 from app.config import settings
 from app.models import Event, EventType, Session
+from app.recovery import build_recovery_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +132,7 @@ class OpenCodeRunner(AgentRunner):
         client = self._server.client
         model = session.model
         opencode_session_id = session.runner_state.get("opencode_session_id")
+        effective_prompt = build_recovery_prompt(prompt=prompt, recovery=session.recovery)
 
         if opencode_session_id:
             self.opencode_session_id = opencode_session_id
@@ -144,10 +146,10 @@ class OpenCodeRunner(AgentRunner):
         # Subscribe before sending so we don't miss early events
         self._queue = self._server.subscribe(self.opencode_session_id)
 
-        self._pending_prompt = prompt
+        self._pending_prompt = effective_prompt
         provider_id, model_id = model.split("/", 1) if "/" in model else ("anthropic", model)
         r = await client.post(f"/session/{self.opencode_session_id}/message", json={
-            "parts": [{"type": "text", "text": prompt}],
+            "parts": [{"type": "text", "text": effective_prompt}],
             "model": {"providerID": provider_id, "modelID": model_id},
         })
         r.raise_for_status()

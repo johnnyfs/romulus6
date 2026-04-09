@@ -11,7 +11,9 @@ from app.models.sandbox import Sandbox
 from app.models.worker import Worker, WorkerStatus
 from app.services import events as event_svc
 
-HEARTBEAT_TIMEOUT_SECONDS = int(os.environ.get("WORKER_HEARTBEAT_TIMEOUT_SECONDS", "30"))
+HEARTBEAT_TIMEOUT_SECONDS = int(
+    os.environ.get("WORKER_HEARTBEAT_TIMEOUT_SECONDS", "30")
+)
 DEPLOY_MODE = os.environ.get("DEPLOY_MODE", "local")
 
 
@@ -98,11 +100,15 @@ def register_worker(
     previous_metadata: dict[str, Any] | None = None
     if registration_key:
         worker = session.exec(
-            select(Worker).where(Worker.registration_key == registration_key).where(Worker.deleted == False)  # noqa: E712
+            select(Worker)
+            .where(Worker.registration_key == registration_key)
+            .where(Worker.deleted == False)  # noqa: E712
         ).first()
     if worker is None and pod_name:
         worker = session.exec(
-            select(Worker).where(Worker.pod_name == pod_name).where(Worker.deleted == False)  # noqa: E712
+            select(Worker)
+            .where(Worker.pod_name == pod_name)
+            .where(Worker.deleted == False)  # noqa: E712
         ).first()
 
     if worker is None:
@@ -127,7 +133,10 @@ def register_worker(
         _invalidate_agent_sessions_for_worker(
             session,
             worker,
-            reason="worker restarted; recreate the agent",
+            reason=(
+                "worker restarted; session lost and will recover on a fresh "
+                "sandbox when resumed"
+            ),
         )
         session.refresh(worker)
     return worker
@@ -180,10 +189,17 @@ def list_workers(session: Session) -> list[Worker]:
     return list(session.exec(Worker.active().order_by(Worker.created_at.asc())).all())
 
 
-def get_active_lease_for_sandbox(session: Session, sandbox: Sandbox) -> WorkerLease | None:
+def get_active_lease_for_sandbox(
+    session: Session,
+    sandbox: Sandbox,
+) -> WorkerLease | None:
     if sandbox.current_lease_id is not None:
         lease = session.get(WorkerLease, sandbox.current_lease_id)
-        if lease is not None and lease.status == WorkerLeaseStatus.active and not lease.deleted:
+        if (
+            lease is not None
+            and lease.status == WorkerLeaseStatus.active
+            and not lease.deleted
+        ):
             return lease
     return session.exec(
         select(WorkerLease)
@@ -214,7 +230,9 @@ def _active_worker_ids(session: Session) -> set[uuid.UUID]:
     return {
         lease.worker_id
         for lease in session.exec(
-            select(WorkerLease).where(WorkerLease.status == WorkerLeaseStatus.active).where(WorkerLease.deleted == False)  # noqa: E712
+            select(WorkerLease)
+            .where(WorkerLease.status == WorkerLeaseStatus.active)
+            .where(WorkerLease.deleted == False)  # noqa: E712
         ).all()
     }
 
@@ -240,7 +258,14 @@ def lease_worker_for_sandbox(
         worker = next((w for w in candidates if w.worker_url), None)
     else:
         active_worker_ids = _active_worker_ids(session)
-        worker = next((w for w in candidates if w.id not in active_worker_ids and w.worker_url), None)
+        worker = next(
+            (
+                w
+                for w in candidates
+                if w.id not in active_worker_ids and w.worker_url
+            ),
+            None,
+        )
     if worker is None:
         raise RuntimeError("No healthy idle workers available")
 

@@ -15,6 +15,8 @@ from .worker_api import (
     CommandResponse,
     CreateSessionRequest,
     InterruptRequest,
+    RecoveryContext,
+    RecoveryHistoryEvent,
     SendMessageRequest,
 )
 
@@ -24,6 +26,8 @@ __all__ = [
     "CreateSessionRequest",
     "InterruptRequest",
     "PydanticSchemaId",
+    "RecoveryContext",
+    "RecoveryHistoryEvent",
     "SUPPORTED_MODELS_BY_AGENT_TYPE",
     "SUPPORTED_OUTPUT_TYPES",
     "SendMessageRequest",

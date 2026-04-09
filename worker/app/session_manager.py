@@ -6,6 +6,8 @@ from collections import defaultdict
 from datetime import datetime, UTC
 from typing import Any
 
+from romulus_common.worker_api import RecoveryContext
+
 from app.agents.base import AgentRunner
 from app.agents.pydantic_runner import PydanticRunner
 from app.agents.opencode import OpenCodeRunner, OpenCodeServer
@@ -48,6 +50,7 @@ class SessionManager:
         schema_id: str | None = None,
         output_schema: dict[str, str] | None = None,
         images: list[dict[str, str]] | None = None,
+        recovery: RecoveryContext | None = None,
     ) -> Session:
         session_id = str(uuid.uuid4())
         workspace_name = workspace_name or session_id
@@ -67,6 +70,7 @@ class SessionManager:
             schema_id=schema_id,
             output_schema=output_schema,
             images=images,
+            recovery=recovery,
             workspace_dir=workspace_dir,
         )
         self._sessions[session_id] = session

@@ -1,10 +1,32 @@
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from .output_schema import validate_output_schema_definition
 from .pydantic_schemas import PydanticSchemaId
 from .supported_models import validate_supported_model_for_agent_type
+
+
+class RecoveryHistoryEvent(BaseModel):
+    type: Literal[
+        "user_message",
+        "assistant_message",
+        "tool_call",
+        "tool_result",
+        "structured_output",
+        "system_note",
+    ]
+    content: str | None = None
+    name: str | None = None
+    timestamp: str | None = None
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class RecoveryContext(BaseModel):
+    previous_session_id: str | None = None
+    previous_sandbox_id: str | None = None
+    reason: str | None = None
+    history: list[RecoveryHistoryEvent] = Field(default_factory=list)
 
 
 class CreateSessionRequest(BaseModel):
@@ -18,6 +40,7 @@ class CreateSessionRequest(BaseModel):
     graph_tools: bool = False
     workspace_id: str | None = None
     sandbox_id: str | None = None
+    recovery: RecoveryContext | None = None
 
     @model_validator(mode="after")
     def validate_request(self) -> "CreateSessionRequest":

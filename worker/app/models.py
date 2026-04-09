@@ -8,6 +8,7 @@ from romulus_common.worker_api import (
     CommandResponse,
     CreateSessionRequest,
     InterruptRequest,
+    RecoveryContext,
     SendMessageRequest,
 )
 
@@ -49,6 +50,7 @@ class Session(BaseModel):
     schema_id: str | None = None
     output_schema: dict[str, str] | None = None
     images: list[dict[str, str]] | None = None
+    recovery: RecoveryContext | None = None
     runner_state: dict[str, Any] = Field(default_factory=dict)
     status: SessionStatus = SessionStatus.STARTING
     workspace_dir: str

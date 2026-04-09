@@ -494,6 +494,15 @@ export default function WorkspaceDetailPage() {
     return new Set(agents.filter((a) => a.dismissed).map((a) => a.id))
   }, [agents])
 
+  const knownAgentIds = useMemo(() => {
+    return new Set(agents.map((a) => a.id))
+  }, [agents])
+
+  useEffect(() => {
+    if (!workspace) return
+    setUserMessages((prev) => prev.filter((message) => knownAgentIds.has(message.agentId)))
+  }, [knownAgentIds, workspace])
+
   const agentColorMap = useMemo(() => {
     const map: Record<string, string> = {}
     const sorted = [...agents].sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''))
@@ -513,6 +522,7 @@ export default function WorkspaceDetailPage() {
       for (const ev of evts) allRaw.push({ event: ev, streamKey })
     }
     for (const msg of userMessages) {
+      if (!knownAgentIds.has(msg.agentId)) continue
       allRaw.push({
         streamKey: `agent:${msg.agentId}`,
         event: {
@@ -625,7 +635,7 @@ export default function WorkspaceDetailPage() {
     }
 
     return items
-  }, [eventMap, userMessages, showDeadMessages, dismissedAgentIds, resolvedFeedback])
+  }, [eventMap, userMessages, showDeadMessages, dismissedAgentIds, resolvedFeedback, knownAgentIds])
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 

@@ -181,7 +181,7 @@ def test_create_agent_failure_persists_lifecycle_events(session, monkeypatch):
     assert events[-1].data["data"]["error"] == "session boot failed"
 
 
-def test_send_message_marks_agent_error_on_missing_worker_session(session, monkeypatch):
+def test_send_message_recovers_on_missing_worker_session(session, monkeypatch):
     workspace = workspace_svc.create_workspace(session, "stale-session")
     worker = Worker(
         status=WorkerStatus.running,
@@ -216,6 +216,31 @@ def test_send_message_marks_agent_error_on_missing_worker_session(session, monke
     session.commit()
     session.refresh(agent)
 
+    event_svc.persist_event(
+        session,
+        workspace_id=workspace.id,
+        source_type="agent",
+        source_id=str(agent.id),
+        payload={
+            "id": "agent-bootstrap",
+            "type": "session.create.requested",
+            "session_id": "missing-session",
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "data": {
+                "prompt": "recover me",
+                "agent_type": "opencode",
+                "model": "openai/gpt-4o",
+                "graph_tools": False,
+                "schema_id": None,
+            },
+        },
+        source_name=agent.name,
+        session_id="missing-session",
+        agent_id=agent.id,
+        sandbox_id=sandbox.id,
+        worker_id=worker.id,
+    )
+
     async def raise_missing_session(*args, **kwargs):
         request = httpx.Request(
             "POST",
@@ -228,12 +253,138 @@ def test_send_message_marks_agent_error_on_missing_worker_session(session, monke
             response=response,
         )
 
-    monkeypatch.setattr(agent_svc, "post_session_message", raise_missing_session)
+    recovered_payload: dict[str, object] = {}
 
-    with pytest.raises(
-        RuntimeError,
-        match="Agent session was lost after worker restart; recreate the agent",
-    ):
+    async def boot_recovered_session(*args, **kwargs):
+        payload = kwargs["payload"]
+        recovered_payload["prompt"] = payload.prompt
+        recovered_payload["sandbox_id"] = payload.sandbox_id
+        recovered_payload["recovery"] = payload.recovery
+        return {"session": {"id": "replacement-session"}}
+
+    monkeypatch.setattr(agent_svc, "post_session_message", raise_missing_session)
+    monkeypatch.setattr(agent_svc, "_post_session_with_retry", boot_recovered_session)
+
+    asyncio.run(agent_svc.send_message(session, agent, "hello again"))
+
+    session.refresh(agent)
+    replacement_sandbox = session.get(Sandbox, agent.sandbox_id)
+    session.refresh(sandbox)
+    events = session.exec(
+        select(Event)
+        .where(Event.agent_id == agent.id)
+        .order_by(Event.received_at.asc(), Event.id.asc())
+    ).all()
+
+    recovery = recovered_payload["recovery"]
+
+    assert agent.status == AgentStatus.busy
+    assert agent.session_id == "replacement-session"
+    assert sandbox.deleted is True
+    assert replacement_sandbox is not None
+    assert replacement_sandbox.deleted is False
+    assert replacement_sandbox.id != sandbox.id
+    assert recovered_payload["prompt"] == "hello again"
+    assert recovered_payload["sandbox_id"] == str(replacement_sandbox.id)
+    assert recovery is not None
+    assert recovery.previous_session_id == "missing-session"
+    assert recovery.previous_sandbox_id == str(sandbox.id)
+    assert [item.type for item in recovery.history] == ["user_message"]
+    assert recovery.history[0].content == "recover me"
+    assert [event.event_type for event in events] == [
+        "session.create.requested",
+        "message.dispatch.requested",
+        "session.recovery.requested",
+        "sandbox.lost",
+        "session.create.requested",
+        "session.create.acknowledged",
+        "session.recovered",
+        "message.dispatched",
+    ]
+
+
+def test_send_message_marks_agent_error_when_recovery_launch_fails(
+    session,
+    monkeypatch,
+):
+    workspace = workspace_svc.create_workspace(session, "recovery-fails")
+    worker = Worker(
+        status=WorkerStatus.running,
+        worker_url="http://worker.test",
+        worker_metadata={},
+        last_heartbeat_at=datetime.datetime.utcnow(),
+    )
+    session.add(worker)
+    session.commit()
+    session.refresh(worker)
+
+    sandbox = Sandbox(
+        workspace_id=workspace.id,
+        name="stale-sandbox",
+        worker_id=worker.id,
+    )
+    session.add(sandbox)
+    session.commit()
+    session.refresh(sandbox)
+
+    agent = Agent(
+        workspace_id=workspace.id,
+        sandbox_id=sandbox.id,
+        agent_type=AgentType.opencode,
+        model="openai/gpt-4o",
+        status=AgentStatus.idle,
+        name="stale-agent",
+        prompt="recover me",
+        session_id="missing-session",
+    )
+    session.add(agent)
+    session.commit()
+    session.refresh(agent)
+
+    event_svc.persist_event(
+        session,
+        workspace_id=workspace.id,
+        source_type="agent",
+        source_id=str(agent.id),
+        payload={
+            "id": "agent-bootstrap-fail",
+            "type": "session.create.requested",
+            "session_id": "missing-session",
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "data": {
+                "prompt": "recover me",
+                "agent_type": "opencode",
+                "model": "openai/gpt-4o",
+                "graph_tools": False,
+                "schema_id": None,
+            },
+        },
+        source_name=agent.name,
+        session_id="missing-session",
+        agent_id=agent.id,
+        sandbox_id=sandbox.id,
+        worker_id=worker.id,
+    )
+
+    async def raise_missing_session(*args, **kwargs):
+        request = httpx.Request(
+            "POST",
+            "http://worker.test/sessions/missing-session/messages",
+        )
+        response = httpx.Response(404, request=request, text="Session not found")
+        raise httpx.HTTPStatusError(
+            "404 Session not found",
+            request=request,
+            response=response,
+        )
+
+    async def fail_recovery(*args, **kwargs):
+        raise RuntimeError("recovery session boot failed")
+
+    monkeypatch.setattr(agent_svc, "post_session_message", raise_missing_session)
+    monkeypatch.setattr(agent_svc, "_post_session_with_retry", fail_recovery)
+
+    with pytest.raises(RuntimeError, match="recovery session boot failed"):
         asyncio.run(agent_svc.send_message(session, agent, "hello again"))
 
     session.refresh(agent)
@@ -245,14 +396,16 @@ def test_send_message_marks_agent_error_on_missing_worker_session(session, monke
 
     assert agent.status == AgentStatus.error
     assert agent.session_id is None
-    assert [event.event_type for event in events] == [
-        "message.dispatch.requested",
+    assert agent.sandbox_id is None
+    assert sandbox.deleted is True
+    assert [event.event_type for event in events][-5:] == [
+        "session.recovery.requested",
+        "sandbox.lost",
+        "session.create.requested",
+        "session.recovery.failed",
         "message.dispatch.failed",
     ]
-    assert (
-        events[-1].data["data"]["error"]
-        == "Agent session was lost after worker restart; recreate the agent"
-    )
+    assert events[-1].data["data"]["error"] == "recovery session boot failed"
 
 
 def test_register_worker_restart_invalidates_attached_agent_sessions(session):
@@ -309,4 +462,10 @@ def test_register_worker_restart_invalidates_attached_agent_sessions(session):
     assert agent.status == AgentStatus.error
     assert agent.session_id is None
     assert [event.event_type for event in events] == ["session.error"]
-    assert events[0].data["data"]["error"] == "worker restarted; recreate the agent"
+    assert (
+        events[0].data["data"]["error"]
+        == (
+            "worker restarted; session lost and will recover on a fresh "
+            "sandbox when resumed"
+        )
+    )

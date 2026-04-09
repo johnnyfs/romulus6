@@ -25,6 +25,7 @@ async def create_session(body: CreateSessionRequest, mgr: SessionManager = Depen
         graph_tools=body.graph_tools,
         workspace_id=body.workspace_id,
         sandbox_id=body.sandbox_id,
+        recovery=body.recovery,
     )
     return CreateSessionResponse(session=session)
 

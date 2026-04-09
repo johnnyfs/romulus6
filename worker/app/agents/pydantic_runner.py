@@ -3,6 +3,7 @@ from collections.abc import AsyncIterator
 
 from app.agents.base import AgentRunner
 from app.models import Event, EventType, Session
+from app.recovery import build_recovery_prompt
 from app.services.pydantic_agent_service import PydanticAgentService
 
 
@@ -16,15 +17,14 @@ class PydanticRunner(AgentRunner):
     async def start(self, *, prompt: str, session: Session) -> None:
         if session.schema_id is None and session.output_schema is None:
             raise ValueError("schema_id or output_schema is required for pydantic runner")
+        effective_prompt = build_recovery_prompt(prompt=prompt, recovery=session.recovery)
 
         async def _run() -> None:
             try:
-                # Follow-up pydantic dispatches are intentionally stateless in v1.
-                # We will eventually need to replay prior event history as model input.
                 await self._queue.put(Event(session_id=self._session_id, type=EventType.SESSION_BUSY, data={}))
                 output = await self._service.run(
                     model=session.model,
-                    prompt=prompt,
+                    prompt=effective_prompt,
                     schema_id=session.schema_id,
                     output_schema=session.output_schema,
                     images=session.images,
