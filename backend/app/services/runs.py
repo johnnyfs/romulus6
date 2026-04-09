@@ -1,5 +1,4 @@
 import asyncio
-import datetime
 import json
 import logging
 import uuid
@@ -28,6 +27,7 @@ from app.services import workers as worker_svc
 from app.services.worker_client import execute_command, post_session_with_retry
 from app.utils.output_schema import validate_output_against_schema
 from app.utils.slugify import slugify
+from app.utils.time import utcnow
 
 logger = logging.getLogger(__name__)
 MAX_RUN_NODE_ATTEMPTS = 3
@@ -72,7 +72,7 @@ def _persist_run_node_event(
         payload={
             "id": str(uuid.uuid4()),
             "type": event_type,
-            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "timestamp": utcnow().isoformat(),
             "data": {
                 "node_type": node.node_type,
                 "node_state": node.state,
@@ -246,6 +246,7 @@ def _create_retry_attempt(
         prompt=node.prompt,
         command=node.command,
         graph_tools=node.graph_tools,
+        sandbox_mode=node.sandbox_mode,
         output_schema=node.output_schema,
         image_attachments=node.image_attachments,
     )
@@ -276,7 +277,7 @@ def _create_retry_attempt(
             )
 
     node.next_attempt_run_node_id = retry.id
-    node.updated_at = datetime.datetime.utcnow()
+    node.updated_at = utcnow()
     session.add(node)
     session.flush()
     return retry
@@ -602,7 +603,7 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
 
         if active_nodes and all(node.state == RunNodeState.completed for node in active_nodes):
             run.state = RunState.completed
-            run.updated_at = datetime.datetime.utcnow()
+            run.updated_at = utcnow()
             session.add(run)
             session.commit()
             if run.parent_run_node_id is not None:
@@ -615,7 +616,7 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
 
         if any(node.state == RunNodeState.error for node in active_nodes):
             run.state = RunState.error
-            run.updated_at = datetime.datetime.utcnow()
+            run.updated_at = utcnow()
             session.add(run)
             session.commit()
             if run.parent_run_node_id is not None:
@@ -645,7 +646,7 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
 
         if run.state == RunState.pending:
             run.state = RunState.running
-            run.updated_at = datetime.datetime.utcnow()
+            run.updated_at = utcnow()
             session.add(run)
             session.commit()
 
@@ -657,7 +658,7 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
             if node.node_type == RunNodeType.subgraph:
                 # Start the child run by enqueueing it
                 node.state = RunNodeState.running
-                node.updated_at = datetime.datetime.utcnow()
+                node.updated_at = utcnow()
                 session.add(node)
                 session.commit()
                 _persist_run_node_event(session, run, node, "run.node.running")
@@ -666,7 +667,7 @@ async def reconcile_run(run_id: uuid.UUID) -> None:
                 continue
 
             node.state = RunNodeState.dispatching
-            node.updated_at = datetime.datetime.utcnow()
+            node.updated_at = utcnow()
             session.add(node)
             session.commit()
             _persist_run_node_event(session, run, node, "run.node.dispatching")
@@ -686,7 +687,7 @@ def _ensure_run_sandbox_worker(session: Session, run: GraphRun) -> Worker | None
         parent_run = _parent_run(session, run)
         if parent_run is not None and parent_run.sandbox_id is not None:
             run.sandbox_id = parent_run.sandbox_id
-            run.updated_at = datetime.datetime.utcnow()
+            run.updated_at = utcnow()
             session.add(run)
             session.commit()
 
@@ -697,7 +698,7 @@ def _ensure_run_sandbox_worker(session: Session, run: GraphRun) -> Worker | None
             logger.info("run %s is waiting for worker capacity", run.id)
             return None
         run.sandbox_id = sandbox.id
-        run.updated_at = datetime.datetime.utcnow()
+        run.updated_at = utcnow()
         session.add(run)
         session.commit()
         return worker
@@ -705,7 +706,7 @@ def _ensure_run_sandbox_worker(session: Session, run: GraphRun) -> Worker | None
     sandbox = session.get(Sandbox, run.sandbox_id)
     if sandbox is None:
         run.state = RunState.error
-        run.updated_at = datetime.datetime.utcnow()
+        run.updated_at = utcnow()
         session.add(run)
         session.commit()
         return None
@@ -723,7 +724,7 @@ def _ensure_run_sandbox_worker(session: Session, run: GraphRun) -> Worker | None
             return None
     if worker is None or worker.worker_url is None:
         run.state = RunState.error
-        run.updated_at = datetime.datetime.utcnow()
+        run.updated_at = utcnow()
         session.add(run)
         session.commit()
         return None
@@ -758,6 +759,7 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
                 prompt=node.prompt,
                 name=f"run-{run.id}-{node.name or node.id}",
                 status=AgentStatus.starting,
+                sandbox_mode=node.sandbox_mode,
                 graph_run_id=run.id,
             )
             session.add(agent)
@@ -802,6 +804,7 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
                     "output_schema": expanded_schema,
                     "workspace_name": str(run.sandbox_id),
                     "graph_tools": node.graph_tools,
+                    "sandbox_mode": node.sandbox_mode,
                     "workspace_id": str(run.workspace_id),
                     "sandbox_id": str(run.sandbox_id) if run.sandbox_id else None,
                     "images": resolved_images,
@@ -810,11 +813,11 @@ async def _dispatch_agent_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_id:
 
             agent.session_id = data["session"]["id"]
             agent.status = AgentStatus.busy
-            agent.updated_at = datetime.datetime.utcnow()
+            agent.updated_at = utcnow()
             node.agent_id = agent.id
             node.session_id = agent.session_id
             node.state = RunNodeState.running
-            node.updated_at = datetime.datetime.utcnow()
+            node.updated_at = utcnow()
             session.add(agent)
             session.add(node)
             session.commit()
@@ -846,7 +849,7 @@ async def _dispatch_command_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_i
             return
 
         node.state = RunNodeState.running
-        node.updated_at = datetime.datetime.utcnow()
+        node.updated_at = utcnow()
         session.add(node)
         session.commit()
         _persist_run_node_event(
@@ -876,7 +879,7 @@ async def _dispatch_command_node(run_id: uuid.UUID, node_id: uuid.UUID, worker_i
                 payload={
                     "id": str(uuid.uuid4()),
                     "type": "command.output",
-                    "timestamp": datetime.datetime.utcnow().isoformat(),
+                    "timestamp": utcnow().isoformat(),
                     "data": {
                         "stdout": resp_data["stdout"],
                         "stderr": resp_data["stderr"],
@@ -921,7 +924,7 @@ def complete_node(
     if output is not None:
         node.output = output
     node.state = RunNodeState.completed
-    node.updated_at = datetime.datetime.utcnow()
+    node.updated_at = utcnow()
     session.add(node)
     session.commit()
     run = session.get(GraphRun, run_id)
@@ -959,7 +962,7 @@ def fail_node_and_run(
         and node.attempt < MAX_RUN_NODE_ATTEMPTS
     ):
         node.state = RunNodeState.error
-        node.updated_at = datetime.datetime.utcnow()
+        node.updated_at = utcnow()
         session.add(node)
         _create_retry_attempt(session, run, node)
         _resume_run_if_terminal(session, run)
@@ -983,11 +986,11 @@ def fail_node_and_run(
         return
     if node is not None and node.state != RunNodeState.error:
         node.state = RunNodeState.error
-        node.updated_at = datetime.datetime.utcnow()
+        node.updated_at = utcnow()
         session.add(node)
     if run is not None and run.state != RunState.error:
         run.state = RunState.error
-        run.updated_at = datetime.datetime.utcnow()
+        run.updated_at = utcnow()
         session.add(run)
     session.commit()
     if node is not None and run is not None:
@@ -1023,7 +1026,7 @@ def _resume_run_if_terminal(session: Session, run: GraphRun) -> None:
     """Set run back to 'running' if it was in a terminal state."""
     if run.state in (RunState.error, RunState.completed):
         run.state = RunState.running
-        run.updated_at = datetime.datetime.utcnow()
+        run.updated_at = utcnow()
         session.add(run)
 
 
@@ -1058,13 +1061,14 @@ def sync_run_node(session: Session, run_id: uuid.UUID, node_id: uuid.UUID) -> Gr
     node.prompt = source.prompt
     node.command = source.command
     node.graph_tools = source.graph_tools
+    node.sandbox_mode = source.sandbox_mode
     node.output_schema = source.output_schema
     node.image_attachments = source.image_attachments
     node.output = None
     node.state = RunNodeState.pending
     node.agent_id = None
     node.session_id = None
-    node.updated_at = datetime.datetime.utcnow()
+    node.updated_at = utcnow()
     session.add(node)
 
     run = session.get(GraphRun, run_id)
@@ -1096,7 +1100,7 @@ def patch_run_node_state(
         raise ValueError("cannot change state of subgraph nodes")
 
     node.state = new_state
-    node.updated_at = datetime.datetime.utcnow()
+    node.updated_at = utcnow()
     if new_state == RunNodeState.pending:
         node.agent_id = None
         node.session_id = None

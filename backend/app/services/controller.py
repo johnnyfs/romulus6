@@ -8,12 +8,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.database import engine
-from app.models.lease import WorkerLeaseStatus
 from app.models.reconcile import RunReconcile
 from app.models.run import GraphRun, GraphRunNode, RunNodeState, RunState
 from app.models.sandbox import Sandbox
 from app.models.worker import Worker, WorkerStatus
 from app.services import workers as worker_svc
+from app.utils.time import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ def enqueue_run_reconcile(session: Session, run_id: uuid.UUID, reason: str | Non
         select(RunReconcile)
         .where(RunReconcile.run_id == run_id)
     ).first()
-    now = datetime.datetime.utcnow()
+    now = utcnow()
     if existing is None:
         existing = RunReconcile(run_id=run_id, reason=reason, next_attempt_at=now)
         session.add(existing)
@@ -65,14 +65,14 @@ async def run_controller_loop(stop_event: asyncio.Event) -> None:
                     session.exec(
                         select(RunReconcile)
                         .where(RunReconcile.deleted == False)  # noqa: E712
-                        .where(RunReconcile.next_attempt_at <= datetime.datetime.utcnow())
+                        .where(RunReconcile.next_attempt_at <= utcnow())
                         .order_by(RunReconcile.next_attempt_at.asc(), RunReconcile.created_at.asc())
                     ).all()
                 )
                 for item in due:
                     run_id = item.run_id
                     item.deleted = True
-                    item.updated_at = datetime.datetime.utcnow()
+                    item.updated_at = utcnow()
                     session.add(item)
                     session.commit()
                     await run_svc.reconcile_run(run_id)
@@ -86,7 +86,7 @@ async def run_controller_loop(stop_event: asyncio.Event) -> None:
 
 
 def _scan_stale_workers(session: Session) -> None:
-    cutoff = datetime.datetime.utcnow() - datetime.timedelta(seconds=worker_svc.HEARTBEAT_TIMEOUT_SECONDS)
+    cutoff = utcnow() - datetime.timedelta(seconds=worker_svc.HEARTBEAT_TIMEOUT_SECONDS)
     stale_workers = list(
         session.exec(
             select(Worker)
@@ -141,6 +141,6 @@ def _fail_active_run_for_sandbox(session: Session, sandbox_id: uuid.UUID) -> Non
             )
         if not active_nodes and run.state != RunState.error:
             run.state = RunState.error
-            run.updated_at = datetime.datetime.utcnow()
+            run.updated_at = utcnow()
             session.add(run)
             session.commit()

@@ -6,6 +6,8 @@ from sqlalchemy import Column, DateTime, Index
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
+from app.utils.time import utcnow
+
 
 class Event(SQLModel, table=True):
     __tablename__ = "event"
@@ -29,7 +31,7 @@ class Event(SQLModel, table=True):
     source_name: str | None = Field(default=None)  # denormalized human-readable name
     data: dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
     received_at: datetime.datetime = Field(
-        default_factory=datetime.datetime.utcnow,
+        default_factory=utcnow,
         sa_column=Column(DateTime(), nullable=False),
     )
-    persisted_at: datetime.datetime = Field(default_factory=datetime.datetime.utcnow)
+    persisted_at: datetime.datetime = Field(default_factory=utcnow)

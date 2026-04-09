@@ -1,3 +1,5 @@
+import type { SandboxMode } from './models'
+
 const BASE = '/api'
 
 export type NodeType = 'agent' | 'command' | 'task_template' | 'subgraph_template'
@@ -20,6 +22,7 @@ export interface CodexAgentConfig {
   model: string
   prompt: string
   graph_tools?: boolean
+  sandbox_mode?: SandboxMode
 }
 
 export interface ClaudeCodeAgentConfig {

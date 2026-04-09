@@ -4,22 +4,28 @@ from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from romulus_common.sandbox_modes import SandboxMode
 from sqlmodel import Session
 
 from app.database import get_session
-from app.models.agent import AgentConfig, CommandConfig, ImageAttachment, PydanticAgentConfig
+from app.models.agent import (
+    AgentConfig,
+    CommandConfig,
+    ImageAttachment,
+    PydanticAgentConfig,
+)
 from app.models.graph import NodeType
 from app.models.template import (
     SubgraphTemplateNodeType,
     TemplateArgType,
 )
 from app.models.workspace import Workspace
+from app.services import templates as svc
 from app.services.node_configs import (
     agent_config_from_node,
     command_config_from_node,
     image_payloads_from_configs,
 )
-from app.services import templates as svc
 from app.services.node_shapes import UNSET
 from app.services.structured_serialization import (
     decoded_json_string,
@@ -126,6 +132,7 @@ class CreateTaskTemplateRequest(BaseModel):
     prompt: Optional[str] = None
     command: Optional[str] = None
     graph_tools: bool = False
+    sandbox_mode: Optional[SandboxMode] = None
     label: Optional[str] = None
     arguments: list[ArgumentSchema] = []
     output_schema: Optional[dict[str, str]] = None
@@ -142,6 +149,7 @@ class TaskTemplateResponse(BaseModel):
     prompt: Optional[str] = None
     command: Optional[str] = None
     graph_tools: bool
+    sandbox_mode: Optional[SandboxMode] = None
     label: Optional[str] = None
     arguments: list[ArgumentResponse]
     output_schema: Optional[dict[str, str]] = None
@@ -163,6 +171,7 @@ def _task_tmpl_response(t: Any) -> TaskTemplateResponse:
         prompt=t.prompt,
         command=t.command,
         graph_tools=t.graph_tools,
+        sandbox_mode=getattr(t, "sandbox_mode", None),
         label=t.label,
         arguments=[_arg_response(a) for a in t.arguments if not a.deleted],
         output_schema=normalized_string_map(getattr(t, "output_schema", None)),
@@ -191,6 +200,7 @@ def create_task_template(
             prompt=body.prompt,
             command=body.command,
             graph_tools=body.graph_tools,
+            sandbox_mode=body.sandbox_mode,
             label=body.label,
             arguments=_to_arg_inputs(body.arguments),
             output_schema=body.output_schema,
@@ -239,6 +249,7 @@ def update_task_template(
             prompt=body.prompt,
             command=body.command,
             graph_tools=body.graph_tools,
+            sandbox_mode=body.sandbox_mode,
             label=body.label,
             arguments=_to_arg_inputs(body.arguments),
             output_schema=body.output_schema,
@@ -533,6 +544,7 @@ def _to_node_inputs(nodes: list[SubgraphNodeInputSchema]) -> list[SubgraphNodeIn
             prompt=ac.prompt if ac else None,
             command=cc.command if cc else None,
             graph_tools=getattr(ac, "graph_tools", False) if ac else False,
+            sandbox_mode=getattr(ac, "sandbox_mode", None) if ac else None,
             task_template_id=n.task_template_id,
             ref_subgraph_template_id=n.ref_subgraph_template_id,
             argument_bindings=n.argument_bindings,
@@ -638,6 +650,7 @@ def add_subgraph_node(
             prompt=ac.prompt if ac else None,
             command=cc.command if cc else None,
             graph_tools=getattr(ac, "graph_tools", False) if ac else False,
+            sandbox_mode=getattr(ac, "sandbox_mode", None) if ac else None,
             task_template_id=body.task_template_id,
             ref_subgraph_template_id=body.ref_subgraph_template_id,
             argument_bindings=body.argument_bindings,
@@ -673,6 +686,7 @@ def patch_subgraph_node(
             prompt=ac.prompt if ac else UNSET,
             command=cc.command if cc else UNSET,
             graph_tools=getattr(ac, "graph_tools", None) if ac else UNSET,
+            sandbox_mode=getattr(ac, "sandbox_mode", None) if ac else UNSET,
             task_template_id=body.task_template_id if body.task_template_id is not None else UNSET,
             ref_subgraph_template_id=body.ref_subgraph_template_id if body.ref_subgraph_template_id is not None else UNSET,
             argument_bindings=body.argument_bindings,

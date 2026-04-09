@@ -4,11 +4,16 @@ from typing import TYPE_CHECKING, Annotated, Literal, Optional
 
 from pydantic import BaseModel, model_validator
 from pydantic import Field as PydanticField
+from romulus_common.sandbox_modes import (
+    DEFAULT_SANDBOX_MODE,
+    SandboxMode,
+    normalize_codex_sandbox_mode,
+)
 from romulus_common.supported_models import (
     SupportedModel,
     validate_supported_model_for_agent_type,
 )
-from sqlalchemy import Index, text
+from sqlalchemy import Column, Index, String, text
 from sqlmodel import Field as SQLField
 from sqlmodel import Relationship
 
@@ -87,11 +92,15 @@ class CodexAgentConfig(BaseModel):
     model: SupportedModel
     prompt: str
     graph_tools: bool = False
-    sandbox_mode: str = "read-only"
+    sandbox_mode: SandboxMode = DEFAULT_SANDBOX_MODE
 
     @model_validator(mode="after")
     def validate_model(self) -> "CodexAgentConfig":
         validate_supported_model_for_agent_type(self.agent_type, self.model.value)
+        self.sandbox_mode = normalize_codex_sandbox_mode(
+            agent_type=self.agent_type,
+            sandbox_mode=self.sandbox_mode,
+        ) or DEFAULT_SANDBOX_MODE
         return self
 
     model_config = {"from_attributes": True}
@@ -155,6 +164,10 @@ class Agent(RomulusBase, table=True):
     name: str
     prompt: str
     graph_tools: bool = SQLField(default=False)
+    sandbox_mode: Optional[str] = SQLField(
+        default=None,
+        sa_column=Column(String, nullable=True),
+    )
     graph_run_id: Optional[uuid.UUID] = SQLField(default=None, index=True)
 
     workspace: Optional["Workspace"] = Relationship(back_populates="agents")

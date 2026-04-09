@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from .output_schema import validate_output_schema_definition
 from .pydantic_schemas import PydanticSchemaId
+from .sandbox_modes import SandboxMode, normalize_codex_sandbox_mode
 from .supported_models import validate_supported_model_for_agent_type
 
 
@@ -38,7 +39,7 @@ class CreateSessionRequest(BaseModel):
     images: list[dict[str, Any]] | None = None
     workspace_name: str | None = None
     graph_tools: bool = False
-    sandbox_mode: str | None = None
+    sandbox_mode: SandboxMode | None = None
     workspace_id: str | None = None
     sandbox_id: str | None = None
     recovery: RecoveryContext | None = None
@@ -58,6 +59,10 @@ class CreateSessionRequest(BaseModel):
             and self.schema_id not in {item.value for item in PydanticSchemaId}
         ):
             raise ValueError(f"Unsupported schema_id: {self.schema_id}")
+        self.sandbox_mode = normalize_codex_sandbox_mode(
+            agent_type=self.agent_type,
+            sandbox_mode=self.sandbox_mode,
+        )
         return self
 
 

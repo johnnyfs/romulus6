@@ -32,6 +32,7 @@ def agent_config_from_node(obj: Any) -> AgentConfig | None:
             model=obj.model,
             prompt=obj.prompt,
             graph_tools=getattr(obj, "graph_tools", False),
+            sandbox_mode=getattr(obj, "sandbox_mode", None) or "read-only",
         )
     if obj.agent_type == "claude_code":
         return ClaudeCodeAgentConfig(

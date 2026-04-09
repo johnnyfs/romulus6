@@ -117,6 +117,7 @@ class GraphRunNode(RomulusBase, table=True):
     agent_id: Optional[uuid.UUID] = Field(default=None, foreign_key="agent.id")
     session_id: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     graph_tools: bool = Field(default=False)
+    sandbox_mode: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     output_schema: Optional[OutputSchemaDefinition] = Field(
         default=None,
         sa_column=validated_json_column(OutputSchemaDefinition, nullable=True),

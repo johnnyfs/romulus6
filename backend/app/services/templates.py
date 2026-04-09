@@ -1,9 +1,9 @@
-import datetime
 import json
 import uuid
 from dataclasses import dataclass
 from typing import Optional
 
+from romulus_common.sandbox_modes import normalize_codex_sandbox_mode
 from sqlmodel import Session, select
 
 from app.models.graph import NodeType
@@ -29,6 +29,7 @@ from app.services.node_shapes import (
     validate_task_template_type,
 )
 from app.utils.output_schema import validate_output_schema_definition
+from app.utils.time import utcnow
 
 # ── Data classes ─────────────────────────────────────────────────────────────
 
@@ -56,6 +57,7 @@ class SubgraphNodeInput:
     prompt: Optional[str] = None
     command: Optional[str] = None
     graph_tools: bool = False
+    sandbox_mode: Optional[str] = None
     # For task_template/subgraph_template reference nodes
     task_template_id: Optional[uuid.UUID] = None
     ref_subgraph_template_id: Optional[uuid.UUID] = None
@@ -158,20 +160,35 @@ def _build_subgraph_node(
 ) -> SubgraphTemplateNode:
     """Build a SubgraphTemplateNode from input, including inline agent/command fields."""
     validate_output_schema_definition(node_input.output_schema)
-    return SubgraphTemplateNode(
-        subgraph_template_id=tmpl_id,
-        node_type=node_input.node_type,
-        name=node_input.name,
+    normalized = normalized_node_field_values(
+        node_input.node_type,
+        subgraph_ref_field="ref_subgraph_template_id",
         agent_type=node_input.agent_type,
         model=node_input.model,
         prompt=node_input.prompt,
         command=node_input.command,
         graph_tools=node_input.graph_tools,
+        sandbox_mode=node_input.sandbox_mode,
         task_template_id=node_input.task_template_id,
         ref_subgraph_template_id=node_input.ref_subgraph_template_id,
         argument_bindings=node_input.argument_bindings,
-        output_schema=node_input.output_schema,
         image_attachments=node_input.image_attachments,
+    )
+    return SubgraphTemplateNode(
+        subgraph_template_id=tmpl_id,
+        node_type=node_input.node_type,
+        name=node_input.name,
+        agent_type=normalized["agent_type"],
+        model=normalized["model"],
+        prompt=normalized["prompt"],
+        command=normalized["command"],
+        graph_tools=normalized["graph_tools"],
+        sandbox_mode=normalized["sandbox_mode"],
+        task_template_id=normalized["task_template_id"],
+        ref_subgraph_template_id=normalized["ref_subgraph_template_id"],
+        argument_bindings=normalized["argument_bindings"],
+        output_schema=node_input.output_schema,
+        image_attachments=normalized["image_attachments"],
     )
 
 
@@ -315,6 +332,7 @@ def create_task_template(
     prompt: Optional[str] = None,
     command: Optional[str] = None,
     graph_tools: bool = False,
+    sandbox_mode: Optional[str] = None,
     label: Optional[str] = None,
     arguments: Optional[list[ArgumentInput]] = None,
     output_schema: Optional[dict[str, str]] = None,
@@ -331,6 +349,10 @@ def create_task_template(
         prompt=prompt,
         command=command,
         graph_tools=graph_tools,
+        sandbox_mode=normalize_codex_sandbox_mode(
+            agent_type=agent_type if task_type == NodeType.agent else None,
+            sandbox_mode=sandbox_mode,
+        ),
         label=label,
         output_schema=output_schema,
         image_attachments=image_attachments,
@@ -379,6 +401,7 @@ def update_task_template(
     prompt: Optional[str] = None,
     command: Optional[str] = None,
     graph_tools: bool = False,
+    sandbox_mode: Optional[str] = None,
     label: Optional[str] = None,
     arguments: Optional[list[ArgumentInput]] = None,
     output_schema: Optional[dict[str, str]] = None,
@@ -403,10 +426,14 @@ def update_task_template(
     tmpl.prompt = prompt
     tmpl.command = command
     tmpl.graph_tools = graph_tools
+    tmpl.sandbox_mode = normalize_codex_sandbox_mode(
+        agent_type=agent_type if task_type == NodeType.agent else None,
+        sandbox_mode=sandbox_mode,
+    )
     tmpl.label = label
     tmpl.output_schema = output_schema
     tmpl.image_attachments = image_attachments
-    tmpl.updated_at = datetime.datetime.utcnow()
+    tmpl.updated_at = utcnow()
     session.add(tmpl)
     session.flush()
 
@@ -428,7 +455,7 @@ def delete_task_template(
     tmpl = get_task_template(session, workspace_id, template_id)
     if tmpl is None:
         return False
-    now = datetime.datetime.utcnow()
+    now = utcnow()
     for arg in session.exec(
         select(TaskTemplateArgument).where(
             TaskTemplateArgument.task_template_id == tmpl.id
@@ -577,7 +604,7 @@ def update_schema_template(
 
     tmpl.name = name
     tmpl.fields = fields
-    tmpl.updated_at = datetime.datetime.utcnow()
+    tmpl.updated_at = utcnow()
     session.add(tmpl)
     session.commit()
     session.refresh(tmpl)
@@ -594,7 +621,7 @@ def delete_schema_template(
     if ref_msg is not None:
         raise ValueError(f"cannot delete schema template: {ref_msg}")
     tmpl.deleted = True
-    tmpl.updated_at = datetime.datetime.utcnow()
+    tmpl.updated_at = utcnow()
     session.add(tmpl)
     session.commit()
     return True
@@ -762,7 +789,7 @@ def update_subgraph_template(
     tmpl.name = name
     tmpl.label = label
     tmpl.output_schema = output_schema
-    tmpl.updated_at = datetime.datetime.utcnow()
+    tmpl.updated_at = utcnow()
     session.add(tmpl)
     session.commit()
     session.refresh(tmpl)
@@ -775,7 +802,7 @@ def delete_subgraph_template(
     tmpl = get_subgraph_template(session, workspace_id, template_id)
     if tmpl is None:
         return False
-    now = datetime.datetime.utcnow()
+    now = utcnow()
     for edge in session.exec(
         select(SubgraphTemplateEdge).where(
             SubgraphTemplateEdge.subgraph_template_id == tmpl.id
@@ -820,6 +847,7 @@ def add_subgraph_template_node(
     prompt: Optional[str] = None,
     command: Optional[str] = None,
     graph_tools: bool = False,
+    sandbox_mode: Optional[str] = None,
     task_template_id: Optional[uuid.UUID] = None,
     ref_subgraph_template_id: Optional[uuid.UUID] = None,
     argument_bindings: Optional[dict[str, str]] = None,
@@ -854,6 +882,7 @@ def add_subgraph_template_node(
         prompt=prompt,
         command=command,
         graph_tools=graph_tools,
+        sandbox_mode=sandbox_mode,
         task_template_id=task_template_id,
         ref_subgraph_template_id=ref_subgraph_template_id,
         argument_bindings=argument_bindings,
@@ -868,6 +897,7 @@ def add_subgraph_template_node(
         prompt=normalized["prompt"],
         command=normalized["command"],
         graph_tools=normalized["graph_tools"],
+        sandbox_mode=normalized["sandbox_mode"],
         task_template_id=normalized["task_template_id"],
         ref_subgraph_template_id=normalized["ref_subgraph_template_id"],
         argument_bindings=normalized["argument_bindings"],
@@ -891,6 +921,7 @@ def patch_subgraph_template_node(
     prompt: Optional[str] = None,
     command: Optional[str] = None,
     graph_tools: Optional[bool] = None,
+    sandbox_mode: Optional[str] = None,
     task_template_id: Optional[uuid.UUID] = None,
     ref_subgraph_template_id: Optional[uuid.UUID] = None,
     argument_bindings: Optional[dict[str, str]] = None,
@@ -950,6 +981,7 @@ def patch_subgraph_template_node(
         prompt=prompt,
         command=command,
         graph_tools=graph_tools,
+        sandbox_mode=sandbox_mode,
         task_template_id=task_template_id,
         ref_subgraph_template_id=ref_subgraph_template_id,
         argument_bindings=argument_bindings,
@@ -960,6 +992,7 @@ def patch_subgraph_template_node(
     node.prompt = normalized["prompt"]
     node.command = normalized["command"]
     node.graph_tools = normalized["graph_tools"]
+    node.sandbox_mode = normalized["sandbox_mode"]
     node.task_template_id = normalized["task_template_id"]
     node.ref_subgraph_template_id = normalized["ref_subgraph_template_id"]
     node.argument_bindings = normalized["argument_bindings"]
@@ -967,7 +1000,7 @@ def patch_subgraph_template_node(
         validate_output_schema_definition(output_schema)
         node.output_schema = output_schema
     node.image_attachments = normalized["image_attachments"]
-    node.updated_at = datetime.datetime.utcnow()
+    node.updated_at = utcnow()
     session.add(node)
     session.commit()
     session.refresh(node)

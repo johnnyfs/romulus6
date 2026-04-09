@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 from romulus_common.pydantic_schemas import PydanticSchemaId
+from romulus_common.sandbox_modes import SandboxMode
 from romulus_common.supported_models import (
     SupportedModel,
     validate_supported_model_for_agent_type,
@@ -66,6 +67,7 @@ class CreateCodexAgentRequest(BaseModel):
     prompt: str
     name: str | None = None
     graph_tools: bool = False
+    sandbox_mode: SandboxMode = "read-only"
 
     @model_validator(mode="after")
     def validate_model(self) -> "CreateCodexAgentRequest":
@@ -115,6 +117,7 @@ async def create_agent(
             prompt=body.prompt,
             name=body.name,
             graph_tools=body.graph_tools if body.agent_type in ("opencode", "codex", "claude_code") else False,
+            sandbox_mode=body.sandbox_mode if body.agent_type == "codex" else None,
             schema_id=body.schema_id.value if body.agent_type == "pydantic" else None,
         )
         session.refresh(agent)

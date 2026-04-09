@@ -1,4 +1,5 @@
 import type { AgentConfig, CommandConfig, NodeType } from './graphs'
+import type { SandboxMode } from './models'
 
 const BASE = '/api'
 
@@ -30,6 +31,7 @@ export interface TaskTemplate {
   prompt: string | null
   command: string | null
   graph_tools: boolean
+  sandbox_mode?: SandboxMode | null
   arguments: TaskTemplateArgument[]
   output_schema?: Record<string, string> | null
   image_attachments?: unknown[] | null
@@ -172,6 +174,7 @@ export async function createTaskTemplate(
     prompt?: string
     command?: string
     graph_tools?: boolean
+    sandbox_mode?: SandboxMode
     arguments?: { name: string; arg_type?: TaskTemplateArgType; default_value?: string; model_constraint?: string[]; min_value?: number; max_value?: number; enum_options?: string[]; schema_template_id?: string; container?: string }[]
     output_schema?: Record<string, string>
   },
@@ -203,6 +206,7 @@ export async function updateTaskTemplate(
     prompt?: string
     command?: string
     graph_tools?: boolean
+    sandbox_mode?: SandboxMode
     arguments?: { name: string; arg_type?: TaskTemplateArgType; default_value?: string; model_constraint?: string[]; min_value?: number; max_value?: number; enum_options?: string[]; schema_template_id?: string; container?: string }[]
     output_schema?: Record<string, string>
   },

@@ -1,5 +1,4 @@
 import asyncio
-import datetime
 
 import pytest
 from sqlmodel import select
@@ -12,6 +11,7 @@ from app.models.sandbox import Sandbox
 from app.models.worker import Worker, WorkerStatus
 from app.services import runs as run_svc
 from app.services import workspaces as workspace_svc
+from app.utils.time import utcnow
 
 pytestmark = pytest.mark.fast
 
@@ -26,7 +26,7 @@ def _build_command_run(session, *, command: str = "echo hi"):
         status=WorkerStatus.running,
         worker_url="http://worker.test",
         worker_metadata={},
-        last_heartbeat_at=datetime.datetime.utcnow(),
+        last_heartbeat_at=utcnow(),
     )
     session.add(worker)
     session.flush()
@@ -168,3 +168,77 @@ def test_dispatch_command_node_schedules_single_retry_on_failure(session, monkey
         "command.output",
         "run.node.retry_scheduled",
     ]
+
+
+def test_dispatch_codex_agent_node_forwards_sandbox_mode(session, monkeypatch):
+    workspace = workspace_svc.create_workspace(session, "codex-run-exec")
+    graph = Graph(workspace_id=workspace.id, name="codex-graph")
+    session.add(graph)
+    session.flush()
+
+    worker = Worker(
+        status=WorkerStatus.running,
+        worker_url="http://worker.test",
+        worker_metadata={},
+        last_heartbeat_at=utcnow(),
+    )
+    session.add(worker)
+    session.flush()
+
+    sandbox = Sandbox(
+        workspace_id=workspace.id,
+        name="run-sandbox",
+        worker_id=worker.id,
+    )
+    session.add(sandbox)
+    session.flush()
+
+    run = GraphRun(
+        graph_id=graph.id,
+        workspace_id=workspace.id,
+        sandbox_id=sandbox.id,
+        state=RunState.running,
+    )
+    session.add(run)
+    session.flush()
+
+    node = GraphRunNode(
+        run_id=run.id,
+        node_type=RunNodeType.agent,
+        name="codex-node",
+        agent_type="codex",
+        model="openai/gpt-5.3-codex",
+        prompt="echo hi in codex",
+        sandbox_mode="workspace-write",
+        state=RunNodeState.dispatching,
+    )
+    session.add(node)
+    session.commit()
+
+    captured: dict[str, object] = {}
+
+    async def fake_post_session_with_retry(worker_url: str, payload, **kwargs):
+        assert worker_url == worker.worker_url
+        captured.update(payload)
+        return {"session": {"id": "codex-session"}}
+
+    async def fake_resolve_images(worker_url: str, images):
+        assert worker_url == worker.worker_url
+        return []
+
+    async def fake_ensure_workspace_dir(worker_url: str, workspace_dir: str) -> None:
+        assert worker_url == worker.worker_url
+        assert workspace_dir == f"/workspaces/{sandbox.id}"
+
+    monkeypatch.setattr(run_svc, "engine", session.get_bind())
+    monkeypatch.setattr(run_svc, "post_session_with_retry", fake_post_session_with_retry)
+    monkeypatch.setattr(run_svc, "_resolve_images", fake_resolve_images)
+    monkeypatch.setattr(run_svc, "_ensure_workspace_dir", fake_ensure_workspace_dir)
+
+    asyncio.run(run_svc._dispatch_agent_node(run.id, node.id, worker.id))
+
+    session.expire_all()
+    node = session.get(GraphRunNode, node.id)
+    assert node is not None
+    assert node.session_id == "codex-session"
+    assert captured["sandbox_mode"] == "workspace-write"

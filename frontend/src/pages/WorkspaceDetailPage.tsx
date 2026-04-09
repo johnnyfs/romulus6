@@ -17,9 +17,11 @@ import { getSandboxDebugSummary, type SandboxDebugSummary } from '../api/sandbox
 import {
   DEFAULT_MODEL_BY_AGENT_TYPE,
   PYDANTIC_SCHEMA_OPTIONS,
+  SANDBOX_MODE_OPTIONS,
   SUPPORTED_MODELS_BY_AGENT_TYPE,
   type AgentType,
   type PydanticSchemaId,
+  type SandboxMode,
 } from '../api/models'
 import { getWorkspace, type Workspace } from '../api/workspaces'
 import AgentCard from '../components/AgentCard'
@@ -273,6 +275,7 @@ export default function WorkspaceDetailPage() {
   const [formPrompt, setFormPrompt] = useState('')
   const [formName, setFormName] = useState('')
   const [formGraphTools, setFormGraphTools] = useState(false)
+  const [formSandboxMode, setFormSandboxMode] = useState<SandboxMode>('read-only')
   const [creating, setCreating] = useState(false)
   const [chatInput, setChatInput] = useState('')
   const chatRef = useAutoResize(chatInput, 144)
@@ -515,6 +518,7 @@ export default function WorkspaceDetailPage() {
     graphTools: boolean = false,
     agentType: AgentType = 'opencode',
     schemaId: PydanticSchemaId = 'structured_response_v1',
+    sandboxMode: SandboxMode = 'read-only',
   ) {
     if (!id || !prompt.trim()) return
     setCreating(true)
@@ -535,6 +539,7 @@ export default function WorkspaceDetailPage() {
               prompt: prompt.trim(),
               name: name.trim() || undefined,
               graph_tools: graphTools || undefined,
+              sandbox_mode: sandboxMode,
             }
           : agentType === 'claude_code'
           ? {
@@ -562,6 +567,7 @@ export default function WorkspaceDetailPage() {
       setFormPrompt('')
       setFormName('')
       setFormGraphTools(false)
+      setFormSandboxMode('read-only')
       setFormAgentType('opencode')
       setFormModel(DEFAULT_MODEL_BY_AGENT_TYPE.opencode)
       setFormSchemaId('structured_response_v1')
@@ -685,6 +691,7 @@ export default function WorkspaceDetailPage() {
                     const nextType = e.target.value as AgentType
                     setFormAgentType(nextType)
                     setFormModel(DEFAULT_MODEL_BY_AGENT_TYPE[nextType])
+                    if (nextType !== 'codex') setFormSandboxMode('read-only')
                   }}
                 >
                   <option value="opencode">OpenCode</option>
@@ -717,6 +724,21 @@ export default function WorkspaceDetailPage() {
                   >
                     {PYDANTIC_SCHEMA_OPTIONS.map((schema) => (
                       <option key={schema.value} value={schema.value}>{schema.label}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              {formAgentType === 'codex' && (
+                <div style={styles.formRow}>
+                  <label style={styles.label} htmlFor="agent-sandbox-mode-select">Sandbox</label>
+                  <select
+                    id="agent-sandbox-mode-select"
+                    style={styles.select}
+                    value={formSandboxMode}
+                    onChange={(e) => setFormSandboxMode(e.target.value as SandboxMode)}
+                  >
+                    {SANDBOX_MODE_OPTIONS.map((mode) => (
+                      <option key={mode.value} value={mode.value}>{mode.label}</option>
                     ))}
                   </select>
                 </div>
@@ -758,7 +780,7 @@ export default function WorkspaceDetailPage() {
               <button
                 style={{ ...styles.submitBtn, opacity: creating || !formPrompt.trim() ? 0.4 : 1 }}
                 disabled={creating || !formPrompt.trim()}
-                onClick={() => handleCreateAgent(formPrompt, formModel, formName, formGraphTools, formAgentType, formSchemaId)}
+                onClick={() => handleCreateAgent(formPrompt, formModel, formName, formGraphTools, formAgentType, formSchemaId, formSandboxMode)}
               >
                 {creating ? 'Dispatching…' : 'Dispatch'}
               </button>

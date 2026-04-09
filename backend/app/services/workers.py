@@ -10,6 +10,7 @@ from app.models.lease import WorkerLease, WorkerLeaseStatus
 from app.models.sandbox import Sandbox
 from app.models.worker import Worker, WorkerStatus
 from app.services import events as event_svc
+from app.utils.time import utcnow
 
 HEARTBEAT_TIMEOUT_SECONDS = int(
     os.environ.get("WORKER_HEARTBEAT_TIMEOUT_SECONDS", "30")
@@ -18,7 +19,7 @@ DEPLOY_MODE = os.environ.get("DEPLOY_MODE", "local")
 
 
 def _utcnow() -> datetime.datetime:
-    return datetime.datetime.utcnow()
+    return utcnow()
 
 
 def heartbeat_expiry(now: datetime.datetime | None = None) -> datetime.datetime:

@@ -72,6 +72,7 @@ class GraphNode(RomulusBase, table=True):
     prompt: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     command: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     graph_tools: bool = Field(default=False)
+    sandbox_mode: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     task_template_id: Optional[uuid.UUID] = Field(
         default=None, foreign_key="tasktemplate.id"
     )

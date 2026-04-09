@@ -1,5 +1,6 @@
 export type AgentType = 'opencode' | 'pydantic' | 'codex' | 'claude_code'
 export type PydanticSchemaId = 'structured_response_v1'
+export type SandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access'
 
 export interface SupportedModelOption {
   label: string
@@ -64,6 +65,12 @@ export const SUPPORTED_MODELS_BY_AGENT_TYPE: Record<AgentType, SupportedModelOpt
 
 export const PYDANTIC_SCHEMA_OPTIONS: { label: string; value: PydanticSchemaId }[] = [
   { label: 'Structured Response v1', value: 'structured_response_v1' },
+]
+
+export const SANDBOX_MODE_OPTIONS: { label: string; value: SandboxMode }[] = [
+  { label: 'Read Only', value: 'read-only' },
+  { label: 'Workspace Write', value: 'workspace-write' },
+  { label: 'Danger Full Access', value: 'danger-full-access' },
 ]
 
 export const DEFAULT_MODEL_BY_AGENT_TYPE: Record<AgentType, string> = {

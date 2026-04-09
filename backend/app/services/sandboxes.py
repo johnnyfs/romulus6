@@ -1,4 +1,3 @@
-import datetime
 import uuid
 
 from sqlmodel import Session, select
@@ -6,6 +5,7 @@ from sqlmodel import Session, select
 from app.models.sandbox import Sandbox
 from app.models.worker import Worker
 from app.services import workers as worker_svc
+from app.utils.time import utcnow
 
 
 def list_sandboxes(session: Session, workspace_id: uuid.UUID) -> list[Sandbox]:
@@ -60,7 +60,7 @@ def create_sandbox(
     except Exception:
         if created:
             sandbox.deleted = True
-            sandbox.updated_at = datetime.datetime.utcnow()
+            sandbox.updated_at = utcnow()
             session.add(sandbox)
             session.commit()
         raise
@@ -79,7 +79,7 @@ def delete_sandbox(
     sandbox.deleted = True
     sandbox.worker_id = None
     sandbox.current_lease_id = None
-    sandbox.updated_at = datetime.datetime.utcnow()
+    sandbox.updated_at = utcnow()
     session.add(sandbox)
     session.commit()
     return True

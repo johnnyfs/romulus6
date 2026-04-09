@@ -237,3 +237,61 @@ def test_graph_and_template_routes_return_structured_fields(session):
     assert templated_entry["argument_bindings"] == {"topic": "cats"}
     assert templated_entry["output_schema"] == {"answer": "string"}
     assert graph_pydantic["agent_config"]["agent_type"] == "pydantic"
+
+
+def test_codex_sandbox_mode_round_trips_through_templates_graphs_and_runs(session):
+    workspace = workspace_svc.create_workspace(session, "codex-sandbox")
+    task_template = template_svc.create_task_template(
+        session,
+        workspace_id=workspace.id,
+        name="codex-task",
+        task_type=NodeType.agent,
+        agent_type="codex",
+        model="openai/gpt-5.3-codex",
+        prompt="Inspect repo",
+        graph_tools=True,
+        sandbox_mode="workspace-write",
+    )
+    graph = graph_svc.create_graph(
+        session,
+        workspace_id=workspace.id,
+        name="codex-graph",
+        nodes=[
+            NodeInput(
+                node_type=NodeType.agent,
+                name="codex-node",
+                agent_type="codex",
+                model="openai/gpt-5.3-codex",
+                prompt="Inspect graph repo",
+                graph_tools=True,
+                sandbox_mode="danger-full-access",
+            ),
+            NodeInput(
+                node_type=NodeType.task_template,
+                name="templated-codex",
+                task_template_id=task_template.id,
+            ),
+        ],
+        edges=[],
+    )
+    run = graph_svc.create_run(session, graph)
+    run_nodes = {
+        node.name: node
+        for node in run.run_nodes
+    }
+
+    with _client(session) as client:
+        task_response = client.get(
+            f"/workspaces/{workspace.id}/task-templates/{task_template.id}"
+        )
+        graph_response = client.get(f"/workspaces/{workspace.id}/graphs/{graph.id}")
+
+    assert task_template.sandbox_mode == "workspace-write"
+    assert run_nodes["codex-node"].sandbox_mode == "danger-full-access"
+    assert run_nodes["templated-codex"].sandbox_mode == "workspace-write"
+    assert task_response.status_code == 200
+    assert task_response.json()["sandbox_mode"] == "workspace-write"
+    codex_node = next(
+        node for node in graph_response.json()["nodes"] if node["name"] == "codex-node"
+    )
+    assert codex_node["agent_config"]["sandbox_mode"] == "danger-full-access"

@@ -21,6 +21,7 @@ from app.models.event import Event
 from app.models.graph import Graph
 from app.models.run import GraphRun, GraphRunNode
 from app.services.event_broadcast import event_broadcaster
+from app.utils.time import utcnow
 
 MARK_COMPLETE_TOOL = "mark_node_complete"
 DEFAULT_EVENT_PAGE_SIZE = 200
@@ -212,7 +213,7 @@ def persist_event(
     sandbox_id: uuid.UUID | None = None,
     worker_id: uuid.UUID | None = None,
 ) -> Event:
-    now = datetime.datetime.utcnow()
+    now = utcnow()
     event = Event(
         id=str(payload.get("id", uuid.uuid4())),
         workspace_id=workspace_id,
@@ -626,7 +627,7 @@ def ingest_worker_event(
             agent.status = AgentStatus.interrupted
         elif event_type == "feedback.request":
             agent.status = AgentStatus.waiting
-        agent.updated_at = datetime.datetime.utcnow()
+        agent.updated_at = utcnow()
         session.add(agent)
         session.commit()
 

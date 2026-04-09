@@ -81,6 +81,7 @@ class TaskTemplate(RomulusBase, table=True):
     prompt: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     command: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     graph_tools: bool = Field(default=False)
+    sandbox_mode: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     label: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     output_schema: Optional[OutputSchemaDefinition] = Field(
         default=None,
@@ -216,6 +217,7 @@ class SubgraphTemplateNode(RomulusBase, table=True):
     prompt: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     command: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     graph_tools: bool = Field(default=False)
+    sandbox_mode: Optional[str] = Field(default=None, sa_column=Column(String, nullable=True))
     # For task_template/subgraph_template reference nodes
     task_template_id: Optional[uuid.UUID] = Field(
         default=None, foreign_key="tasktemplate.id"

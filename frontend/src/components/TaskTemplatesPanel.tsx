@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAutoResize } from '../hooks/useAutoResize'
 import { useSearchParams } from 'react-router-dom'
 import type { NodeType } from '../api/graphs'
-import { DEFAULT_MODEL_BY_AGENT_TYPE, SUPPORTED_MODELS_BY_AGENT_TYPE, type AgentType } from '../api/models'
+import { DEFAULT_MODEL_BY_AGENT_TYPE, SANDBOX_MODE_OPTIONS, SUPPORTED_MODELS_BY_AGENT_TYPE, type AgentType, type SandboxMode } from '../api/models'
 import {
   type SchemaTemplate,
   type TaskTemplate,
@@ -40,6 +40,7 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
   const promptRef = useAutoResize(editPrompt, 300, 50)
   const commandRef = useAutoResize(editCommand, 300, 50)
   const [editGraphTools, setEditGraphTools] = useState(false)
+  const [editSandboxMode, setEditSandboxMode] = useState<SandboxMode>('read-only')
   const argIdCounter = useRef(0)
   const [editArgs, setEditArgs] = useState<{ _id: number; name: string; arg_type: TaskTemplateArgType; default_value: string; model_constraint: string[]; min_value: string; max_value: string; enum_options: string[] }[]>([])
   const [editOutputSchema, setEditOutputSchema] = useState<Record<string, string>>({})
@@ -106,6 +107,7 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
         setEditPrompt(t.prompt ?? '')
         setEditCommand(t.command ?? '')
         setEditGraphTools(t.graph_tools)
+        setEditSandboxMode(t.sandbox_mode ?? 'read-only')
         setEditOutputSchema(t.output_schema ?? {})
         setEditArgs(
           t.arguments.map((a) => ({
@@ -165,6 +167,7 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
         prompt: editTaskType === 'agent' ? editPrompt : undefined,
         command: editTaskType === 'command' ? editCommand : undefined,
         graph_tools: editTaskType === 'agent' ? editGraphTools : false,
+        sandbox_mode: editTaskType === 'agent' && editAgentType === 'codex' ? editSandboxMode : undefined,
         arguments: editArgs.map((a) => ({
           name: a.name,
           arg_type: a.arg_type,
@@ -257,6 +260,9 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
                     if (nextType !== 'opencode' && nextType !== 'codex' && nextType !== 'claude_code') {
                       setEditGraphTools(false)
                     }
+                    if (nextType !== 'codex') {
+                      setEditSandboxMode('read-only')
+                    }
                   }}>
                   <option value="opencode">opencode</option>
                   <option value="pydantic">pydantic</option>
@@ -287,6 +293,16 @@ export default function TaskTemplatesPanel({ workspaceId }: { workspaceId: strin
                     <input type="checkbox" checked={editGraphTools} onChange={(e) => markDirty(setEditGraphTools)(e.target.checked)} />
                     Graph tools
                   </label>
+                </div>
+              )}
+              {editAgentType === 'codex' && (
+                <div style={s.row}>
+                  <span style={s.label}>Sandbox</span>
+                  <select style={s.sel} value={editSandboxMode} onChange={(e) => markDirty(setEditSandboxMode)(e.target.value as SandboxMode)}>
+                    {SANDBOX_MODE_OPTIONS.map((mode) => (
+                      <option key={mode.value} value={mode.value}>{mode.label}</option>
+                    ))}
+                  </select>
                 </div>
               )}
             </>

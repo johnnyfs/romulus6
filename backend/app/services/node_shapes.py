@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from romulus_common.sandbox_modes import normalize_codex_sandbox_mode
+
 from app.models.graph import NodeType
 
 UNSET = object()
@@ -68,6 +70,7 @@ def normalized_node_field_values(
     prompt: Any = UNSET,
     command: Any = UNSET,
     graph_tools: Any = UNSET,
+    sandbox_mode: Any = UNSET,
     task_template_id: Any = UNSET,
     subgraph_template_id: Any = UNSET,
     ref_subgraph_template_id: Any = UNSET,
@@ -82,11 +85,16 @@ def normalized_node_field_values(
         values["prompt"] = _pick(current, "prompt", prompt)
         picked_graph_tools = _pick(current, "graph_tools", graph_tools)
         values["graph_tools"] = bool(picked_graph_tools) if picked_graph_tools is not None else False
+        values["sandbox_mode"] = normalize_codex_sandbox_mode(
+            agent_type=values["agent_type"],
+            sandbox_mode=_pick(current, "sandbox_mode", sandbox_mode),
+        )
     else:
         values["agent_type"] = None
         values["model"] = None
         values["prompt"] = None
         values["graph_tools"] = False
+        values["sandbox_mode"] = None
 
     if is_command_node_type(node_type):
         values["command"] = _pick(current, "command", command)

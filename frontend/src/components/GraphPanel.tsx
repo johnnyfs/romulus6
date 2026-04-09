@@ -16,7 +16,7 @@ import {
   patchNode,
 } from '../api/graphs'
 import type { SchemaTemplate, TaskTemplate, SubgraphTemplate, SubgraphTemplateDetail } from '../api/templates'
-import { DEFAULT_MODEL_BY_AGENT_TYPE, SUPPORTED_MODELS_BY_AGENT_TYPE, type AgentType } from '../api/models'
+import { DEFAULT_MODEL_BY_AGENT_TYPE, SANDBOX_MODE_OPTIONS, SUPPORTED_MODELS_BY_AGENT_TYPE, type AgentType, type SandboxMode } from '../api/models'
 import { buildTypeOptions, listSchemaTemplates, listTaskTemplates, listSubgraphTemplates, getSubgraphTemplate } from '../api/templates'
 import { NODE_W, NODE_H, CANVAS_WIDTH, computeLayout, type Pos } from './graphLayout'
 import ErrorBoundary from './ErrorBoundary'
@@ -54,6 +54,7 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
   const promptRef = useAutoResize(editPrompt, 300, 60)
   const commandRef = useAutoResize(editCommand, 300, 80)
   const [editGraphTools, setEditGraphTools] = useState(false)
+  const [editSandboxMode, setEditSandboxMode] = useState<SandboxMode>('read-only')
   const [editTaskTemplateId, setEditTaskTemplateId] = useState('')
   const [editSubgraphTemplateId, setEditSubgraphTemplateId] = useState('')
   const [editBindings, setEditBindings] = useState<Record<string, string>>({})
@@ -181,11 +182,13 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
         setEditModel(node.agent_config.model)
         setEditPrompt(node.agent_config.prompt)
         setEditGraphTools((node.agent_config.agent_type === 'opencode' || node.agent_config.agent_type === 'codex' || node.agent_config.agent_type === 'claude_code') ? (node.agent_config.graph_tools ?? false) : false)
+        setEditSandboxMode(node.agent_config.agent_type === 'codex' ? (node.agent_config.sandbox_mode ?? 'read-only') : 'read-only')
       } else {
         setEditAgentType('opencode')
         setEditModel(DEFAULT_MODEL_BY_AGENT_TYPE.opencode)
         setEditPrompt('')
         setEditGraphTools(false)
+        setEditSandboxMode('read-only')
       }
       if (node.command_config) {
         setEditCommand(node.command_config.command)
@@ -381,7 +384,13 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
     if (editType === 'agent') {
       patch.agent_config = editAgentType === 'pydantic'
         ? { agent_type: 'pydantic', model: editModel, prompt: editPrompt }
-        : { agent_type: editAgentType, model: editModel, prompt: editPrompt, graph_tools: editGraphTools }
+        : {
+            agent_type: editAgentType,
+            model: editModel,
+            prompt: editPrompt,
+            graph_tools: editGraphTools,
+            ...(editAgentType === 'codex' ? { sandbox_mode: editSandboxMode } : {}),
+          }
       if (Object.keys(editOutputSchema).length > 0) patch.output_schema = editOutputSchema
     } else if (editType === 'command') {
       patch.command_config = { command: editCommand }
@@ -824,6 +833,9 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
                     if (nextType !== 'opencode' && nextType !== 'codex' && nextType !== 'claude_code') {
                       setEditGraphTools(false)
                     }
+                    if (nextType !== 'codex') {
+                      setEditSandboxMode('read-only')
+                    }
                   }}
                 >
                   <option value="opencode">opencode</option>
@@ -855,6 +867,21 @@ export default function GraphPanel({ workspaceId, width }: { workspaceId: string
                       style={{ marginRight: 6 }} />
                     Graph Editor
                   </label>
+                </div>
+              )}
+              {editAgentType === 'codex' && (
+                <div style={s.inspectorRow}>
+                  <label style={s.inspectorLabel} htmlFor="graph-node-sandbox-mode">Sandbox:</label>
+                  <select
+                    id="graph-node-sandbox-mode"
+                    style={s.inspectorSelect}
+                    value={editSandboxMode}
+                    onChange={(e) => markDirty(setEditSandboxMode)(e.target.value as SandboxMode)}
+                  >
+                    {SANDBOX_MODE_OPTIONS.map((mode) => (
+                      <option key={mode.value} value={mode.value}>{mode.label}</option>
+                    ))}
+                  </select>
                 </div>
               )}
             </>

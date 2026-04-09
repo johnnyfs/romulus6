@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAutoResize } from '../hooks/useAutoResize'
 import { useSearchParams } from 'react-router-dom'
-import { DEFAULT_MODEL_BY_AGENT_TYPE, SUPPORTED_MODELS_BY_AGENT_TYPE, type AgentType } from '../api/models'
+import { DEFAULT_MODEL_BY_AGENT_TYPE, SANDBOX_MODE_OPTIONS, SUPPORTED_MODELS_BY_AGENT_TYPE, type AgentType, type SandboxMode } from '../api/models'
 import type { SchemaTemplate, TaskTemplate, TaskTemplateArgument, SubgraphTemplate, SubgraphTemplateDetail, SubgraphTemplateNodeType } from '../api/templates'
 import {
   addSubgraphTemplateEdge,
@@ -91,6 +91,7 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
   const promptRef = useAutoResize(editPrompt, 300, 60)
   const commandRef = useAutoResize(editCommand, 300, 80)
   const [editGraphTools, setEditGraphTools] = useState(false)
+  const [editSandboxMode, setEditSandboxMode] = useState<SandboxMode>('read-only')
   const [editTaskTemplateId, setEditTaskTemplateId] = useState('')
   const [editRefSubgraphId, setEditRefSubgraphId] = useState('')
   const [editBindings, setEditBindings] = useState<Record<string, string>>({})
@@ -218,6 +219,7 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
           || node.agent_config?.agent_type === 'claude_code'
         ) ? (node.agent_config.graph_tools ?? false) : false,
       )
+      setEditSandboxMode(node.agent_config?.agent_type === 'codex' ? (node.agent_config.sandbox_mode ?? 'read-only') : 'read-only')
       setEditCommand(node.command_config?.command ?? '')
       setEditTaskTemplateId(node.task_template_id ?? '')
       setEditRefSubgraphId(node.ref_subgraph_template_id ?? '')
@@ -340,7 +342,13 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
     if (editNodeType === 'agent') {
       patch.agent_config = editAgentType === 'pydantic'
         ? { agent_type: 'pydantic', model: editModel, prompt: editPrompt }
-        : { agent_type: editAgentType, model: editModel, prompt: editPrompt, graph_tools: editGraphTools }
+        : {
+            agent_type: editAgentType,
+            model: editModel,
+            prompt: editPrompt,
+            graph_tools: editGraphTools,
+            ...(editAgentType === 'codex' ? { sandbox_mode: editSandboxMode } : {}),
+          }
       if (Object.keys(editOutputSchema).length > 0) patch.output_schema = editOutputSchema
     } else if (editNodeType === 'command') {
       patch.command_config = { command: editCommand }
@@ -590,6 +598,7 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
                     editNode(setEditAgentType)(nextType)
                     setEditModel(DEFAULT_MODEL_BY_AGENT_TYPE[nextType])
                     if (nextType !== 'opencode' && nextType !== 'codex' && nextType !== 'claude_code') setEditGraphTools(false)
+                    if (nextType !== 'codex') setEditSandboxMode('read-only')
                   }}>
                   <option value="opencode">opencode</option>
                   <option value="pydantic">pydantic</option>
@@ -618,6 +627,20 @@ export default function SubgraphTemplatesPanel({ workspaceId }: { workspaceId: s
                       style={{ marginRight: 4 }} />
                     Graph Editor
                   </label>
+                </div>
+              )}
+              {editAgentType === 'codex' && (
+                <div style={s.row}>
+                  <span style={s.label}>Sandbox</span>
+                  <select
+                    style={s.sel}
+                    value={editSandboxMode}
+                    onChange={e => editNode(setEditSandboxMode)(e.target.value as SandboxMode)}
+                  >
+                    {SANDBOX_MODE_OPTIONS.map((mode) => (
+                      <option key={mode.value} value={mode.value}>{mode.label}</option>
+                    ))}
+                  </select>
                 </div>
               )}
             </>
