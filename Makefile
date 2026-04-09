@@ -5,8 +5,6 @@ K8S_NAMESPACE ?= romulus
 K8S_DEV_DIR := k8s/dev
 K8S_NODE_HOST ?= $(shell minikube ip 2>/dev/null || echo localhost)
 MINIKUBE_PROFILE ?= minikube
-K8S_CURRENT_CONTEXT ?= $(shell kubectl config current-context 2>/dev/null || echo "")
-
 BACKEND_IMAGE ?= backend:latest
 WORKER_IMAGE ?= worker:latest
 BACKEND_PORT ?= 8000
@@ -15,11 +13,8 @@ WORKER_POOL_TARGET ?= 1
 WORKER_POOL_MAX ?= 1
 WORKER_ROLLOUT_WAIT ?= 1
 WORKER_FORCE_RESTART ?= 0
-DEV_LOCAL_WORKER_POOL_TARGET := 1
 LOCAL_DB_PORT ?= 15432
-HOST_BACKEND_HOST ?= $(if $(filter docker-desktop,$(K8S_CURRENT_CONTEXT)),host.docker.internal,$(if $(filter minikube%,$(K8S_CURRENT_CONTEXT)),host.minikube.internal,host.docker.internal))
 HOST_BACKEND_PORT ?= 18000
-HYBRID_WORKER_PORT ?= 18080
 LOCAL_WORKER_PORT ?= 18080
 LOCAL_POSTGRES_CONTAINER ?= romulus-local-postgres
 LOCAL_POSTGRES_VOLUME ?= romulus-local-postgres-data
@@ -31,34 +26,21 @@ FRONTEND_TARGET_FILE ?= .frontend-backend-target
 BACKEND_SERVICE_URL ?= http://romulus-backend:8000/api/v1
 
 .PHONY: \
-	dev dev-up dev-down dev-clean dev-restart-backend \
-	dev-k8s dev-k8s-up dev-k8s-down \
+	dev dev-down dev-clean dev-restart-backend dev-restart-workers \
+	dev-check-cluster dev-namespace dev-config dev-secrets \
+	dev-db dev-db-migrate dev-backend dev-worker \
+	dev-build-images dev-build-backend-image dev-build-worker-image \
+	dev-sandbox-delete-all \
 	local local-backend-services local-db-migrate local-backend local-worker \
-	dev-local dev-local-up dev-local-down \
-	dev-local-db-forward dev-local-worker-forward \
-	dev-local-backend dev-local-frontend \
-	dev-hybrid dev-hybrid-up dev-hybrid-down \
-	dev-hybrid-db-forward dev-hybrid-worker-forward \
-	dev-backend-local dev-frontend-local \
 	local-clean \
 	check-frontend-node check-local-worker-opencode frontend-install frontend-reset \
-	dev-restart-workers \
-	dev-namespace dev-check-cluster dev-config dev-secrets dev-db dev-db-migrate \
-	dev-backend dev-frontend dev-worker \
-	dev-build-images dev-build-backend-image dev-build-worker-image \
-	backend db frontend migrate stop-db worker worker-build worker-deploy \
-	makemigrations install-frontend install-tests test-backend test-fast sandbox-delete-all k8s-namespace
+	frontend \
+	makemigrations install-tests test-backend test-fast
 
-dev: dev-up
+dev: dev-check-cluster dev-namespace dev-build-images dev-config dev-secrets dev-db dev-db-migrate dev-backend dev-worker
 	@printf '%s\n' "http://$(K8S_NODE_HOST):$(BACKEND_NODEPORT)" > $(FRONTEND_TARGET_FILE)
 	@echo "Kubernetes dev stack is ready."
 	@echo "Run \`make frontend\` in another terminal."
-
-dev-k8s: dev
-
-dev-up: dev-k8s-up
-
-dev-k8s-up: dev-check-cluster dev-namespace dev-build-images dev-config dev-secrets dev-db dev-db-migrate dev-backend dev-worker
 
 dev-check-cluster:
 	kubectl cluster-info >/dev/null
@@ -178,8 +160,6 @@ frontend: frontend/node_modules/.bin/vite
 		VITE_BACKEND_TARGET=$$BACKEND_TARGET \
 		npm run dev -- --port $(FRONTEND_PORT)
 
-dev-frontend: frontend
-
 dev-restart-backend: dev-build-backend-image dev-config dev-secrets
 	kubectl apply -f $(K8S_DEV_DIR)/backend-rbac.yaml
 	kubectl apply -f $(K8S_DEV_DIR)/backend-service.yaml
@@ -187,8 +167,6 @@ dev-restart-backend: dev-build-backend-image dev-config dev-secrets
 	sed 's|image: backend:latest|image: $(BACKEND_IMAGE)|' $(K8S_DEV_DIR)/backend-deployment.yaml | kubectl apply -f -
 	kubectl rollout restart deployment/romulus-backend -n $(K8S_NAMESPACE)
 	kubectl rollout status deployment/romulus-backend -n $(K8S_NAMESPACE)
-
-dev-k8s-down: dev-down
 
 local:
 	@echo "Local mode is split intentionally."
@@ -265,39 +243,6 @@ local-clean:
 	rm -rf .local
 	@echo "Local Postgres container, volume, and worker state removed."
 
-dev-local: local
-
-dev-local-up: local
-
-dev-local-down:
-	@echo "The hybrid local mode has been replaced by \`make local-backend\` and \`make local-worker\`."
-
-dev-local-db-forward:
-	@echo "The hybrid local mode has been removed."
-	@echo "Use \`make local-backend-services\` for Postgres and \`make local-worker\` for the worker."
-
-dev-local-worker-forward:
-	@echo "The hybrid local mode has been removed."
-	@echo "Use \`make local-worker\` to run the worker on the host."
-
-dev-local-backend: local-backend
-
-dev-local-frontend: frontend
-
-dev-hybrid: local
-
-dev-hybrid-up: local
-
-dev-hybrid-down: dev-local-down
-
-dev-hybrid-db-forward: dev-local-db-forward
-
-dev-hybrid-worker-forward: dev-local-worker-forward
-
-dev-backend-local: local-backend
-
-dev-frontend-local: frontend
-
 dev-down:
 	kubectl delete job romulus-backend-migrate -n $(K8S_NAMESPACE) --ignore-not-found
 	kubectl delete deployment romulus-backend worker romulus-postgres -n $(K8S_NAMESPACE) --ignore-not-found
@@ -312,25 +257,8 @@ dev-clean: dev-down
 	kubectl delete pvc romulus-postgres-data -n $(K8S_NAMESPACE) --ignore-not-found
 	rm -rf .pg-data
 
-backend: dev-backend
-
-db: dev-db
-
-migrate: dev-db-migrate
-
-stop-db: dev-down
-
-worker-build: dev-build-worker-image
-
-worker-deploy: dev-worker
-
-k8s-namespace: dev-namespace
-
 makemigrations:
 	cd backend && uv run alembic revision --autogenerate -m "$(MSG)"
-
-install-frontend:
-	$(MAKE) frontend-install
 
 install-tests:
 	cd tests && npm ci
@@ -338,9 +266,19 @@ install-tests:
 test-fast:
 	cd backend && $(MAKE) test-fast
 
-test-backend: dev-check-cluster dev-namespace tests/node_modules
-	cd tests && PLAYWRIGHT_BASE_URL=http://$(K8S_NODE_HOST):$(BACKEND_NODEPORT) npm run test -- $(ARGS)
+test-backend: tests/node_modules/.bin/playwright
+	@BACKEND_TARGET="$${BACKEND_TARGET:-$$(cat $(FRONTEND_TARGET_FILE) 2>/dev/null)}"; \
+	if [ -z "$$BACKEND_TARGET" ]; then \
+		echo "No backend target configured. Run \`make dev\` or \`make local-backend\` first."; \
+		exit 1; \
+	fi; \
+	if ! curl -sf "$$BACKEND_TARGET/health" >/dev/null 2>&1; then \
+		echo "Backend is not responding at $$BACKEND_TARGET/health"; \
+		echo "Start it with \`make dev\` or \`make local-backend\` first."; \
+		exit 1; \
+	fi; \
+	cd tests && PLAYWRIGHT_BASE_URL=$$BACKEND_TARGET npm run test -- $(ARGS)
 
-sandbox-delete-all:
+dev-sandbox-delete-all:
 	kubectl get deployments -n $(K8S_NAMESPACE) -l app=worker -o name | xargs -r kubectl delete -n $(K8S_NAMESPACE)
 	kubectl get services -n $(K8S_NAMESPACE) -l app=worker -o name | xargs -r kubectl delete -n $(K8S_NAMESPACE)
